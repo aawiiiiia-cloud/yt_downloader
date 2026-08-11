@@ -1,0 +1,155 @@
+"""一键打包 yt-dlp GUI 为可分发的 onedir 文件夹(打包版)。
+
+用法:  python build.py
+产出:  dist/yt_dlp_gui/            ← 可整体压缩分发的文件夹
+        dist/yt_dlp_gui.zip
+
+流程:
+1. 下载便携版 node.exe / ffmpeg.exe / ffprobe.exe 到 build_cache/
+2. pyinstaller --onedir 打包 GUI(yt-dlp + yt-dlp-ejs 本地脚本 + PO token 插件)
+3. 复制工具到 dist/yt_dlp_gui/tools/  (运行时 main() 会把 tools/ 加进 PATH)
+4. 压成 zip
+
+说明:
+- 用 onedir 而非 onefile:避免把 ~160MB 工具塞进 exe 导致启动慢
+- EJS 脚本靠 yt-dlp 自带 hook + --collect-data yt_dlp_ejs 打进包,墙内离线可用
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+import bootstrap  # 复用下载/解压工具
+
+BUILD_DIR = Path(__file__).parent.resolve()
+CACHE_DIR = BUILD_DIR / "build_cache"
+DIST_DIR = BUILD_DIR / "dist" / "yt_dlp_gui"
+TOOLS_DIST = DIST_DIR / "tools"
+ZIP_OUT = BUILD_DIR / "dist" / "yt_dlp_gui.zip"
+
+# 固定 Node LTS 版本,避免每次构建漂移
+NODE_VERSION = "22.14.0"
+
+
+def main() -> None:
+    print("== yt-dlp GUI 打包 ==")
+    _ensure_pyinstaller()
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if DIST_DIR.exists():
+        shutil.rmtree(DIST_DIR)
+
+    _download_tools()
+    _run_pyinstaller()
+    _assemble_dist()
+    _make_zip()
+    _cleanup_cache()
+
+    print("== 打包完成 ==")
+    print(f"文件夹: {DIST_DIR}")
+    print(f"压缩包: {ZIP_OUT}")
+
+
+def _ensure_pyinstaller() -> None:
+    try:
+        import PyInstaller  # noqa: F401
+        return
+    except ImportError:
+        pass
+    print("[构建] 安装 pyinstaller...")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-U", "pyinstaller"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _download_tools() -> None:
+    """下载 node.exe / ffmpeg.exe / ffprobe.exe 到 build_cache/。"""
+    node_exe = CACHE_DIR / "node.exe"
+    if not node_exe.exists():
+        print(f"[构建] 下载 Node.js v{NODE_VERSION} 便携版...")
+        zip_path = CACHE_DIR / f"node-v{NODE_VERSION}-win-x64.zip"
+        url = f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-win-x64.zip"
+        if not bootstrap._download_with_progress(url, zip_path, print, timeout_seconds=240):
+            mirror = f"{bootstrap.NODE_MIRROR}/v{NODE_VERSION}/node-v{NODE_VERSION}-win-x64.zip"
+            print("[构建] 官方源超时/失败,改用 npmmirror...")
+            if not bootstrap._download_with_progress(mirror, zip_path, print, timeout_seconds=240):
+                raise SystemExit("[错误] Node.js 下载失败")
+        with zipfile.ZipFile(zip_path) as zf:
+            member = next(m for m in zf.namelist() if m.endswith("/node.exe"))
+            with zf.open(member) as src, open(node_exe, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        zip_path.unlink(missing_ok=True)
+        print(f"[构建] node.exe 就绪: {node_exe}")
+
+    ffmpeg_exe = CACHE_DIR / "ffmpeg.exe"
+    ffprobe_exe = CACHE_DIR / "ffprobe.exe"
+    if not (ffmpeg_exe.exists() and ffprobe_exe.exists()):
+        print("[构建] 下载 ffmpeg 便携版(多源兜底)...")
+        zip_path = CACHE_DIR / "ffmpeg.zip"
+        if not bootstrap._download_ffmpeg_zip(zip_path, print):
+            raise SystemExit("[错误] ffmpeg 下载失败")
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+            for target in ("ffmpeg.exe", "ffprobe.exe"):
+                member = next(m for m in names if m.endswith(f"/bin/{target}"))
+                with zf.open(member) as src, open(CACHE_DIR / target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        zip_path.unlink(missing_ok=True)
+        print(f"[构建] ffmpeg/ffprobe 就绪: {CACHE_DIR}")
+
+
+def _run_pyinstaller() -> None:
+    print("[构建] 运行 pyinstaller (onedir, 无需管理员)...")
+    cmd = [
+        sys.executable, "-m", "PyInstaller",
+        "--onedir",                 # 文件夹,启动快
+        "--windowed",               # 无控制台窗口
+        "--name", "yt_dlp_gui",
+        "--noupx",                  # 避免 UPX 被杀软误报
+        "--collect-data", "yt_dlp_ejs",                 # ★ EJS 脚本本地化,墙内离线可用
+        "--hidden-import", "yt_dlp_ejs",
+        # PO token 插件(yt_dlp_plugins 是命名空间包,--collect-submodules 常漏子模块,逐个点名)
+        "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil",
+        "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil_http",
+        "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil_script",
+        "--collect-submodules", "yt_dlp",               # 所有 extractor/downloader/postprocessor
+        "--collect-submodules", "yt_dlp_plugins",       # PO token 插件命名空间
+        str(BUILD_DIR / "yt_dlp_gui.py"),
+    ]
+    subprocess.check_call(cmd, cwd=str(BUILD_DIR))
+
+
+def _assemble_dist() -> None:
+    """复制 build_cache 里的工具到 dist/yt_dlp_gui/tools/。"""
+    print("[构建] 组装 tools/ 目录...")
+    TOOLS_DIST.mkdir(parents=True, exist_ok=True)
+    for name in ("node.exe", "ffmpeg.exe", "ffprobe.exe"):
+        src = CACHE_DIR / name
+        if src.exists():
+            shutil.copy2(src, TOOLS_DIST / name)
+    # 复制说明文件
+    readme = BUILD_DIR / "使用说明.txt"
+    if readme.exists():
+        shutil.copy2(readme, DIST_DIR / "使用说明.txt")
+
+
+def _make_zip() -> None:
+    print("[构建] 压缩 zip...")
+    if ZIP_OUT.exists():
+        ZIP_OUT.unlink()
+    with zipfile.ZipFile(ZIP_OUT, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in DIST_DIR.rglob("*"):
+            zf.write(p, p.relative_to(DIST_DIR.parent))
+
+
+def _cleanup_cache() -> None:
+    print("[构建] 清理临时文件...")
+    shutil.rmtree(CACHE_DIR, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

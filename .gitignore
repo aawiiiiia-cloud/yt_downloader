@@ -1,0 +1,9 @@
+# 构建产物 / 缓存
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+
+# 本机工具配置(不共享)
+.claude/
