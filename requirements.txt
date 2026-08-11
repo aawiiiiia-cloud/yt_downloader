@@ -1,3 +1,4 @@
 yt-dlp>=2024.1.0
 yt-dlp-ejs>=2024.1.0
 bgutil-ytdlp-pot-provider
+websocket-client>=1.0   # 内置登录(Edge+CDP)依赖

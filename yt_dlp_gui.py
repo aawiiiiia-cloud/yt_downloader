@@ -23,6 +23,22 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
+# 预载 yt_dlp_plugins 命名空间包,必须早于 import yt_dlp:
+# yt-dlp 2026 会通过 register_plugin_spec 把 PluginFinder 插入 sys.meta_path 首位,
+# 冻结打包环境下它扫描不到插件目录,对 yt_dlp_plugins 和 yt_dlp_plugins.extractor
+# 两层(都在它的拦截名单里)直接 raise ModuleNotFoundError(见 yt_dlp/plugins.py
+# find_spec:search_locations 为空即抛)。在 yt-dlp 注册 finder 前把这两层命名空间
+# 包先载入 sys.modules,后续 import 具体插件模块(getpot_*)即可绕开 finder,
+# 走标准机制从 PyInstaller 的 PYZ 加载。
+try:
+    import yt_dlp_plugins  # noqa: F401
+except ImportError:
+    pass
+try:
+    import yt_dlp_plugins.extractor  # noqa: F401
+except ImportError:
+    pass
+
 try:
     import yt_dlp
 except ImportError:
@@ -110,6 +126,7 @@ class DownloaderGUI:
         self._cancel_flag = threading.Event()
         self._worker: threading.Thread | None = None
         self._js_runtime: str | None = None
+        self._login_running = False  # 内置登录(Edge+CDP)运行中标记,防止重复点击
 
         self.settings = Settings()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -200,6 +217,9 @@ class DownloaderGUI:
         ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(
             cookies_frm, text="从文件...", command=self._choose_cookies_file,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(
+            cookies_frm, text="内置登录", command=self._embedded_login,
         ).pack(side=tk.LEFT, padx=(0, 8))
         self.cookies_hint = ttk.Label(cookies_frm, text="", foreground="#666")
         self.cookies_hint.pack(side=tk.LEFT)
@@ -475,6 +495,82 @@ class DownloaderGUI:
                 foreground="#b8860b",
             )
 
+    # ---------- 内置登录(Edge+CDP) ----------
+
+    def _embedded_login(self) -> None:
+        """内置登录:弹出独立 Edge 窗口登录 Google,自动抓取 cookies.txt。
+
+        后台线程运行 edge_login.run_login()(会阻塞等待用户在 Edge 里登录,
+        最长 10 分钟),结果通过 _msg_queue 传回主线程:
+          ("login_log", msg)     进度日志
+          ("login_ok", path)     抓取成功,path 为 cookies.txt 路径
+          ("login_fail", err)    失败
+        """
+        if self._login_running:
+            return
+        if not self._has_edge():
+            messagebox.showinfo(
+                "缺少 Edge",
+                "未找到 Microsoft Edge/Chrome。\n"
+                "「内置登录」需要本机有 Edge(Win11 预装)或 Chrome。\n\n"
+                "也可改用:\n"
+                "· 一键获取(Firefox 直读)\n"
+                "· 从文件...(导入现成的 cookies.txt)",
+            )
+            return
+
+        self._login_running = True
+        out_path = Path.home() / ".yt_dlp_gui_cookies.txt"
+        self._log("[内置登录] 正在启动独立 Edge 窗口,请在窗口里登录 Google 账号...")
+        self._log("[内置登录] 提示:登录成功后跳回 youtube.com,脚本会自动抓取并验证")
+
+        def worker() -> None:
+            try:
+                import edge_login
+
+                def progress(msg: str) -> None:
+                    self._msg_queue.put(("login_log", msg))
+
+                path = edge_login.run_login(
+                    out_path=out_path, progress=progress, verify=True,
+                )
+                self._msg_queue.put(("login_ok", str(path)))
+            except Exception as exc:  # noqa: BLE001
+                self._msg_queue.put(("login_fail", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _has_edge() -> bool:
+        """本机是否有 Edge 或 Chrome(用于「内置登录」前置检查)。"""
+        candidates = [
+            Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+            Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+        ]
+        return any(p.exists() for p in candidates)
+
+    def _on_login_ok(self, path: str) -> None:
+        """内置登录成功:把 cookies.txt 设为当前文件,持久化,提示。"""
+        self._login_running = False
+        self.cookies_file = path
+        self.cookies_var.set("无")
+        self.settings.set("cookies", "无")
+        self.settings.set("cookies_file", path)
+        self._refresh_cookies_hint()
+        self._log(f"[内置登录] 成功,已使用 cookies: {os.path.basename(path)}")
+        messagebox.showinfo(
+            "登录成功",
+            f"已抓取并保存 YouTube 登录 cookies:\n{path}\n\n"
+            "之后的下载会自动使用这份登录态,无需再登录。",
+        )
+
+    def _on_login_fail(self, err: str) -> None:
+        self._login_running = False
+        self._log(f"[内置登录] 失败: {err}")
+        messagebox.showerror("登录失败", err)
+
     def _on_proxy_change(self, *_args: object) -> None:
         """代理输入每次按键都触发,用 after 防抖(500ms 后写盘)。"""
         after_id = getattr(self, "_proxy_save_after", None)
@@ -498,14 +594,18 @@ class DownloaderGUI:
         self._log(f"[信息] yt-dlp 版本: {yt_dlp.version.__version__}")
 
         # PO token provider:自动生成 Proof of Origin token,减轻 YouTube 的 bot 检测。
-        # 由 yt-dlp 插件机制自动注册(bgutil-ytdlp-pot-provider 包)。
+        # 源码版由 yt-dlp 插件机制自动注册;打包版(PyInstaller 冻结环境)里 yt-dlp
+        # 的插件自动发现失效,必须显式 import 各 provider 模块以触发注册。
         try:
-            import yt_dlp_plugins.extractor.getpot_bgutil  # noqa: F401
+            import yt_dlp_plugins.extractor.getpot_bgutil  # noqa: F401   # 基类
+            import yt_dlp_plugins.extractor.getpot_bgutil_http  # noqa: F401
+            import yt_dlp_plugins.extractor.getpot_bgutil_script  # noqa: F401
             self._log("[信息] PO Token 插件已就位 (bgutil-ytdlp-pot-provider)")
-        except ImportError:
+        except Exception as exc:
+            # 失败时给出一行可定位的异常信息(不打印完整 traceback)
             self._log(
-                "[警告] PO Token 插件未安装,可能更容易触发 bot 检测。"
-                "建议: pip install bgutil-ytdlp-pot-provider"
+                "[警告] PO Token 插件加载失败:"
+                f"{type(exc).__name__}: {exc}"
             )
 
         if shutil.which("ffmpeg") is None:
@@ -584,6 +684,12 @@ class DownloaderGUI:
                     self.progress["value"] = float(payload)
                 elif kind == "done":
                     self._on_finish(*payload)
+                elif kind == "login_log":
+                    self._log(payload)
+                elif kind == "login_ok":
+                    self._on_login_ok(payload)
+                elif kind == "login_fail":
+                    self._on_login_fail(payload)
         except queue.Empty:
             pass
         self.root.after(120, self._poll_queue)

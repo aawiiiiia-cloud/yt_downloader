@@ -5,10 +5,12 @@
         dist/yt_dlp_gui.zip
 
 流程:
-1. 下载便携版 node.exe / ffmpeg.exe / ffprobe.exe 到 build_cache/
-2. pyinstaller --onedir 打包 GUI(yt-dlp + yt-dlp-ejs 本地脚本 + PO token 插件)
-3. 复制工具到 dist/yt_dlp_gui/tools/  (运行时 main() 会把 tools/ 加进 PATH)
-4. 压成 zip
+1. 工具优先复用:dist/yt_dlp_gui/tools/ 里已有的 node/ffmpeg 直接复制到 build_cache/,
+   没有才下载(网络慢/受限时不用重下)
+2. 下载便携版 node.exe / ffmpeg.exe / ffprobe.exe 到 build_cache/(若复用成功则跳过)
+3. pyinstaller --onedir 打包 GUI(yt-dlp + yt-dlp-ejs 本地脚本 + PO token 插件 + 内置登录 edge_login)
+4. 复制工具到 dist/yt_dlp_gui/tools/  (运行时 main() 会把 tools/ 加进 PATH)
+5. 压成 zip
 
 说明:
 - 用 onedir 而非 onefile:避免把 ~160MB 工具塞进 exe 导致启动慢
@@ -41,6 +43,8 @@ def main() -> None:
     _ensure_pyinstaller()
     _ensure_requirements()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # 先复用上一次打包产出 dist/tools 里的工具,再删 dist(否则 _download_tools 又要慢速重下)
+    _reuse_tools_from_dist()
     if DIST_DIR.exists():
         shutil.rmtree(DIST_DIR)
 
@@ -89,6 +93,7 @@ _REQUIREMENT_IMPORT_NAMES = {
     "yt-dlp": "yt_dlp",
     "yt-dlp-ejs": "yt_dlp_ejs",
     "bgutil-ytdlp-pot-provider": "yt_dlp_plugins",
+    "websocket-client": "websocket",  # 内置登录(edge_login)依赖
 }
 
 
@@ -146,6 +151,21 @@ def _ensure_requirements() -> None:
         )
 
 
+def _reuse_tools_from_dist() -> None:
+    """复用上一次打包产出 dist/yt_dlp_gui/tools/ 里的工具,避免重复下载。
+
+    网速慢/公司网络受限时,直接把已打包的 node/ffmpeg/ffprobe 复制到
+    build_cache/,_download_tools() 检测到文件已存在会自动跳过下载。
+    """
+    if not TOOLS_DIST.is_dir():
+        return
+    for name in ("node.exe", "ffmpeg.exe", "ffprobe.exe"):
+        src = TOOLS_DIST / name
+        if src.exists() and not (CACHE_DIR / name).exists():
+            print(f"[构建] 复用上次已下载的工具: {name}")
+            shutil.copy2(src, CACHE_DIR / name)
+
+
 def _download_failed_hint(tool_name: str) -> str:
     """工具下载失败时的统一报错提示,引导用户手动放 build_cache/ 绕过。"""
     return (
@@ -163,10 +183,10 @@ def _download_tools() -> None:
         print(f"[构建] 下载 Node.js v{NODE_VERSION} 便携版...")
         zip_path = CACHE_DIR / f"node-v{NODE_VERSION}-win-x64.zip"
         url = f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-win-x64.zip"
-        if not bootstrap._download_with_progress(url, zip_path, print, timeout_seconds=240):
+        if not bootstrap._download_with_progress(url, zip_path, print):
             mirror = f"{bootstrap.NODE_MIRROR}/v{NODE_VERSION}/node-v{NODE_VERSION}-win-x64.zip"
-            print("[构建] 官方源超时/失败,改用 npmmirror...")
-            if not bootstrap._download_with_progress(mirror, zip_path, print, timeout_seconds=240):
+            print("[构建] 官方源失败,改用 npmmirror(断点续传)...")
+            if not bootstrap._download_with_progress(mirror, zip_path, print):
                 raise SystemExit(_download_failed_hint("node.exe"))
         with zipfile.ZipFile(zip_path) as zf:
             member = next(m for m in zf.namelist() if m.endswith("/node.exe"))
@@ -206,6 +226,9 @@ def _run_pyinstaller() -> None:
         "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil",
         "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil_http",
         "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil_script",
+        # 内置登录(Edge+CDP):edge_login 在 GUI 的 worker 线程里 import,
+        # 加 hidden-import 确保被打进包;websocket 是它的纯 Python 依赖,自动收集
+        "--hidden-import", "edge_login",
         "--collect-submodules", "yt_dlp",               # 所有 extractor/downloader/postprocessor
         "--collect-submodules", "yt_dlp_plugins",       # PO token 插件命名空间
         str(BUILD_DIR / "yt_dlp_gui.py"),

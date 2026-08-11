@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -122,10 +123,10 @@ def _ensure_node(progress: Progress) -> bool:
     zip_path = TOOLS_DIR / f"node-v{version}-win-x64.zip"
 
     url = f"https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip"
-    if not _download_with_progress(url, zip_path, progress, timeout_seconds=240):
+    if not _download_with_progress(url, zip_path, progress):
         mirror = f"{NODE_MIRROR}/v{version}/node-v{version}-win-x64.zip"
-        progress("[安装] 官方源超时/失败,改用 npmmirror 镜像...")
-        if not _download_with_progress(mirror, zip_path, progress, timeout_seconds=240):
+        progress("[安装] 官方源失败,改用 npmmirror 镜像(断点续传)...")
+        if not _download_with_progress(mirror, zip_path, progress):
             progress("[错误] Node.js 下载失败,请手动安装 Node.js 22+ 后重试")
             return False
 
@@ -233,6 +234,9 @@ def _download_ffmpeg_zip(dest: Path, progress: Progress) -> bool:
     """多源下载 ffmpeg 压缩包。
 
     顺序:gyan.dev(墙内快,~110MB) → BtbN 直连 → BtbN 走 GitHub 代理镜像。
+
+    新策略:只要源还在稳定传数据就让它下完(卡死检测,非固定超时);
+    同源失败先保留断点重试一次;换源前才删断点(不同源构建内容不同)。
     """
     btb_url = _ffmpeg_download_url()
     candidates: list[tuple[str, str]] = [
@@ -242,11 +246,15 @@ def _download_ffmpeg_zip(dest: Path, progress: Progress) -> bool:
         candidates.append(("BtbN", btb_url))
         for prox in GITHUB_PROXIES:
             candidates.append((prox.split("//")[1].split("/")[0], prox + btb_url))
-    # 每个源最多给 300s,太慢就换下一个,避免卡死整个自动安装
     for name, url in candidates:
         progress(f"[下载] ffmpeg 源: {name}")
-        if _download_with_progress(url, dest, progress, timeout_seconds=300):
+        if _download_with_progress(url, dest, progress):
             return True
+        # 同源重试一次:断点续传,不浪费已下部分(应对临时断网)
+        progress(f"[下载] {name} 中断,保留断点重试一次...")
+        if _download_with_progress(url, dest, progress):
+            return True
+        progress(f"[下载] {name} 连续失败,换下一个源")
         dest.unlink(missing_ok=True)
     return False
 
@@ -255,42 +263,71 @@ def _download_ffmpeg_zip(dest: Path, progress: Progress) -> bool:
 
 def _download_with_progress(
     url: str, dest: Path, progress: Progress, chunk: int = 65536,
-    timeout_seconds: float = 600,
+    stall_seconds: float = 60, timeout_seconds: float = 1800,
 ) -> bool:
     """下载文件到 dest,按块打印百分比进度。
 
-    timeout_seconds:单源超时。墙内大文件可能很慢,超过时限返回 False,
-    让调用方换下一个源,避免卡死整个自动安装。
+    策略(解决"慢速下载被固定超时切源"):
+    - 卡死检测:只要还在收到字节就继续下,连续 stall_seconds 秒无数据才放弃。
+      墙内慢速但稳定的下载不再被 300s/240s 硬切掉。
+    - 断点续传:dest 已有部分内容时发 Range 请求接着下(服务器不支持则整文件重下),
+      中断重试只补剩余部分。
+    - timeout_seconds 只作绝对兜底(默认 30 分钟),防死链永远挂住。
     """
     import time as _time
+
     start = _time.monotonic()
+    headers = {"User-Agent": "yt-dlp-gui-bootstrap"}
+    existing = dest.stat().st_size if dest.exists() else 0
+    if existing:
+        headers["Range"] = f"bytes={existing}-"
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        req = urllib.request.Request(url, headers={"User-Agent": "yt-dlp-gui-bootstrap"})
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
-            total = int(resp.headers.get("Content-Length", 0) or 0)
-            got = 0
-            with open(dest, "wb") as f:
+            if getattr(resp, "status", 200) == 206:
+                # 服务器支持断点:接着现有文件追加
+                remain = int(resp.headers.get("Content-Length", 0) or 0)
+                total = existing + remain
+                got, mode = existing, "ab"
+            else:
+                # 服务器不认 Range:整文件重下
+                total = int(resp.headers.get("Content-Length", 0) or 0)
+                got, mode = 0, "wb"
+            last_byte = _time.monotonic()
+            with open(dest, mode) as f:
                 while True:
                     buf = resp.read(chunk)
                     if not buf:
                         break
                     f.write(buf)
                     got += len(buf)
+                    last_byte = _time.monotonic()
                     if total:
                         progress(f"[下载] {dest.name}  {got / total * 100:.0f}%")
+                    if _time.monotonic() - last_byte > stall_seconds:
+                        progress(
+                            f"[下载] {dest.name} 连续 {int(stall_seconds)}s 无数据,"
+                            "保留断点"
+                        )
+                        return False
                     if _time.monotonic() - start > timeout_seconds:
                         progress(
-                            f"[下载] {dest.name} 超过 {int(timeout_seconds)}s "
-                            "未完成,换下一个源"
+                            f"[下载] {dest.name} 超过 {int(timeout_seconds // 60)} 分钟,"
+                            "保留断点"
                         )
                         return False
             if not total:
                 progress(f"[下载] {dest.name}  {_fmt_size(got)}")
         return True
+    except urllib.error.HTTPError as e:
+        if e.code == 416:  # Range 越界 = 文件其实已完整
+            progress(f"[下载] {dest.name} 已完整,跳过")
+            return True
+        progress(f"[错误] 下载 {url} 失败: {e}")
+        return False
     except Exception as exc:  # noqa: BLE001
         progress(f"[错误] 下载 {url} 失败: {exc}")
-        dest.unlink(missing_ok=True)
         return False
 
 
