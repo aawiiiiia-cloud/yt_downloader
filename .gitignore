@@ -1,6 +1,7 @@
 # 构建产物 / 缓存
 dist/
 build/
+build_cache/
 __pycache__/
 *.pyc
 *.pyo
