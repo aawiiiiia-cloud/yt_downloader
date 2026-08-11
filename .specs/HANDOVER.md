@@ -16,7 +16,7 @@
 | `build.py` | 一键打包脚本(pyinstaller onedir + 工具下载),产出 dist/yt_dlp_gui/ |
 | `requirements.txt` | yt-dlp, yt-dlp-ejs, bgutil-ytdlp-pot-provider |
 | `使用说明.txt` | 给众包同事的说明(build.py 会把它拷进 dist) |
-| `_smoke_test.py` | 开发冒烟测试(设置/代理/码率/cookies 逻辑),非应用部分 |
+| `test_yt_dlp_gui.py` | 回归测试(unittest 零依赖, `python -m unittest test_yt_dlp_gui -v`),覆盖设置/代理/码率/cookies/Firefox 登录检测三态 |
 | `.specs/HANDOVER.md` | 本文档 |
 | `.specs/BUILD_NOTES.md` | 打包与分发笔记 |
 

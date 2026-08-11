@@ -6,5 +6,8 @@ __pycache__/
 *.pyc
 *.pyo
 
+# pyinstaller 自动生成的 spec(build.py 用命令行参数打包,不依赖它)
+yt_dlp_gui.spec
+
 # 本机工具配置(不共享)
 .claude/

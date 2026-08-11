@@ -334,6 +334,21 @@ class DownloaderGUI:
             self._log(f"[Cookies] 一键获取: 选择 {browser}")
             return
 
+        # 库读不了是独立的一类:不能误导成"没登录",要给出真正的原因
+        if getattr(self, "_detect_issue", None) == "unreadable_db":
+            messagebox.showinfo(
+                "未找到可用的 YouTube Cookies",
+                "检测到 Firefox,但读不到它的 Cookies 数据库\n"
+                "(cookies.sqlite 无法打开)。\n\n"
+                "常见原因:\n"
+                "1. Firefox 没完全退出(含后台进程)→ 彻底关闭后重试\n"
+                "2. 终端安全软件(如阿里郎/DLP)拦截了对浏览器凭据文件的读取\n\n"
+                "注意:此时连 yt-dlp 下载也会因读不到 cookies 而失败。\n"
+                "若是安全软件拦截,需联系 IT 放行本程序,\n"
+                "或点\"从文件...\"导入现成的 cookies.txt。",
+            )
+            return
+
         # 没找到可用的 Firefox 登录 → 按本机实际情况给指引
         has_firefox = self._has_browser_profile("firefox")
         has_chromium = self._has_browser_profile("edge") or self._has_browser_profile("chrome")
@@ -368,14 +383,28 @@ class DownloaderGUI:
 
         只有 Firefox 满足:cookies 不加密,可确认 youtube 登录 cookie 真实存在。
         Chrome/Edge 127+ 加密后 cookiesfrombrowser 读不到,不当作"已就绪"。
+
+        未命中时把原因记到 self._detect_issue,供一键获取给出准确引导:
+          None            库可读,只是确实没有登录
+          "unreadable_db" 有 cookies.sqlite 但打不开(被占用/安全软件拦截),
+                          此时不能误报成"没登录"
         """
+        self._detect_issue = None
         home = Path.home()
         ff_profiles = home / "AppData" / "Roaming" / "Mozilla" / "Firefox" / "Profiles"
         if ff_profiles.is_dir():
+            saw_unreadable = False
             for prof in ff_profiles.glob("*.default*"):
                 db = prof / "cookies.sqlite"
-                if db.exists() and self._firefox_has_youtube_login(db):
+                if not db.exists():
+                    continue
+                state = self._firefox_login_state(db)
+                if state == "found":
                     return "firefox"
+                if state == "unreadable":
+                    saw_unreadable = True
+            if saw_unreadable:
+                self._detect_issue = "unreadable_db"
         return None
 
     @staticmethod
@@ -391,25 +420,36 @@ class DownloaderGUI:
         return False
 
     @staticmethod
-    def _firefox_has_youtube_login(db_path: Path) -> bool:
-        """只读方式查 Firefox cookies 库里有没有 youtube 登录标志 cookie。
+    def _firefox_login_state(db_path: Path) -> str:
+        """只读方式查 Firefox cookies 库里的 YouTube 登录状态。
+
+        返回三态,避免把"库读不了"误判成"没登录":
+          "found"      命中登录 cookie
+          "none"       库可读,但没有登录 cookie
+          "unreadable" 库打不开(被 Firefox 占用/安全软件拦截/损坏)
 
         ⚠ Firefox 的 moz_cookies 表用 `host` 列(不是 Chrome 的 `host_key`)。
         """
+        import sqlite3
+
         try:
-            import sqlite3
             con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
-            try:
-                cur = con.execute(
-                    "SELECT COUNT(*) FROM moz_cookies "
-                    "WHERE host LIKE '%youtube.com' "
-                    "AND name IN ('SID', 'LOGIN_INFO', '__Secure-3PAPISID', '__Secure-1PSID')"
-                )
-                return cur.fetchone()[0] > 0
-            finally:
-                con.close()
-        except Exception:  # noqa: BLE001  锁库/损坏 → 视为未检测到
-            return False
+        except Exception:  # noqa: BLE001  打开即失败 → 读不了
+            return "unreadable"
+        try:
+            cur = con.execute(
+                "SELECT COUNT(*) FROM moz_cookies "
+                "WHERE host LIKE '%youtube.com' "
+                "AND name IN ("
+                "'SID','HSID','SSID','APISID','SAPISID',"
+                "'LOGIN_INFO','__Secure-3PAPISID','__Secure-1PSID'"
+                ")"
+            )
+            return "found" if cur.fetchone()[0] > 0 else "none"
+        except Exception:  # noqa: BLE001  查询时才发现读不了(锁/拦截/损坏)
+            return "unreadable"
+        finally:
+            con.close()
 
     def _refresh_cookies_hint(self) -> None:
         if self.cookies_file:
