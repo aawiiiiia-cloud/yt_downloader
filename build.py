@@ -55,6 +55,19 @@ def main() -> None:
     print(f"压缩包: {ZIP_OUT}")
 
 
+def _pip_install(packages: list[str]) -> bool:
+    """pip 安装包,先走默认源,失败则回退阿里云镜像。返回是否成功。
+
+    不静默输出:安装失败时让真实报错可见,便于排查。
+    """
+    base_cmd = [sys.executable, "-m", "pip", "install", *packages]
+    if subprocess.call(base_cmd) == 0:
+        return True
+    print("[构建] 默认 pip 源失败,改用阿里云镜像重试...")
+    mirror_cmd = base_cmd + ["-i", "https://mirrors.aliyun.com/pypi/simple/"]
+    return subprocess.call(mirror_cmd) == 0
+
+
 def _ensure_pyinstaller() -> None:
     try:
         import PyInstaller  # noqa: F401
@@ -62,10 +75,12 @@ def _ensure_pyinstaller() -> None:
     except ImportError:
         pass
     print("[构建] 安装 pyinstaller...")
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "-U", "pyinstaller"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    if not _pip_install(["-U", "pyinstaller"]):
+        raise SystemExit(
+            "[错误] pyinstaller 安装失败。\n"
+            f"请手动执行: {sys.executable} -m pip install -U pyinstaller\n"
+            "若网络受限,可加镜像: -i https://mirrors.aliyun.com/pypi/simple/"
+        )
 
 
 # requirements.txt 里的包名 → 实际 import 用的模块名
@@ -111,9 +126,12 @@ def _ensure_requirements() -> None:
         return
 
     print(f"[构建] 缺少依赖,自动安装: {', '.join(missing)}")
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", *missing],
-    )
+    if not _pip_install(missing):
+        raise SystemExit(
+            f"[错误] 依赖安装失败: {', '.join(missing)}\n"
+            f"请手动执行: {sys.executable} -m pip install {' '.join(missing)}\n"
+            "若网络受限,可加镜像: -i https://mirrors.aliyun.com/pypi/simple/"
+        )
 
     # 安装后复检,仍缺失则报错退出(避免后面 pyinstaller 报一堆难懂的错)
     still_missing = []
