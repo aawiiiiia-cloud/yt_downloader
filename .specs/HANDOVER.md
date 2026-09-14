@@ -4,42 +4,43 @@
 
 ## 一、项目产出
 
-单文件 Python Tkinter GUI,基于 yt-dlp 库下载 YouTube 视频。已在真实 YouTube URL 上跑通。
+Python Tkinter 媒体下载 GUI，基于 yt-dlp 下载视频，并内置小红书图文下载模块。
 **两条交付线**:源码版(公司电脑,自动装环境)+ 打包版(exe,分发给众包同事)。
 
 **文件清单:**
 
 | 文件 | 说明 |
 | --- | --- |
-| `yt_dlp_gui.py` | 主脚本,约 800 行。GUI + 设置持久化 + 双版本检测 |
+| `yt_dlp_gui.py` | 主脚本。GUI + 站点路由 + 设置持久化 + 双版本检测 |
 | `bootstrap.py` | 源码版环境自检 + 自动安装(node/ffmpeg/yt-dlp),GUI 启动前跑 |
+| `edge_login.py` | Edge + CDP 三站点内置登录，临时写入后原子更新凭据 |
+| `xhs_image_downloader.py` | 小红书图文解析、完整性检查和图片原子下载 |
+| `pot_provider.py` | 自动启动/健康检查/关闭本地 PO Token provider |
+| `provider_setup.py` | 固定版本下载并编译官方 provider，供源码版和 build.py 复用 |
 | `build.py` | 一键打包脚本(pyinstaller onedir + 工具下载),产出 dist/yt_dlp_gui/ |
 | `requirements.txt` | yt-dlp, yt-dlp-ejs, bgutil-ytdlp-pot-provider |
 | `使用说明.txt` | 给众包同事的说明(build.py 会把它拷进 dist) |
-| `test_yt_dlp_gui.py` | 回归测试(unittest 零依赖, `python -m unittest test_yt_dlp_gui -v`),覆盖设置/代理/码率/cookies/Firefox 登录检测三态 |
+| `test_yt_dlp_gui.py` / `test_xhs_image_downloader.py` | GUI 与小红书图文回归测试，运行 `python -m unittest discover -v` |
 | `.specs/HANDOVER.md` | 本文档 |
 | `.specs/BUILD_NOTES.md` | 打包与分发笔记 |
 
 ## 二、当前功能
 
-- **URL 输入**:多行文本框,每行一个,支持批量 / 播放列表
+- **URL 输入**:多行文本框,每行一个,支持批量 / 播放列表；小红书可粘贴整段分享文案
 - **保存目录**:文件对话框选择,默认 `~/Downloads`,支持"打开目录"按钮
 - **分辨率**:最佳 / 4K / 1440p / 1080p / 720p / 480p / 360p / 仅音频
 - **输出格式**:视频 mp4/webm/mkv;仅音频自动切换为 mp3/m4a/wav/flac/opus
 - **音频码率**:仅音频模式下可选 128/192/256/320 kbps
-- **Cookies**:★★ 2026 重做 ★★
-  - "一键获取"按钮:**只选 Firefox**(能确认登录态 + 能读取),Chrome/Edge 127+ 的 ABE 读不了,不自动选
-  - 没找到 Firefox 登录时,按本机浏览器情况给针对性引导(装 Firefox / 登录 Firefox / 导入文件)
-  - 浏览器下拉:仅 无/firefox/chrome/edge 四项(edge/chrome 保留为手动尝试项,带橙色 ABE 警告)
-  - "从文件..."按钮:导入 cookies.txt(独立按钮,不再混进下拉)
-  - 下载失败时若报错含 "cookie database",日志追加 ABE 原因 + 解决方案提示
+- **账号登录**:一个入口分别登录 YouTube/Bilibili/小红书；按 URL 自动匹配凭据。新凭据临时写入，成功后原子替换，失败保留旧凭据
+- **小红书图文**:自动识别图文并按顺序保存全部图片；视频帖子自动交还 yt-dlp 流程
 - **代理**:可选输入框,存到 `opts["proxy"]`。不提供科学上网,只转发已有代理
 - **字幕**:可选下载中英双语自动+人工字幕(srt 格式)
 - **进度反馈**:进度条 + 状态栏(文件名/百分比/速度/ETA)+ 深色日志窗口
 - **中断下载**:任意时刻点"停止",通过 progress_hook 抛异常干净退出
 - **环境自检**:启动时探测 yt-dlp / ffmpeg / JS runtime / PO token 插件
 - **设置持久化**:`~/.yt_dlp_gui.json` 保存 save_dir/分辨率/格式/cookies/代理/码率,重启不丢
-- **PO token 插件**:bgutil-ytdlp-pot-provider 自动注册,减轻 bot 检测(缺装只警告不阻断)
+- **PO Token 完整链路**:插件与官方 Node provider 均为 1.3.2；YouTube 任务按需启动随机 localhost 端口，健康检查成功后传给 yt-dlp，任务结束/退出自动关闭
+- **真实格式日志**:`[格式]` 显示实际下载流的 ID、分辨率、帧率、编码
 
 ## 三、已解决的 5 个非显性问题(重要,别踩重复的坑)
 
@@ -161,10 +162,11 @@ python build.py
 
 | 依赖 | 源码版 | 打包版 | 备注 |
 | --- | --- | --- | --- |
-| Python 3.10+ | ✅ 必需(需用户装) | 内嵌 | 代码用 `X \| None` 注解 |
-| yt-dlp | 自动 pip 装 | 打包进 exe | |
+| Python 3.11+ | ✅ 必需(需用户装) | 内嵌 | 跟随 yt-dlp 当前推荐版本 |
+| yt-dlp 2026.08.19 | 自动 pip 装 | 打包进 exe | 该版本实测目标视频可见 2160p |
 | yt-dlp-ejs | 自动 pip 装 | 打包进 exe | ★ 墙内离线关键 |
 | bgutil-ytdlp-pot-provider | 自动 pip 装 | 打包进 exe | PO token 插件 |
+| bgutil Node provider 1.3.2 | 首次自动编译 | tools/bgutil-provider | 与 Python 插件必须同版本 |
 | Node.js 22+ | 自动下载便携版 | tools/node.exe | 公司挡 deno,用 node |
 | ffmpeg | 自动下载便携版 | tools/ffmpeg.exe | 合并高清/转音频必需 |
 | GitHub/PyPI/镜像 可达 | 首次自动装时 | 不需要 | 见 BUILD_NOTES |
@@ -175,7 +177,7 @@ python build.py
 - **YouTube 之外的站点未测试**:yt-dlp 支持 1000+ 站点,理论可用,但 UI 文案都是 YouTube 语境
 - **无下载历史**:退出即丢,记不住上次下过啥
 - **无自定义文件名模板**:硬编码 `%(title)s [%(id)s].%(ext)s`
-- **PO token 插件依赖本地服务**:bgutil 的 http 模式会尝试连 `127.0.0.1:4416`,没有会警告但不阻断(实测不影响下载)
+- **YouTube SABR 持续变化**:provider 解决 token，不等于永远保证所有格式；若官方再次只返回 SABR，仍需跟进 yt-dlp。日志必须以 `[格式]` 实际分辨率为准
 
 ## 八、给下一个 agent 的操作建议
 
@@ -190,20 +192,23 @@ python build.py
 ## 九、附:典型成功日志(基线参考)
 
 ```
-[信息] yt-dlp 版本: 2026.07.04
+[信息] yt-dlp 版本: 2026.08.19
 [信息] PO Token 插件已就位 (bgutil-ytdlp-pot-provider)
+[信息] PO Token 本地生成服务文件已就位（下载 YouTube 时自动启动）
 [信息] ffmpeg 已就位,可正常合并/转码
 [信息] 检测到 Node.js,将用于 YouTube JS challenge 解算
 [开始] 共 1 个任务,输出到 C:/Users/xxx/Desktop/youtube
 [Cookies] 从浏览器读取: firefox
 [JS runtime] 使用: node
 [远程组件] 启用: ['ejs:github'] (本地 yt-dlp-ejs 脚本优先,此仅兜底)
+[PO Token] 本地生成服务已启动 v1.3.2 (http://127.0.0.1:随机端口)
 [youtube] Extracting URL: https://www.youtube.com/watch?v=...
 [youtube] Downloading webpage
 [youtube] Downloading player ...
 [js:node] Solving JS challenges using node
 [debug] [youtube] [jsc:node] Using challenge solver lib script v0.8.0 (source: python package)
 [info] Downloading 1 format(s): ...
+[格式] id=313 · 3840x2160 · 24fps · 编码 vp9
 [download]  47.3% at 2.5MB/s ETA 01:22
 [完成] xxx.mp4
 [成功] 所有任务已完成
