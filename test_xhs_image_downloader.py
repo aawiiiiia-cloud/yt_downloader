@@ -15,6 +15,7 @@ from xhs_image_downloader import (
     XhsImageDownloader,
     XhsPost,
     XhsVideoPost,
+    _convert_image,
     _image_candidates,
     _image_extension,
     _safe_name,
@@ -54,9 +55,12 @@ def _state() -> dict:
 
 
 class _Response(io.BytesIO):
-    def __init__(self, data: bytes, content_length: int | None = None) -> None:
+    def __init__(
+        self, data: bytes, content_length: int | None = None,
+        content_type: str = "image/jpeg",
+    ) -> None:
         super().__init__(data)
-        self.headers = {"Content-Type": "image/jpeg"}
+        self.headers = {"Content-Type": content_type}
         if content_length is not None:
             self.headers["Content-Length"] = str(content_length)
 
@@ -181,6 +185,51 @@ class TestXhsDownload(unittest.TestCase):
                 self.folder,
             )
         self.assertFalse((self.folder / ".01.part").exists())
+
+    def test_download_can_convert_jpeg_to_png_atomically(self) -> None:
+        from PIL import Image
+
+        source = io.BytesIO()
+        Image.new("RGB", (12, 8), "red").save(source, format="JPEG")
+        data = source.getvalue()
+        logs: list[str] = []
+        downloader = XhsImageDownloader(
+            progress=logs.append, image_format="png", image_quality=90,
+        )
+        target = downloader._download_one(
+            _Ydl(lambda: _Response(data, len(data), "image/jpeg")),
+            self.post, self.post.images[0], self.folder,
+        )
+        self.assertEqual(target.name, "01.png")
+        with Image.open(target) as converted:
+            self.assertEqual(converted.format, "PNG")
+            self.assertEqual(converted.size, (12, 8))
+        self.assertFalse((self.folder / ".01.png.convert.part").exists())
+        self.assertTrue(any("已转换为 PNG" in line for line in logs))
+
+    def test_matching_target_format_preserves_original_bytes(self) -> None:
+        data = b"original-webp-bytes"
+        downloader = XhsImageDownloader(
+            progress=lambda _msg: None, image_format="webp", image_quality=75,
+        )
+        target = downloader._download_one(
+            _Ydl(lambda: _Response(data, len(data), "image/webp")),
+            self.post, self.post.images[0], self.folder,
+        )
+        self.assertEqual(target.name, "01.webp")
+        self.assertEqual(target.read_bytes(), data)
+
+    def test_jpeg_conversion_flattens_transparency_to_white(self) -> None:
+        from PIL import Image
+
+        source = self.folder / "source.png"
+        target = self.folder / "target.jpg"
+        Image.new("RGBA", (8, 8), (0, 0, 0, 0)).save(source, format="PNG")
+        _convert_image(source, target, "jpg", 95)
+        with Image.open(target) as converted:
+            self.assertEqual(converted.format, "JPEG")
+            red, green, blue = converted.convert("RGB").getpixel((0, 0))
+        self.assertGreater(min(red, green, blue), 245)
 
     def test_failed_original_url_falls_back_to_display_url(self) -> None:
         attempts = 0

@@ -29,6 +29,12 @@ except ImportError as exc:  # pragma: no cover - CLI 环境提示
 Progress = Callable[[str], None]
 XHS_COOKIE_FILE = Path.home() / ".yt_dlp_gui_xiaohongshu_cookies.txt"
 XHS_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com", "xhslink.com", "www.xhslink.com"}
+IMAGE_OUTPUT_FORMATS = {
+    "original": ("", ""),
+    "jpg": (".jpg", "JPEG"),
+    "png": (".png", "PNG"),
+    "webp": (".webp", "WEBP"),
+}
 
 # 小红书网页展示图通常来自 sns-webpic-*，其中可能已经叠加平台水印。
 # 原始素材使用同一个资源 ID，但应优先从 sns-na-i* / sns-img-* 取回。
@@ -257,6 +263,106 @@ def _image_extension(content_type: str, url: str) -> str:
     return suffix if suffix in set(by_mime.values()) else ".jpg"
 
 
+def _same_image_format(source_extension: str, target_format: str) -> bool:
+    source = source_extension.lower()
+    return (
+        (target_format == "jpg" and source in {".jpg", ".jpeg"})
+        or source == f".{target_format}"
+    )
+
+
+def _detected_image_extension(path: Path, fallback: str, strict: bool = False) -> str:
+    """依据文件头确认真实编码；CDN 的 Content-Type/URL 可能没有扩展信息。"""
+    from PIL import Image
+
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+    except ImportError:
+        pass
+    formats = {
+        "JPEG": ".jpg",
+        "PNG": ".png",
+        "WEBP": ".webp",
+        "HEIF": ".heic",
+        "HEIC": ".heic",
+        "AVIF": ".avif",
+        "GIF": ".gif",
+        "TIFF": ".tiff",
+        "BMP": ".bmp",
+    }
+    try:
+        with Image.open(path) as image:
+            return formats.get(str(image.format or "").upper(), fallback)
+    except Exception as exc:
+        if strict:
+            raise XhsDownloadError("服务器返回内容无法识别为有效图片") from exc
+        return fallback
+
+
+def _convert_image(source: Path, target: Path, output_format: str, quality: int) -> None:
+    """解码下载结果并原子写出目标格式；失败时不留下半成品。"""
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+    except ImportError:
+        # 普通 JPEG/PNG/WebP 不依赖 pillow-heif；HEIC 打开失败时给专门提示。
+        pass
+
+    extension, pillow_format = IMAGE_OUTPUT_FORMATS[output_format]
+    if not extension or not pillow_format:
+        raise ValueError("保留原格式不应进入图片转换流程")
+    temporary = target.with_name(f".{target.name}.convert.part")
+    temporary.unlink(missing_ok=True)
+    try:
+        try:
+            opened = Image.open(source)
+        except UnidentifiedImageError as exc:
+            raise XhsDownloadError(
+                "无法解码原图；如果原图是 HEIC/HEIF，请确认 pillow-heif 已安装"
+            ) from exc
+        with opened:
+            opened.load()
+            image = ImageOps.exif_transpose(opened)
+            icc_profile = opened.info.get("icc_profile")
+            save_options: dict[str, Any] = {}
+            if icc_profile:
+                save_options["icc_profile"] = icc_profile
+            quality = max(1, min(95, int(quality)))
+            if pillow_format == "JPEG":
+                if image.mode in {"RGBA", "LA"} or (
+                    image.mode == "P" and "transparency" in image.info
+                ):
+                    rgba = image.convert("RGBA")
+                    background = Image.new("RGB", rgba.size, "white")
+                    background.paste(rgba, mask=rgba.getchannel("A"))
+                    image = background
+                elif image.mode not in {"RGB", "L", "CMYK"}:
+                    image = image.convert("RGB")
+                save_options.update(
+                    quality=quality, optimize=True, progressive=True,
+                    subsampling=0 if quality >= 90 else 2,
+                )
+            elif pillow_format == "PNG":
+                save_options.update(optimize=True, compress_level=6)
+            elif pillow_format == "WEBP":
+                save_options.update(quality=quality, method=6)
+            with temporary.open("wb") as output:
+                image.save(output, format=pillow_format, **save_options)
+                output.flush()
+                os.fsync(output.fileno())
+        # 写完后重新解码一次，拒绝发布损坏的转换结果。
+        with Image.open(temporary) as verified:
+            verified.load()
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 class XhsImageDownloader:
     def __init__(
         self,
@@ -265,12 +371,19 @@ class XhsImageDownloader:
         progress: Progress = print,
         cancel_event: threading.Event | None = None,
         item_progress: Callable[[int, int, str], None] | None = None,
+        image_format: str = "original",
+        image_quality: int = 95,
     ) -> None:
         self.cookie_file = cookie_file
         self.proxy = proxy.strip()
         self.progress = progress
         self.cancel_event = cancel_event
         self.item_progress = item_progress
+        normalized_format = image_format.strip().lower()
+        if normalized_format not in IMAGE_OUTPUT_FORMATS:
+            raise ValueError(f"不支持的图片输出格式: {image_format}")
+        self.image_format = normalized_format
+        self.image_quality = max(1, min(95, int(image_quality)))
 
     def _check_cancelled(self) -> None:
         if self.cancel_event is not None and self.cancel_event.is_set():
@@ -362,10 +475,13 @@ class XhsImageDownloader:
                     request = Request(image_url, headers={"Referer": post.source_url})
                     with ydl.urlopen(request) as response:
                         content_type = str(response.headers.get("Content-Type") or "")
-                        if content_type and not content_type.lower().startswith("image/"):
+                        mime = content_type.split(";", 1)[0].strip().lower()
+                        generic_binary = mime in {
+                            "application/octet-stream", "binary/octet-stream",
+                        }
+                        if content_type and not mime.startswith("image/") and not generic_binary:
                             raise XhsDownloadError(f"服务器返回的不是图片：{content_type}")
                         extension = _image_extension(content_type, image_url)
-                        target = folder / f"{image.index:02d}{extension}"
                         expected = _as_positive_int(response.headers.get("Content-Length"))
                         received = 0
                         with open(temp_path, "wb") as handle:
@@ -384,7 +500,26 @@ class XhsImageDownloader:
                             )
                         if received <= 0:
                             raise XhsDownloadError(f"图片 {image.index} 内容为空")
-                        os.replace(temp_path, target)
+                        extension = _detected_image_extension(
+                            temp_path, extension, strict=generic_binary,
+                        )
+                        target_extension = (
+                            extension
+                            if self.image_format == "original"
+                            else IMAGE_OUTPUT_FORMATS[self.image_format][0]
+                        )
+                        target = folder / f"{image.index:02d}{target_extension}"
+                        converted = False
+                        if self.image_format == "original" or _same_image_format(
+                            extension, self.image_format
+                        ):
+                            os.replace(temp_path, target)
+                        else:
+                            _convert_image(
+                                temp_path, target, self.image_format, self.image_quality,
+                            )
+                            temp_path.unlink(missing_ok=True)
+                            converted = True
                         source_label = (
                             "原始素材 CDN"
                             if image.fallback_urls and candidate_index < len(candidates) - 1
@@ -392,7 +527,9 @@ class XhsImageDownloader:
                         )
                         self.progress(
                             f"[图片] {image.index}/{len(post.images)} 已保存"
-                            f"（{source_label}）：{target.name}"
+                            f"（{source_label}"
+                            f"{'，已转换为 ' + self.image_format.upper() if converted else '，保留原始编码'}"
+                            f"）：{target.name}"
                         )
                         if self.item_progress:
                             self.item_progress(image.index, len(post.images), target.name)
@@ -432,6 +569,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proxy", default="")
     parser.add_argument("--login", action="store_true", help="先打开 Edge 登录并保存凭据")
     parser.add_argument("--inspect-only", action="store_true", help="只解析，不下载图片")
+    parser.add_argument(
+        "--image-format", choices=tuple(IMAGE_OUTPUT_FORMATS), default="original",
+        help="图片输出格式（默认保留原始格式）",
+    )
+    parser.add_argument("--image-quality", type=int, default=95, help="JPG/WebP 画质 1-95")
     return parser
 
 
@@ -450,6 +592,8 @@ def main() -> int:
     downloader = XhsImageDownloader(
         cookie_file=args.cookies if args.cookies.is_file() else None,
         proxy=args.proxy,
+        image_format=args.image_format,
+        image_quality=args.image_quality,
     )
     if args.inspect_only:
         post = downloader.inspect(args.url)

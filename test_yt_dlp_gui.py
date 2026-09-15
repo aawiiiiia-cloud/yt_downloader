@@ -398,6 +398,8 @@ class TestSettings(unittest.TestCase):
         settings.set("bilibili_cookies_file", "C:/fake/bilibili.txt")
         settings.set("xiaohongshu_cookies_file", "C:/fake/xiaohongshu.txt")
         settings.set("proxy", "http://127.0.0.1:7890")
+        settings.set("image_format", "webp")
+        settings.set("image_quality", 90)
 
         reloaded = Settings(path=self.path)
         self.assertEqual(reloaded.get("save_dir"), "C:/Users/测试/Downloads")
@@ -407,6 +409,8 @@ class TestSettings(unittest.TestCase):
             reloaded.get("xiaohongshu_cookies_file"), "C:/fake/xiaohongshu.txt"
         )
         self.assertEqual(reloaded.get("proxy"), "http://127.0.0.1:7890")
+        self.assertEqual(reloaded.get("image_format"), "webp")
+        self.assertEqual(reloaded.get("image_quality"), 90)
 
     def test_legacy_cookie_file_migrates_to_youtube(self) -> None:
         self.path.write_text('{"cookies_file":"C:/legacy.txt"}', encoding="utf-8")
@@ -497,6 +501,26 @@ class TestBuildYdlOpts(unittest.TestCase):
         opts = self.app._build_ydl_opts(self.save_dir)
         self.assertEqual(opts["proxy"], "socks5://127.0.0.1:1080")
         self.assertEqual(opts["postprocessors"][0]["preferredquality"], "320")
+
+    def test_image_format_controls_quality_state_and_persists(self) -> None:
+        self.app.image_format_var.set("统一为 PNG（无损）")
+        self.app._on_image_format_change()
+        self.assertTrue(self.app.image_quality_cb.instate(["disabled"]))
+        self.assertEqual(self.app.settings.get("image_format"), "png")
+        self.app.image_format_var.set("统一为 WebP")
+        self.app._on_image_format_change()
+        self.assertFalse(self.app.image_quality_cb.instate(["disabled"]))
+
+    def test_media_batch_is_embedded_as_second_tab(self) -> None:
+        tabs = self.app.main_notebook.tabs()
+        self.assertEqual(len(tabs), 2)
+        self.assertEqual(self.app.main_notebook.tab(tabs[0], "text").strip(), "下载")
+        self.assertEqual(
+            self.app.main_notebook.tab(tabs[1], "text").strip(), "媒体批处理"
+        )
+        self.assertIs(self.app._media_batch_window.window, self.app.media_batch_tab)
+        self.app._open_media_batch()
+        self.assertEqual(self.app.main_notebook.select(), str(self.app.media_batch_tab))
 
     def test_incomplete_hls_fragments_abort_instead_of_being_skipped(self) -> None:
         self.app.resolution_var.set("1080p")

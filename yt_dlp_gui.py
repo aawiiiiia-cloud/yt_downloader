@@ -63,6 +63,18 @@ RESOLUTION_OPTIONS: dict[str, int | str | None] = {
 VIDEO_FORMATS = ["mp4", "webm", "mkv"]
 AUDIO_FORMATS = ["mp3", "m4a", "wav", "flac", "opus"]
 AUDIO_BITRATES = ["128", "192", "256", "320"]
+IMAGE_FORMAT_OPTIONS = {
+    "保留原格式（推荐）": "original",
+    "统一为 JPG": "jpg",
+    "统一为 PNG（无损）": "png",
+    "统一为 WebP": "webp",
+}
+IMAGE_QUALITY_OPTIONS = {
+    "最高（95）": 95,
+    "高（90）": 90,
+    "标准（85）": 85,
+    "节省空间（75）": 75,
+}
 
 LOGIN_SITES: dict[str, dict[str, str | bool]] = {
     "youtube": {
@@ -109,6 +121,8 @@ class Settings:
         "xiaohongshu_login_at": None,
         "proxy": "",
         "audio_bitrate": "192",
+        "image_format": "original",
+        "image_quality": 95,
     }
 
     def __init__(self, path: Path | None = None) -> None:
@@ -160,8 +174,8 @@ class DownloaderGUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("媒体下载器")
-        self.root.geometry("880x760")
-        self.root.minsize(780, 680)
+        self.root.geometry("1120x820")
+        self.root.minsize(930, 700)
 
         self._msg_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._cancel_flag = threading.Event()
@@ -234,6 +248,19 @@ class DownloaderGUI:
 
         font = ("Microsoft YaHei UI", 10)
         self.root.option_add("*Font", font)
+        style.configure(
+            "TNotebook", background=self._colors["window"], borderwidth=0,
+            tabmargins=(18, 10, 0, 0),
+        )
+        style.configure(
+            "TNotebook.Tab", background="#E8EDF5", foreground=self._colors["muted"],
+            padding=(22, 10), font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", self._colors["card"]), ("active", "#EFF6FF")],
+            foreground=[("selected", self._colors["accent"]), ("active", self._colors["text"])],
+        )
         style.configure("TFrame", background=self._colors["window"])
         style.configure("Card.TFrame", background=self._colors["card"])
         style.configure(
@@ -308,7 +335,14 @@ class DownloaderGUI:
         )
 
     def _build_ui(self) -> None:
-        root_frm = ttk.Frame(self.root, padding=(22, 18, 22, 20))
+        self.main_notebook = ttk.Notebook(self.root)
+        self.main_notebook.pack(fill=tk.BOTH, expand=True)
+        self.download_tab = ttk.Frame(self.main_notebook)
+        self.media_batch_tab = ttk.Frame(self.main_notebook)
+        self.main_notebook.add(self.download_tab, text="  下载  ")
+        self.main_notebook.add(self.media_batch_tab, text="  媒体批处理  ")
+
+        root_frm = ttk.Frame(self.download_tab, padding=(22, 18, 22, 20))
         root_frm.pack(fill=tk.BOTH, expand=True)
 
         # 顶部标题
@@ -359,7 +393,7 @@ class DownloaderGUI:
             row=0, column=0, columnspan=6, sticky="w", pady=(0, 11),
         )
 
-        ttk.Label(settings_card, text="画质", style="Card.TLabel").grid(row=1, column=0, sticky="w")
+        ttk.Label(settings_card, text="视频画质", style="Card.TLabel").grid(row=1, column=0, sticky="w")
         self.resolution_var = tk.StringVar(value=self.settings.get("resolution", "1080p"))
         self.resolution_cb = ttk.Combobox(
             settings_card, textvariable=self.resolution_var,
@@ -368,7 +402,7 @@ class DownloaderGUI:
         self.resolution_cb.grid(row=2, column=0, sticky="ew", padx=(0, 12), pady=(5, 0))
         self.resolution_cb.bind("<<ComboboxSelected>>", self._on_resolution_change)
 
-        ttk.Label(settings_card, text="格式", style="Card.TLabel").grid(row=1, column=1, sticky="w")
+        ttk.Label(settings_card, text="视频/音频格式", style="Card.TLabel").grid(row=1, column=1, sticky="w")
         self.format_var = tk.StringVar(value=self.settings.get("format", "mp4"))
         self.format_cb = ttk.Combobox(
             settings_card, textvariable=self.format_var, values=VIDEO_FORMATS,
@@ -396,9 +430,52 @@ class DownloaderGUI:
             foreground=self._colors["text"],
         )
 
+        ttk.Separator(settings_card).grid(
+            row=3, column=0, columnspan=4, sticky="ew", pady=(13, 10)
+        )
+        ttk.Label(settings_card, text="图片格式（图文链接）", style="Card.TLabel").grid(
+            row=4, column=0, sticky="w"
+        )
+        saved_image_format = str(self.settings.get("image_format", "original"))
+        image_format_label = next(
+            (label for label, value in IMAGE_FORMAT_OPTIONS.items() if value == saved_image_format),
+            "保留原格式（推荐）",
+        )
+        self.image_format_var = tk.StringVar(value=image_format_label)
+        self.image_format_cb = ttk.Combobox(
+            settings_card, textvariable=self.image_format_var,
+            values=tuple(IMAGE_FORMAT_OPTIONS), state="readonly", width=18,
+        )
+        self.image_format_cb.grid(row=5, column=0, sticky="ew", padx=(0, 12), pady=(5, 0))
+        self.image_format_cb.bind("<<ComboboxSelected>>", self._on_image_format_change)
+
+        ttk.Label(settings_card, text="JPG / WebP 画质", style="Card.TLabel").grid(
+            row=4, column=1, sticky="w"
+        )
+        try:
+            saved_quality = int(self.settings.get("image_quality", 95) or 95)
+        except (TypeError, ValueError):
+            saved_quality = 95
+        image_quality_label = next(
+            (label for label, value in IMAGE_QUALITY_OPTIONS.items() if value == saved_quality),
+            "最高（95）",
+        )
+        self.image_quality_var = tk.StringVar(value=image_quality_label)
+        self.image_quality_cb = ttk.Combobox(
+            settings_card, textvariable=self.image_quality_var,
+            values=tuple(IMAGE_QUALITY_OPTIONS), state="readonly", width=14,
+        )
+        self.image_quality_cb.grid(row=5, column=1, sticky="ew", padx=(0, 12), pady=(5, 0))
+        self.image_quality_cb.bind("<<ComboboxSelected>>", self._on_image_quality_change)
+        self.image_format_hint_var = tk.StringVar()
+        ttk.Label(
+            settings_card, textvariable=self.image_format_hint_var,
+            style="Muted.Card.TLabel", wraplength=330,
+        ).grid(row=5, column=2, columnspan=2, sticky="w", pady=(5, 0))
+
         # 登录凭据由内置登录统一管理；按 URL 自动使用对应站点 cookie。
         account_row = ttk.Frame(settings_card, style="Card.TFrame")
-        account_row.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        account_row.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(14, 0))
         ttk.Button(
             account_row, text="账号登录", command=self._open_login_manager,
             style="Account.TButton",
@@ -410,7 +487,7 @@ class DownloaderGUI:
 
         # 代理(可选,不提供科学上网,只是把已有代理地址传给 yt-dlp)
         proxy_row = ttk.Frame(settings_card, style="Card.TFrame")
-        proxy_row.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(12, 0))
+        proxy_row.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(12, 0))
         ttk.Label(proxy_row, text="代理（可选）", style="Card.TLabel").pack(side=tk.LEFT)
         self.proxy_var = tk.StringVar(value=self.settings.get("proxy", ""))
         ttk.Entry(proxy_row, textvariable=self.proxy_var, width=31).pack(
@@ -441,13 +518,6 @@ class DownloaderGUI:
         ttk.Button(btn_frm, text="打开下载目录", command=self._open_save_dir).pack(
             side=tk.LEFT, padx=(8, 0),
         )
-        self.media_batch_btn = ttk.Button(
-            btn_frm, text="媒体批处理", command=self._open_media_batch
-        )
-        self.media_batch_btn.pack(
-            side=tk.LEFT, padx=(8, 0),
-        )
-
         self.progress = ttk.Progressbar(
             action_card, mode="determinate", maximum=100,
             style="Blue.Horizontal.TProgressbar",
@@ -482,9 +552,20 @@ class DownloaderGUI:
         root_frm.columnconfigure(0, weight=1)
         root_frm.rowconfigure(4, weight=1)
 
+        # 批处理与下载器共享主窗口，通过页签切换；任务仍彼此互斥。
+        from media_batch_ui import MediaBatchWindow
+
+        self._media_batch_window = MediaBatchWindow(
+            self.media_batch_tab,
+            self.save_dir_var.get().strip(),
+            busy_check=lambda: self._worker is not None and self._worker.is_alive(),
+            embedded=True,
+        )
+
     def _restore_ui_from_settings(self) -> None:
         """把设置文件里的值刷到控件。"""
         self._on_resolution_change()  # 若上次是音频模式,格式下拉切到音频格式
+        self._on_image_format_change()
         self._refresh_cookies_hint()
 
     def _on_close(self) -> None:
@@ -502,6 +583,16 @@ class DownloaderGUI:
             self.settings.set("proxy", self.proxy_var.get().strip())
         if hasattr(self, "audio_bitrate_var"):
             self.settings.set("audio_bitrate", self.audio_bitrate_var.get())
+        if hasattr(self, "image_format_var"):
+            self.settings.set(
+                "image_format",
+                IMAGE_FORMAT_OPTIONS.get(self.image_format_var.get(), "original"),
+            )
+        if hasattr(self, "image_quality_var"):
+            self.settings.set(
+                "image_quality",
+                IMAGE_QUALITY_OPTIONS.get(self.image_quality_var.get(), 95),
+            )
         self._cancel_flag.set()
         self._login_cancel.set()
         if self._pot_provider is not None:
@@ -555,6 +646,30 @@ class DownloaderGUI:
         self.settings.set("resolution", self.resolution_var.get())
         self.settings.set("format", self.format_var.get())
         self.settings.set("audio_bitrate", self.audio_bitrate_var.get())
+
+    def _on_image_format_change(self, _event: object | None = None) -> None:
+        image_format = IMAGE_FORMAT_OPTIONS.get(self.image_format_var.get(), "original")
+        if image_format == "original":
+            self.image_quality_cb.configure(state=tk.DISABLED)
+            hint = "保持源站原始编码和画质，不进行二次压缩"
+        elif image_format == "png":
+            self.image_quality_cb.configure(state=tk.DISABLED)
+            hint = "PNG 无损，但照片文件通常会明显变大"
+        elif image_format == "jpg":
+            self.image_quality_cb.configure(state="readonly")
+            hint = "兼容性最好；透明区域会使用白色背景"
+        else:
+            self.image_quality_cb.configure(state="readonly")
+            hint = "体积通常较小，并支持透明背景"
+        self.image_format_hint_var.set(hint)
+        self.settings.set("image_format", image_format)
+        self._on_image_quality_change()
+
+    def _on_image_quality_change(self, _event: object | None = None) -> None:
+        self.settings.set(
+            "image_quality",
+            IMAGE_QUALITY_OPTIONS.get(self.image_quality_var.get(), 95),
+        )
 
     def _refresh_cookies_hint(self) -> None:
         states = []
@@ -1053,24 +1168,8 @@ class DownloaderGUI:
             messagebox.showwarning("无法打开", str(exc))
 
     def _open_media_batch(self) -> None:
-        """只保留一个批处理窗口，并与下载任务互斥修改文件。"""
-        try:
-            from media_batch_ui import MediaBatchWindow
-
-            current = self._media_batch_window
-            if current is not None and current.window.winfo_exists():
-                current.window.deiconify()
-                current.window.lift()
-                current.window.focus_force()
-                return
-            self._media_batch_window = MediaBatchWindow(
-                self.root,
-                self.save_dir_var.get().strip(),
-                busy_check=lambda: self._worker is not None and self._worker.is_alive(),
-                on_closed=self._on_media_batch_closed,
-            )
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("无法打开媒体批处理", str(exc), parent=self.root)
+        """切换到主窗口中的媒体批处理页签。"""
+        self.main_notebook.select(self.media_batch_tab)
 
     def _on_media_batch_closed(self) -> None:
         self._media_batch_window = None
@@ -1173,6 +1272,13 @@ class DownloaderGUI:
         self.status_var.set("准备下载...")
 
         opts = self._build_ydl_opts(save_dir)
+        # Tk 变量只能在主线程读取；工作线程使用这里冻结下来的普通值。
+        self._download_image_format = IMAGE_FORMAT_OPTIONS.get(
+            self.image_format_var.get(), "original"
+        )
+        self._download_image_quality = IMAGE_QUALITY_OPTIONS.get(
+            self.image_quality_var.get(), 95
+        )
 
         self._log(f"[开始] 共 {len(urls)} 个任务,输出到 {save_dir}")
         self._log("[Cookies] 将按网址自动选择 YouTube / Bilibili / 小红书登录状态")
@@ -1414,6 +1520,24 @@ class DownloaderGUI:
                             progress=lambda msg: self._emit("log", msg),
                             cancel_event=self._cancel_flag,
                             item_progress=image_progress,
+                            image_format=getattr(
+                                self, "_download_image_format", "original"
+                            ),
+                            image_quality=getattr(
+                                self, "_download_image_quality", 95
+                            ),
+                        )
+                        format_name = getattr(self, "_download_image_format", "original")
+                        quality = getattr(self, "_download_image_quality", 95)
+                        self._emit(
+                            "log",
+                            "[图片设置] "
+                            + (
+                                "保留原格式和原始编码"
+                                if format_name == "original"
+                                else f"统一转换为 {format_name.upper()}"
+                                + (f"，画质 {quality}" if format_name in {"jpg", "webp"} else "（无损）")
+                            ),
                         )
                         downloader.download(url, save_dir)
                         continue
@@ -1627,11 +1751,15 @@ def _self_test() -> int:
         import yt_dlp_plugins.extractor.getpot_bgutil_http  # noqa: F401
         import yt_dlp_plugins.extractor.getpot_bgutil_script  # noqa: F401
         import PIL  # noqa: F401
+        import pillow_heif  # noqa: F401
         import dhash  # noqa: F401
         import media_batch  # noqa: F401
         import media_batch_ui  # noqa: F401
         from io import BytesIO
         from PIL import Image
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
 
         image = Image.new("RGB", (8, 8), "white")
         buffer = BytesIO()

@@ -19,7 +19,7 @@ Python Tkinter 媒体下载 GUI，基于 yt-dlp 下载视频，并内置小红�
 | `pot_provider.py` | 自动启动/健康检查/关闭本地 PO Token provider |
 | `provider_setup.py` | 固定版本下载并编译官方 provider，供源码版和 build.py 复用 |
 | `build.py` | 一键打包脚本(pyinstaller onedir + 工具下载),产出 dist/yt_dlp_gui/ |
-| `requirements.txt` | yt-dlp, yt-dlp-ejs, PO Token provider, websocket-client, Pillow, dhash |
+| `requirements.txt` | yt-dlp, yt-dlp-ejs, PO Token provider, websocket-client, Pillow, pillow-heif, dhash |
 | `使用说明.txt` | 给众包同事的说明(build.py 会把它拷进 dist) |
 | `test_yt_dlp_gui.py` / `test_xhs_image_downloader.py` / `test_media_batch.py` | GUI、图文和批处理回归测试，运行 `python -m unittest discover -v` |
 | `.specs/HANDOVER.md` | 本文档 |
@@ -43,8 +43,9 @@ Python Tkinter 媒体下载 GUI，基于 yt-dlp 下载视频，并内置小红�
 - **环境自检**:启动时探测 yt-dlp / ffmpeg / JS runtime / PO token 插件
 - **设置持久化**:`~/.yt_dlp_gui.json` 保存 save_dir/分辨率/格式/cookies/代理/码率,重启不丢
 - **PO Token 完整链路**:插件与官方 Node provider 均为 1.3.2；YouTube 任务按需启动随机 localhost 端口，健康检查成功后传给 yt-dlp，任务结束/退出自动关闭
+- **小红书图片输出**:默认保留 CDN 原始编码；可统一转 JPG/PNG/WebP，HEIC/HEIF 通过 pillow-heif 解码。转换采用临时写入、重新解码验证、原子替换
 - **真实格式日志**:`[格式]` 显示实际下载流的 ID、分辨率、帧率、编码
-- **媒体批处理**:图片/视频分辨率筛选、视频低码率筛选、SHA-256+dHash 图片查重、视频固定黑边建议；疑似文件安全移动到指定目录
+- **媒体批处理**:作为主窗口第二个页签；支持图片/视频分辨率筛选、视频低码率筛选、SHA-256+dHash 图片查重、视频固定黑边建议；疑似文件安全移动到指定目录
 - **图片批处理**:模板批量重命名及常用比例居中裁剪副本；当前不自动按 cropdetect 结果裁剪视频
 
 ## 三、已解决的 5 个非显性问题(重要,别踩重复的坑)

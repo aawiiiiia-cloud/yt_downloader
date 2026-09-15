@@ -42,5 +42,10 @@
    上游: https://github.com/benhoyt/dhash
    许可证: MIT License
 
+9. pillow-heif 1.7.0
+   上游: https://github.com/bigcat88/pillow_heif
+   许可证: BSD 3-Clause License
+   用途: HEIC/HEIF 图片解码，并通过 Pillow 转换为 JPG/PNG/WebP。
+
 完整许可证文本及依赖内自带声明保留在各组件目录中。若将本工具向组织外
 分发，请让本单位合规人员根据实际分发方式复核源码提供与许可证义务。

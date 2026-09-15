@@ -14,6 +14,7 @@
   - **Node.js 22.14.0**:固定版本并核对官方 SHA-256,墙内可由 npmmirror 传输,装到 `~/.yt_dlp_tools/node/`
   - **ffmpeg**:从 BtbN 发布资产下载,可走 GitHub 代理,但必须与 GitHub 官方接口返回的 SHA-256 一致
 - **PO Token provider**:官方 1.3.2 源码固定到提交号,首次用 npm 锁定依赖编译；之后复用本机成品
+- **HEIC/HEIF**:`pillow-heif` 含 libheif 原生库，PyInstaller 必须使用 `--collect-all pillow_heif`，冻结自检会注册 opener
 - npm 首次编译优先 `registry.npmmirror.com`，复用 `provider_cache/npm-cache`；
   连续 180 秒无输出或超过 20 分钟会中止当前源并切换 `registry.npmjs.org`。
 - 全程无需管理员权限,工具装到用户目录,只对当前进程 PATH 生效。

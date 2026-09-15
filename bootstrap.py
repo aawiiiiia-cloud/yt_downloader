@@ -55,6 +55,7 @@ PYTHON_REQUIREMENTS = {
     "bgutil-ytdlp-pot-provider": "1.3.2",
     "websocket-client": "1.9.2",
     "Pillow": "11.3.0",
+    "pillow-heif": "1.7.0",
     "dhash": "1.4",
 }
 
@@ -149,6 +150,7 @@ def _ensure_ytdlp(progress: Progress) -> bool:
         import yt_dlp_ejs  # noqa: F401
         import yt_dlp_plugins.extractor.getpot_bgutil  # noqa: F401
         import PIL  # noqa: F401
+        import pillow_heif  # noqa: F401
         import dhash  # noqa: F401
     except ImportError as exc:
         progress(f"[错误] Python 依赖安装后仍无法导入: {exc}")

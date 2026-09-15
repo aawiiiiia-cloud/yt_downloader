@@ -154,6 +154,7 @@ _REQUIREMENT_IMPORT_NAMES = {
     "bgutil-ytdlp-pot-provider": "yt_dlp_plugins",
     "websocket-client": "websocket",  # 内置登录(edge_login)依赖
     "Pillow": "PIL",
+    "pillow-heif": "pillow_heif",
     "dhash": "dhash",
 }
 
@@ -345,6 +346,8 @@ def _run_pyinstaller() -> None:
         "--hidden-import", "media_batch_ui",
         "--hidden-import", "dhash",
         "--collect-submodules", "PIL",
+        # HEIC/HEIF 解码包含 libheif 原生 DLL，collect-all 才能完整带入 onedir。
+        "--collect-all", "pillow_heif",
         "--collect-submodules", "yt_dlp",               # 所有 extractor/downloader/postprocessor
         "--collect-submodules", "yt_dlp_plugins",       # PO token 插件命名空间
         str(BUILD_DIR / "yt_dlp_gui.py"),
@@ -478,7 +481,7 @@ def _validate_stage() -> None:
     if completed.returncode != 0:
         raise RuntimeError(
             f"冻结 EXE 自检失败(returncode={completed.returncode})，"
-            "可能缺少 yt-dlp-ejs/PO Token/websocket/Pillow/dhash 或便携工具"
+            "可能缺少 yt-dlp-ejs/PO Token/websocket/Pillow/pillow-heif/dhash 或便携工具"
         )
     print("[构建] 暂存产物验证通过")
 

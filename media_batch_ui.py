@@ -143,14 +143,19 @@ class MediaBatchWindow:
         initial_dir: str = "",
         busy_check: Callable[[], bool] | None = None,
         on_closed: Callable[[], None] | None = None,
+        embedded: bool = False,
     ) -> None:
         self.parent = parent
-        self.window = tk.Toplevel(parent)
-        self.window.title("媒体批处理")
-        self.window.geometry("1120x760")
-        self.window.minsize(930, 650)
-        self.window.transient(parent)
-        self.window.protocol("WM_DELETE_WINDOW", self._close)
+        self._embedded = embedded
+        if embedded:
+            self.window = parent
+        else:
+            self.window = tk.Toplevel(parent)
+            self.window.title("媒体批处理")
+            self.window.geometry("1120x760")
+            self.window.minsize(930, 650)
+            self.window.transient(parent)
+            self.window.protocol("WM_DELETE_WINDOW", self._close)
         self.window.bind("<Destroy>", self._on_destroy, add="+")
 
         self._queue: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -819,14 +824,14 @@ class MediaBatchWindow:
         return self._worker is not None and self._worker.is_alive()
 
     def request_close(self) -> None:
-        """先取消并等待后台任务退出，再销毁窗口。"""
+        """先取消并等待后台任务退出；独立窗口随后销毁。"""
         self._close_requested = True
         self._cancel.set()
         if self.is_busy():
             self.status_var.set("正在取消并清理后台工具，请勿强制关闭...")
             self.window.after(100, self.request_close)
             return
-        if self.window.winfo_exists():
+        if not self._embedded and self.window.winfo_exists():
             self.window.destroy()
 
     def _close(self) -> None:
@@ -835,6 +840,10 @@ class MediaBatchWindow:
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self.window:
             self._cancel.set()
-            if not self._closed_notified and self._on_closed_callback is not None:
+            if (
+                not self._embedded
+                and not self._closed_notified
+                and self._on_closed_callback is not None
+            ):
                 self._closed_notified = True
                 self._on_closed_callback()
