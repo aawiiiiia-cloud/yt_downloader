@@ -13,8 +13,12 @@
   - **yt-dlp + yt-dlp-ejs + PO token 插件**:pip 安装,失败回退清华镜像
   - **Node.js 22.14.0**:固定版本并核对官方 SHA-256,墙内可由 npmmirror 传输,装到 `~/.yt_dlp_tools/node/`
   - **ffmpeg**:从 BtbN 发布资产下载,可走 GitHub 代理,但必须与 GitHub 官方接口返回的 SHA-256 一致
-  - **PO Token provider**:官方 1.3.2 源码固定到提交号,首次用 npm 锁定依赖编译；之后复用本机成品
+- **PO Token provider**:官方 1.3.2 源码固定到提交号,首次用 npm 锁定依赖编译；之后复用本机成品
+- npm 首次编译优先 `registry.npmmirror.com`，复用 `provider_cache/npm-cache`；
+  连续 180 秒无输出或超过 20 分钟会中止当前源并切换 `registry.npmjs.org`。
 - 全程无需管理员权限,工具装到用户目录,只对当前进程 PATH 生效。
+- 源码版会先复用项目 `build_cache/`，其次复用旧 `dist/yt_dlp_gui/tools/`；
+  只有两处都没有可用的 ffmpeg/ffprobe 或 Node 时才下载。
 - 公司电脑拦截 `deno.exe` 不影响:Node 优先,且不再依赖 Deno。
 
 ## 三、打包版构建
@@ -48,6 +52,9 @@ pyinstaller --onedir --windowed --name yt_dlp_gui \
   --hidden-import yt_dlp_plugins.extractor.getpot_bgutil \  # PO token 插件
   --hidden-import edge_login \
   --hidden-import xhs_image_downloader \       # 小红书图文按需导入
+  --hidden-import media_batch \
+  --hidden-import media_batch_ui \
+  --collect-submodules PIL \
   --collect-submodules yt_dlp \               # 所有 extractor
   --collect-submodules yt_dlp_plugins \
   --noupx yt_dlp_gui.py
@@ -71,10 +78,13 @@ pyinstaller --onedir --windowed --name yt_dlp_gui \
 - [ ] 打包版断网验证: 下载时日志出现 `Solved n-challenge`,无 GitHub 请求
 - [ ] YouTube/Bilibili/小红书内置登录、临时写入和原子替换都正常
 - [ ] 小红书图文分享文案可识别，图片齐全且不残留 `.part` 文件
+- [ ] 小红书日志优先显示“原始素材 CDN”；强制模拟全部原始 CDN 失败时能回退到“网页展示图兜底（可能带水印）”
 - [ ] YouTube 下载出现 `[PO Token] 本地生成服务已启动`，结束后 node provider 进程已清理
 - [ ] 4K 样例日志出现 `[格式] ... 3840x2160`，而非只看“最佳”下拉框
 - [ ] 代理填写后下载生效;音频模式码率选项生效
 - [ ] 设置重启后仍在(`~/.yt_dlp_gui.json`)
+- [ ] 【媒体批处理】可扫描图片/视频，Pillow/dhash 在打包版中可导入
+- [ ] 疑似文件移动不覆盖同名文件；取消后无残留 `.part` 文件
 
 ## 七、安全提示
 

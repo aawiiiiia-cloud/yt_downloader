@@ -15,6 +15,7 @@ from xhs_image_downloader import (
     XhsImageDownloader,
     XhsPost,
     XhsVideoPost,
+    _image_candidates,
     _image_extension,
     _safe_name,
     extract_xhs_url,
@@ -108,6 +109,30 @@ class TestXhsParsing(unittest.TestCase):
         self.assertEqual(_safe_name('a<b>:c/"d"', "fallback"), "a_b__c__d_")
         self.assertEqual(_image_extension("image/webp", "https://img/noext"), ".webp")
 
+    def test_webpic_resource_id_builds_original_cdn_urls_first(self) -> None:
+        display = (
+            "https://sns-webpic-qc.xhscdn.com/202609142100/"
+            "0123456789abcdef/1040g0123456789abcdef!watermark"
+        )
+        urls = _image_candidates({}, display)
+        self.assertEqual(
+            urls[0],
+            "https://sns-na-i11.xhscdn.com/1040g0123456789abcdef",
+        )
+        self.assertEqual(urls[-1], display)
+        self.assertFalse(any("sns-webpic" in url for url in urls[:-1]))
+
+    def test_file_id_preserves_original_resource_prefix(self) -> None:
+        display = (
+            "https://sns-webpic-qc.xhscdn.com/202609142100/"
+            "0123456789abcdef/display!watermark"
+        )
+        urls = _image_candidates({"fileId": "spectrum/1040g0123456789abcdef"}, display)
+        self.assertEqual(
+            urls[0],
+            "https://sns-na-i11.xhscdn.com/spectrum/1040g0123456789abcdef",
+        )
+
     def test_xhs_login_requires_real_session_cookie(self) -> None:
         self.assertIn("xiaohongshu", SITE_CONFIGS)
         anonymous = [{"domain": ".xiaohongshu.com", "name": "a1", "value": "x"}]
@@ -133,7 +158,8 @@ class TestXhsDownload(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_atomic_image_download_and_length_check(self) -> None:
-        downloader = XhsImageDownloader(progress=lambda _msg: None)
+        logs: list[str] = []
+        downloader = XhsImageDownloader(progress=logs.append)
         target = downloader._download_one(
             _Ydl(lambda: _Response(b"image-data", len(b"image-data"))),
             self.post,
@@ -143,10 +169,11 @@ class TestXhsDownload(unittest.TestCase):
         self.assertEqual(target.name, "01.jpg")
         self.assertEqual(target.read_bytes(), b"image-data")
         self.assertFalse((self.folder / ".01.part").exists())
+        self.assertTrue(any("网页展示图兜底" in line for line in logs))
 
     def test_truncated_image_is_rejected_and_temp_removed(self) -> None:
         downloader = XhsImageDownloader(progress=lambda _msg: None)
-        with self.assertRaisesRegex(XhsDownloadError, "连续下载失败"):
+        with self.assertRaisesRegex(XhsDownloadError, "原图和展示图地址均下载失败"):
             downloader._download_one(
                 _Ydl(lambda: _Response(b"short", 999)),
                 self.post,
@@ -154,6 +181,25 @@ class TestXhsDownload(unittest.TestCase):
                 self.folder,
             )
         self.assertFalse((self.folder / ".01.part").exists())
+
+    def test_failed_original_url_falls_back_to_display_url(self) -> None:
+        attempts = 0
+        logs: list[str] = []
+
+        def response():
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 2:
+                raise OSError("original unavailable")
+            return _Response(b"fallback-image", len(b"fallback-image"))
+
+        image = XhsImage(
+            1, "https://ci.xiaohongshu.com/token", ("https://img.example/display",),
+        )
+        downloader = XhsImageDownloader(progress=logs.append)
+        target = downloader._download_one(_Ydl(response), self.post, image, self.folder)
+        self.assertEqual(target.read_bytes(), b"fallback-image")
+        self.assertTrue(any("回退" in line for line in logs))
 
     def test_cancel_does_not_leave_partial_file(self) -> None:
         cancel = threading.Event()

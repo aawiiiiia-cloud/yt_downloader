@@ -30,6 +30,26 @@ Progress = Callable[[str], None]
 XHS_COOKIE_FILE = Path.home() / ".yt_dlp_gui_xiaohongshu_cookies.txt"
 XHS_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com", "xhslink.com", "www.xhslink.com"}
 
+# 小红书网页展示图通常来自 sns-webpic-*，其中可能已经叠加平台水印。
+# 原始素材使用同一个资源 ID，但应优先从 sns-na-i* / sns-img-* 取回。
+# 顺序参考当前 RedNote Downloader 扩展的公开发行包；不要把 sns-webpic-*
+# 放进这个列表，否则一次成功响应就可能让真正的原始素材源永远没有机会尝试。
+XHS_ORIGINAL_IMAGE_ORIGINS = (
+    "https://sns-na-i11.xhscdn.com",
+    "https://sns-na-i10.xhscdn.com",
+    "https://sns-na-i9.xhscdn.com",
+    "https://sns-na-i8.xhscdn.com",
+    "https://sns-na-i6.xhscdn.com",
+    "https://sns-na-i4.xhscdn.com",
+    "https://sns-na-i2.xhscdn.com",
+    "https://sns-na-i1.xhscdn.com",
+    "https://sns-img-qc.xhscdn.com",
+    "https://sns-img-ak.xhscdn.com",
+    "https://sns-img-bd.xhscdn.com",
+    "https://sns-img-hw.xhscdn.com",
+    "https://sns-img-qn.xhscdn.com",
+)
+
 
 class XhsDownloadError(RuntimeError):
     """给 GUI/CLI 展示的可读错误。"""
@@ -47,6 +67,7 @@ class XhsVideoPost(XhsDownloadError):
 class XhsImage:
     index: int
     url: str
+    fallback_urls: tuple[str, ...] = ()
     width: int | None = None
     height: int | None = None
 
@@ -105,6 +126,48 @@ def _pick_note(note_map: dict[str, Any], note_id: str) -> dict[str, Any]:
     return note
 
 
+def _image_resource_id(raw: dict[str, Any], url: str) -> str | None:
+    """提取原始素材资源 ID，并保留 ``fileId`` 可能携带的目录前缀。
+
+    新版页面常把 ``traceId`` 留空；只取 URL 最后一段虽然有时可用，却会在
+    ``fileId`` 为 ``spectrum/...`` 等形式时丢失定位原图所需的前缀。
+    """
+    file_id = raw.get("fileId") or raw.get("file_id")
+    if isinstance(file_id, str) and file_id.strip():
+        resource_id = file_id.strip().lstrip("/").split("!", 1)[0]
+    else:
+        # 与当前可用扩展的行为一致：展示图路径通常是
+        # /时间戳/签名/资源ID!变换规则，前两段不是资源 ID 的组成部分。
+        parts = urlparse(url).path.split("/")
+        resource_id = "/".join(parts[3:]).split("!", 1)[0].lstrip("/")
+        if not resource_id:
+            resource_id = Path(urlparse(url).path).name.split("!", 1)[0]
+
+    # 资源 ID 可包含安全目录前缀，但绝不能允许跳目录、查询串或新 URL。
+    if (
+        not resource_id
+        or ".." in resource_id.split("/")
+        or "\\" in resource_id
+        or any(char in resource_id for char in "?#:")
+        or not re.fullmatch(r"[A-Za-z0-9_./-]+", resource_id)
+    ):
+        return None
+    return resource_id
+
+
+def _image_candidates(raw: dict[str, Any], display_url: str) -> tuple[str, ...]:
+    """原始素材 CDN 优先，可能带水印的网页展示图最后兜底。"""
+    candidates: list[str] = []
+    if resource_id := _image_resource_id(raw, display_url):
+        candidates.extend(
+            f"{origin}/{resource_id}" for origin in XHS_ORIGINAL_IMAGE_ORIGINS
+        )
+    # sns-webpic-* 即使去掉 ! 变换规则也可能仍是带水印素材，不能在原始
+    # 素材源前抢先成功；它只作为所有原始 CDN 均失效时的最后兼容兜底。
+    candidates.append(display_url)
+    return tuple(dict.fromkeys(candidates))
+
+
 def post_from_initial_state(
     initial_state: dict[str, Any], note_id: str, source_url: str,
 ) -> XhsPost:
@@ -130,12 +193,15 @@ def post_from_initial_state(
         url = raw.get("urlDefault") or raw.get("urlPre")
         if not isinstance(url, str) or not url.startswith(("http://", "https://")):
             continue
-        if url in seen:
+        candidates = _image_candidates(raw, url)
+        primary = candidates[0]
+        if primary in seen:
             continue
-        seen.add(url)
+        seen.add(primary)
         images.append(XhsImage(
             index=len(images) + 1,
-            url=url,
+            url=primary,
+            fallback_urls=candidates[1:],
             width=_as_positive_int(raw.get("width")),
             height=_as_positive_int(raw.get("height")),
         ))
@@ -283,49 +349,65 @@ class XhsImageDownloader:
     ) -> Path:
         last_error: Exception | None = None
         temp_path = folder / f".{image.index:02d}.part"
-        for attempt in range(1, 4):
-            self._check_cancelled()
-            try:
-                request = Request(image.url, headers={"Referer": post.source_url})
-                with ydl.urlopen(request) as response:
-                    content_type = str(response.headers.get("Content-Type") or "")
-                    if content_type and not content_type.lower().startswith("image/"):
-                        raise XhsDownloadError(f"服务器返回的不是图片：{content_type}")
-                    extension = _image_extension(content_type, image.url)
-                    target = folder / f"{image.index:02d}{extension}"
-                    expected = _as_positive_int(response.headers.get("Content-Length"))
-                    received = 0
-                    with open(temp_path, "wb") as handle:
-                        while True:
-                            self._check_cancelled()
-                            block = response.read(256 * 1024)
-                            if not block:
-                                break
-                            handle.write(block)
-                            received += len(block)
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    if expected is not None and received != expected:
-                        raise XhsDownloadError(
-                            f"图片 {image.index} 下载不完整：应为 {expected} 字节，实际 {received} 字节"
+        candidates = (image.url, *image.fallback_urls)
+        for candidate_index, image_url in enumerate(candidates):
+            if candidate_index:
+                self.progress(
+                    f"[回退] 图片 {image.index} 原图地址不可用，尝试备用地址 "
+                    f"{candidate_index}/{len(candidates) - 1}"
+                )
+            for attempt in range(1, 3):
+                self._check_cancelled()
+                try:
+                    request = Request(image_url, headers={"Referer": post.source_url})
+                    with ydl.urlopen(request) as response:
+                        content_type = str(response.headers.get("Content-Type") or "")
+                        if content_type and not content_type.lower().startswith("image/"):
+                            raise XhsDownloadError(f"服务器返回的不是图片：{content_type}")
+                        extension = _image_extension(content_type, image_url)
+                        target = folder / f"{image.index:02d}{extension}"
+                        expected = _as_positive_int(response.headers.get("Content-Length"))
+                        received = 0
+                        with open(temp_path, "wb") as handle:
+                            while True:
+                                self._check_cancelled()
+                                block = response.read(256 * 1024)
+                                if not block:
+                                    break
+                                handle.write(block)
+                                received += len(block)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        if expected is not None and received != expected:
+                            raise XhsDownloadError(
+                                f"图片 {image.index} 下载不完整：应为 {expected} 字节，实际 {received} 字节"
+                            )
+                        if received <= 0:
+                            raise XhsDownloadError(f"图片 {image.index} 内容为空")
+                        os.replace(temp_path, target)
+                        source_label = (
+                            "原始素材 CDN"
+                            if image.fallback_urls and candidate_index < len(candidates) - 1
+                            else "网页展示图兜底（可能带水印）"
                         )
-                    if received <= 0:
-                        raise XhsDownloadError(f"图片 {image.index} 内容为空")
-                    os.replace(temp_path, target)
-                    self.progress(
-                        f"[图片] {image.index}/{len(post.images)} 已保存：{target.name}"
-                    )
-                    if self.item_progress:
-                        self.item_progress(image.index, len(post.images), target.name)
-                    return target
-            except XhsCancelled:
-                temp_path.unlink(missing_ok=True)
-                raise
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-                temp_path.unlink(missing_ok=True)
-                self.progress(f"[重试] 图片 {image.index} 第 {attempt}/3 次失败：{exc}")
-        raise XhsDownloadError(f"图片 {image.index} 连续下载失败：{last_error}")
+                        self.progress(
+                            f"[图片] {image.index}/{len(post.images)} 已保存"
+                            f"（{source_label}）：{target.name}"
+                        )
+                        if self.item_progress:
+                            self.item_progress(image.index, len(post.images), target.name)
+                        return target
+                except XhsCancelled:
+                    temp_path.unlink(missing_ok=True)
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+                    temp_path.unlink(missing_ok=True)
+                    if attempt < 2:
+                        self.progress(f"[重试] 图片 {image.index} 当前地址下载失败：{exc}")
+        raise XhsDownloadError(
+            f"图片 {image.index} 的原图和展示图地址均下载失败：{last_error}"
+        )
 
     @staticmethod
     def _write_summary(post: XhsPost, folder: Path) -> None:

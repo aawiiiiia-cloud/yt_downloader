@@ -153,6 +153,8 @@ _REQUIREMENT_IMPORT_NAMES = {
     "yt-dlp-ejs": "yt_dlp_ejs",
     "bgutil-ytdlp-pot-provider": "yt_dlp_plugins",
     "websocket-client": "websocket",  # 内置登录(edge_login)依赖
+    "Pillow": "PIL",
+    "dhash": "dhash",
 }
 
 
@@ -338,6 +340,11 @@ def _run_pyinstaller() -> None:
         "--hidden-import", "pot_provider",
         # 小红书图文下载器由 URL 路由按需导入。
         "--hidden-import", "xhs_image_downloader",
+        # 图片/视频批处理窗口及按需导入的图片库。
+        "--hidden-import", "media_batch",
+        "--hidden-import", "media_batch_ui",
+        "--hidden-import", "dhash",
+        "--collect-submodules", "PIL",
         "--collect-submodules", "yt_dlp",               # 所有 extractor/downloader/postprocessor
         "--collect-submodules", "yt_dlp_plugins",       # PO token 插件命名空间
         str(BUILD_DIR / "yt_dlp_gui.py"),
@@ -471,7 +478,7 @@ def _validate_stage() -> None:
     if completed.returncode != 0:
         raise RuntimeError(
             f"冻结 EXE 自检失败(returncode={completed.returncode})，"
-            "可能缺少 yt-dlp-ejs/PO Token/websocket 或便携工具"
+            "可能缺少 yt-dlp-ejs/PO Token/websocket/Pillow/dhash 或便携工具"
         )
     print("[构建] 暂存产物验证通过")
 

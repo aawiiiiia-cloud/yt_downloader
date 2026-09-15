@@ -183,6 +183,7 @@ class DownloaderGUI:
         self._login_buttons: dict[str, ttk.Button] = {}
         self._reported_formats: set[tuple[str, str]] = set()
         self._last_ydl_error: str | None = None
+        self._media_batch_window: Any | None = None
         try:
             from pot_provider import PotProviderManager
 
@@ -440,6 +441,12 @@ class DownloaderGUI:
         ttk.Button(btn_frm, text="打开下载目录", command=self._open_save_dir).pack(
             side=tk.LEFT, padx=(8, 0),
         )
+        self.media_batch_btn = ttk.Button(
+            btn_frm, text="媒体批处理", command=self._open_media_batch
+        )
+        self.media_batch_btn.pack(
+            side=tk.LEFT, padx=(8, 0),
+        )
 
         self.progress = ttk.Progressbar(
             action_card, mode="determinate", maximum=100,
@@ -503,6 +510,8 @@ class DownloaderGUI:
         self.stop_btn.configure(state=tk.DISABLED)
         self.status_var.set("正在关闭并清理后台任务...")
         self._close_login_manager()
+        if self._media_batch_window is not None:
+            self._media_batch_window.request_close()
         self._finish_close(time.monotonic() + 8)
 
     def _finish_close(self, deadline: float) -> None:
@@ -510,6 +519,8 @@ class DownloaderGUI:
             thread is not None and thread.is_alive()
             for thread in (self._worker, self._login_worker)
         )
+        if self._media_batch_window is not None:
+            active = active or self._media_batch_window.is_busy()
         if active:
             if time.monotonic() >= deadline:
                 if (
@@ -1041,6 +1052,29 @@ class DownloaderGUI:
         except Exception as exc:  # noqa: BLE001
             messagebox.showwarning("无法打开", str(exc))
 
+    def _open_media_batch(self) -> None:
+        """只保留一个批处理窗口，并与下载任务互斥修改文件。"""
+        try:
+            from media_batch_ui import MediaBatchWindow
+
+            current = self._media_batch_window
+            if current is not None and current.window.winfo_exists():
+                current.window.deiconify()
+                current.window.lift()
+                current.window.focus_force()
+                return
+            self._media_batch_window = MediaBatchWindow(
+                self.root,
+                self.save_dir_var.get().strip(),
+                busy_check=lambda: self._worker is not None and self._worker.is_alive(),
+                on_closed=self._on_media_batch_closed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("无法打开媒体批处理", str(exc), parent=self.root)
+
+    def _on_media_batch_closed(self) -> None:
+        self._media_batch_window = None
+
     def _clear_log(self) -> None:
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete("1.0", tk.END)
@@ -1108,6 +1142,11 @@ class DownloaderGUI:
     def _start_download(self) -> None:
         if yt_dlp is None:
             messagebox.showerror("缺少依赖", "未检测到 yt-dlp,请先执行: pip install -U yt-dlp")
+            return
+        if self._media_batch_window is not None and self._media_batch_window.is_busy():
+            messagebox.showwarning(
+                "批处理正在运行", "请先取消或等待媒体批处理完成，再开始下载。"
+            )
             return
 
         urls = self._extract_task_urls(self.url_text.get("1.0", tk.END))
@@ -1544,17 +1583,10 @@ def _prepend_tools_to_path(tools_dir: Path) -> bool:
 
 
 def _setup_env() -> None:
-    """优先复用项目/打包目录的便携工具，再安装确实缺失的环境。"""
+    """打包版使用同目录 tools；源码版由 bootstrap 统一查找和补全。"""
     if _is_bundled():
         _prepend_tools_to_path(Path(sys.executable).parent / "tools")
         return
-
-    # 本项目刚打包过时，dist 中通常已有完整的 Node/ffmpeg。源码版先复用它们，
-    # bootstrap 随后的 shutil.which() 就不会重复走慢速下载。
-    source_dir = Path(__file__).resolve().parent
-    dist_tools = source_dir / "dist" / "yt_dlp_gui" / "tools"
-    if _prepend_tools_to_path(dist_tools):
-        print(f"[信息] 源码版复用便携工具: {dist_tools}")
 
     try:
         from bootstrap import bootstrap
@@ -1594,6 +1626,20 @@ def _self_test() -> int:
         import yt_dlp_plugins.extractor.getpot_bgutil  # noqa: F401
         import yt_dlp_plugins.extractor.getpot_bgutil_http  # noqa: F401
         import yt_dlp_plugins.extractor.getpot_bgutil_script  # noqa: F401
+        import PIL  # noqa: F401
+        import dhash  # noqa: F401
+        import media_batch  # noqa: F401
+        import media_batch_ui  # noqa: F401
+        from io import BytesIO
+        from PIL import Image
+
+        image = Image.new("RGB", (8, 8), "white")
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+        with Image.open(buffer) as decoded:
+            decoded.load()
+            dhash.dhash_int(decoded)
     except Exception:
         return 2
     if yt_dlp is None:

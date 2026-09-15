@@ -77,6 +77,22 @@ class TestPortableToolsPath(unittest.TestCase):
             self.assertFalse(_prepend_tools_to_path(Path(tmp) / "missing"))
             self.assertEqual(os.environ["PATH"], before)
 
+    def test_bootstrap_reuses_build_cache_ffmpeg_before_downloading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"PATH": "C:\\Windows"}
+        ):
+            project = Path(tmp)
+            cache = project / "build_cache"
+            cache.mkdir()
+            (cache / "ffmpeg.exe").write_bytes(b"test")
+            (cache / "ffprobe.exe").write_bytes(b"test")
+            messages = []
+            with mock.patch.object(bootstrap, "PROJECT_DIR", project):
+                reused = bootstrap._reuse_project_tools(messages.append)
+            self.assertEqual(reused, [cache])
+            self.assertEqual(os.environ["PATH"].split(os.pathsep)[0], str(cache.resolve()))
+            self.assertIn("ffmpeg/ffprobe", messages[0])
+
 
 class TestPotProvider(unittest.TestCase):
     def test_apply_to_opts_preserves_existing_extractor_args(self) -> None:
@@ -179,6 +195,25 @@ class TestPotProvider(unittest.TestCase):
             self.assertEqual(npm, runtime / "npm.cmd")
             self.assertEqual((runtime / "node.exe").read_bytes(), b"node")
             self.assertTrue((runtime / "node_modules/npm/bin/npm-cli.js").is_file())
+
+    def test_npm_uses_mirror_first_and_falls_back_to_official(self) -> None:
+        calls: list[str] = []
+
+        def attempt(_npm, _args, _cwd, registry, _cache, _progress):
+            calls.append(registry)
+            return (len(calls) == 2, "mirror failed" if len(calls) == 1 else "")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "provider_setup._run_npm_attempt", side_effect=attempt,
+        ):
+            provider_setup._run_npm(
+                Path("npm.cmd"), ["ci"], Path(tmp), lambda _m: None,
+                Path(tmp) / "npm-cache",
+            )
+        self.assertEqual(
+            calls,
+            ["https://registry.npmmirror.com", "https://registry.npmjs.org"],
+        )
 
 
 class _FakeDownloadResponse:

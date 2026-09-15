@@ -15,12 +15,13 @@ Python Tkinter 媒体下载 GUI，基于 yt-dlp 下载视频，并内置小红�
 | `bootstrap.py` | 源码版环境自检 + 自动安装(node/ffmpeg/yt-dlp),GUI 启动前跑 |
 | `edge_login.py` | Edge + CDP 三站点内置登录，临时写入后原子更新凭据 |
 | `xhs_image_downloader.py` | 小红书图文解析、完整性检查和图片原子下载 |
+| `media_batch.py` / `media_batch_ui.py` | 图片/视频检测、查重、安全移动、图片重命名/裁剪及独立窗口 |
 | `pot_provider.py` | 自动启动/健康检查/关闭本地 PO Token provider |
 | `provider_setup.py` | 固定版本下载并编译官方 provider，供源码版和 build.py 复用 |
 | `build.py` | 一键打包脚本(pyinstaller onedir + 工具下载),产出 dist/yt_dlp_gui/ |
-| `requirements.txt` | yt-dlp, yt-dlp-ejs, bgutil-ytdlp-pot-provider |
+| `requirements.txt` | yt-dlp, yt-dlp-ejs, PO Token provider, websocket-client, Pillow, dhash |
 | `使用说明.txt` | 给众包同事的说明(build.py 会把它拷进 dist) |
-| `test_yt_dlp_gui.py` / `test_xhs_image_downloader.py` | GUI 与小红书图文回归测试，运行 `python -m unittest discover -v` |
+| `test_yt_dlp_gui.py` / `test_xhs_image_downloader.py` / `test_media_batch.py` | GUI、图文和批处理回归测试，运行 `python -m unittest discover -v` |
 | `.specs/HANDOVER.md` | 本文档 |
 | `.specs/BUILD_NOTES.md` | 打包与分发笔记 |
 
@@ -32,7 +33,8 @@ Python Tkinter 媒体下载 GUI，基于 yt-dlp 下载视频，并内置小红�
 - **输出格式**:视频 mp4/webm/mkv;仅音频自动切换为 mp3/m4a/wav/flac/opus
 - **音频码率**:仅音频模式下可选 128/192/256/320 kbps
 - **账号登录**:一个入口分别登录 YouTube/Bilibili/小红书；按 URL 自动匹配凭据。新凭据临时写入，成功后原子替换，失败保留旧凭据
-- **小红书图文**:自动识别图文并按顺序保存全部图片；视频帖子自动交还 yt-dlp 流程
+- **小红书图文**:优先使用完整 `fileId`/网页资源 ID 从 `sns-na-i*`、`sns-img-*` 原始素材 CDN 下载；`sns-webpic-*` 仅作可能带水印的最终兜底，视频帖子自动交还 yt-dlp 流程
+- **provider 首次安装**:已加入 npm 持久缓存、npmmirror 优先、官方源回退和无输出停滞检测；打包版/旧 dist 成品仍优先复用
 - **代理**:可选输入框,存到 `opts["proxy"]`。不提供科学上网,只转发已有代理
 - **字幕**:可选下载中英双语自动+人工字幕(srt 格式)
 - **进度反馈**:进度条 + 状态栏(文件名/百分比/速度/ETA)+ 深色日志窗口
@@ -41,6 +43,8 @@ Python Tkinter 媒体下载 GUI，基于 yt-dlp 下载视频，并内置小红�
 - **设置持久化**:`~/.yt_dlp_gui.json` 保存 save_dir/分辨率/格式/cookies/代理/码率,重启不丢
 - **PO Token 完整链路**:插件与官方 Node provider 均为 1.3.2；YouTube 任务按需启动随机 localhost 端口，健康检查成功后传给 yt-dlp，任务结束/退出自动关闭
 - **真实格式日志**:`[格式]` 显示实际下载流的 ID、分辨率、帧率、编码
+- **媒体批处理**:图片/视频分辨率筛选、视频低码率筛选、SHA-256+dHash 图片查重、视频固定黑边建议；疑似文件安全移动到指定目录
+- **图片批处理**:模板批量重命名及常用比例居中裁剪副本；当前不自动按 cropdetect 结果裁剪视频
 
 ## 三、已解决的 5 个非显性问题(重要,别踩重复的坑)
 

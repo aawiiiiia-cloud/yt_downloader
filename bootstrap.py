@@ -31,6 +31,7 @@ from typing import Callable
 TOOLS_DIR = Path.home() / ".yt_dlp_tools"
 NODE_DIR = TOOLS_DIR / "node"
 FFMPEG_DIR = TOOLS_DIR / "ffmpeg"
+PROJECT_DIR = Path(__file__).resolve().parent
 
 # nodejs.org API 不可达时的兜底版本(22 LTS)
 NODE_FALLBACK = "22.14.0"
@@ -53,12 +54,15 @@ PYTHON_REQUIREMENTS = {
     "yt-dlp-ejs": "0.8.0",
     "bgutil-ytdlp-pot-provider": "1.3.2",
     "websocket-client": "1.9.2",
+    "Pillow": "11.3.0",
+    "dhash": "1.4",
 }
 
 
 def bootstrap(progress: Progress = print) -> dict[str, bool]:
     """检测并自动安装缺失环境及 PO Token 生成服务。"""
     progress("== 环境自检与自动安装 ==")
+    _reuse_project_tools(progress)
     result = {
         "ytdlp": _ensure_ytdlp(progress),
         "node": _ensure_node(progress),
@@ -67,6 +71,32 @@ def bootstrap(progress: Progress = print) -> dict[str, bool]:
     result["pot_provider"] = _ensure_pot_provider(progress)
     progress("== 环境检查结束 ==")
     return result
+
+
+def _reuse_project_tools(progress: Progress) -> list[Path]:
+    """源码版优先复用 build_cache/ 和旧 dist/ 中已有的便携工具。"""
+    candidates = (
+        PROJECT_DIR / "dist" / "yt_dlp_gui" / "tools",
+        PROJECT_DIR / "build_cache",
+    )
+    reused: list[Path] = []
+    # _add_to_path 会前插；先处理低优先级 dist，让 build_cache 最终排在最前。
+    for candidate in candidates:
+        has_node = (candidate / "node.exe").is_file()
+        has_ffmpeg_pair = all(
+            (candidate / name).is_file() for name in ("ffmpeg.exe", "ffprobe.exe")
+        )
+        if not (has_node or has_ffmpeg_pair):
+            continue
+        _add_to_path(candidate)
+        reused.append(candidate)
+        labels = []
+        if has_node:
+            labels.append("Node.js")
+        if has_ffmpeg_pair:
+            labels.append("ffmpeg/ffprobe")
+        progress(f"[信息] 复用项目便携工具 ({', '.join(labels)}): {candidate}")
+    return reused
 
 
 def _ensure_pot_provider(progress: Progress) -> bool:
@@ -117,6 +147,8 @@ def _ensure_ytdlp(progress: Progress) -> bool:
         import websocket  # noqa: F401
         import yt_dlp_ejs  # noqa: F401
         import yt_dlp_plugins.extractor.getpot_bgutil  # noqa: F401
+        import PIL  # noqa: F401
+        import dhash  # noqa: F401
     except ImportError as exc:
         progress(f"[错误] Python 依赖安装后仍无法导入: {exc}")
         return False

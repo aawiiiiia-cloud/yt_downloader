@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import shutil
 import subprocess
+import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -27,6 +30,12 @@ SOURCE_URL = (
 )
 SOURCE_ARCHIVE_SHA256 = "2187d07011d927e1f03d328180927d5d8f82ab92448654410af699f044f35bd9"
 SOURCE_ARCHIVE_MARKER = ".source-archive-sha256"
+NPM_REGISTRIES = (
+    ("npmmirror", "https://registry.npmmirror.com"),
+    ("npm 官方源", "https://registry.npmjs.org"),
+)
+NPM_STALL_SECONDS = 180
+NPM_ABSOLUTE_TIMEOUT = 20 * 60
 
 
 def _sha256(path: Path) -> str:
@@ -160,10 +169,110 @@ def _node_build_runtime(cache: Path, progress: Progress) -> Path:
     raise RuntimeError("无法取得配对且版本合格的 provider 构建 Node/npm")
 
 
-def _run_npm(npm: Path, args: list[str], cwd: Path) -> None:
+def _stop_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=15, check=False,
+            )
+        else:
+            process.terminate()
+            process.wait(timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _run_npm_attempt(
+    npm: Path,
+    args: list[str],
+    cwd: Path,
+    registry: str,
+    cache: Path,
+    progress: Progress,
+) -> tuple[bool, str]:
+    """运行一次 npm，并以“无输出时长”识别真正卡死，而非固定总时长。"""
     env = os.environ.copy()
     env["PATH"] = str(npm.parent) + os.pathsep + env.get("PATH", "")
-    subprocess.check_call([str(npm), *args], cwd=str(cwd), env=env)
+    env["npm_config_registry"] = registry
+    env["npm_config_cache"] = str(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(npm), *args,
+        "--prefer-offline", "--no-audit", "--no-fund",
+        "--fetch-retries=4", "--fetch-retry-mintimeout=10000",
+        "--fetch-retry-maxtimeout=60000", "--fetch-timeout=120000",
+        "--loglevel=info",
+    ]
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    process = subprocess.Popen(
+        command, cwd=str(cwd), env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+        creationflags=flags,
+    )
+    output: queue.Queue[str | None] = queue.Queue()
+
+    def reader() -> None:
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                output.put(line.rstrip())
+        finally:
+            output.put(None)
+
+    threading.Thread(target=reader, daemon=True).start()
+    started = last_activity = last_notice = time.monotonic()
+    tail: list[str] = []
+    stream_ended = False
+    try:
+        while process.poll() is None or not stream_ended:
+            try:
+                line = output.get(timeout=1)
+                if line is None:
+                    stream_ended = True
+                elif line:
+                    last_activity = time.monotonic()
+                    tail.append(line)
+                    del tail[:-12]
+            except queue.Empty:
+                pass
+            now = time.monotonic()
+            if now - last_notice >= 20:
+                progress(f"[PO Token] npm 仍在处理（已用时 {int(now - started)} 秒）...")
+                last_notice = now
+            if now - last_activity > NPM_STALL_SECONDS:
+                _stop_process_tree(process)
+                return False, f"连续 {NPM_STALL_SECONDS} 秒无任何输出"
+            if now - started > NPM_ABSOLUTE_TIMEOUT:
+                _stop_process_tree(process)
+                return False, f"超过 {NPM_ABSOLUTE_TIMEOUT // 60} 分钟安全上限"
+        if process.returncode == 0:
+            return True, ""
+        return False, "\n".join(tail[-6:]) or f"退出码 {process.returncode}"
+    finally:
+        if process.poll() is None:
+            _stop_process_tree(process)
+
+
+def _run_npm(
+    npm: Path, args: list[str], cwd: Path, progress: Progress, cache: Path,
+) -> None:
+    errors: list[str] = []
+    for name, registry in NPM_REGISTRIES:
+        progress(f"[PO Token] npm 使用{name}（失败会自动切换）...")
+        ok, detail = _run_npm_attempt(npm, args, cwd, registry, cache, progress)
+        if ok:
+            return
+        errors.append(f"{name}: {detail}")
+        progress(f"[PO Token] {name}安装失败，准备切换下载源")
+    raise RuntimeError("npm 依赖安装失败:\n" + "\n".join(errors))
 
 
 def _audit_production_dependencies(npm: Path, cwd: Path, progress: Progress) -> None:
@@ -344,14 +453,15 @@ def ensure_provider(destination: Path, cache: Path, progress: Progress = print) 
 
     npm = _node_build_runtime(cache, progress)
     progress("[PO Token] 安装官方锁定依赖并编译 provider（首次构建耗时较长）...")
-    _run_npm(npm, ["ci"], server)
+    npm_cache = cache / "npm-cache"
+    _run_npm(npm, ["ci"], server, progress, npm_cache)
     # Avoid npx downloading an unrelated package: invoke the locally installed compiler.
     tsc = server / "node_modules" / "typescript" / "bin" / "tsc"
     node = _paired_node(npm)
     if node is None:
         raise RuntimeError("provider 编译时 Node/npm 不属于同一安装目录")
     subprocess.check_call([str(node), str(tsc)], cwd=str(server))
-    _run_npm(npm, ["prune", "--omit=dev"], server)
+    _run_npm(npm, ["prune", "--omit=dev"], server, progress, npm_cache)
     _audit_production_dependencies(npm, server, progress)
 
     if not (server / "build" / "main.js").is_file():
