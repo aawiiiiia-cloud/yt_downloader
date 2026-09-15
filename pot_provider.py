@@ -145,6 +145,54 @@ def provider_bundle_valid(root: Path) -> bool:
         return False
 
 
+_RUNTIME_CRITICAL_FILES = (
+    ".provider-version",
+    "server/package.json",
+    "server/package-lock.json",
+    "server/build/main.js",
+)
+
+
+def provider_bundle_runtime_valid(root: Path) -> bool:
+    """快速核验日常运行所需关键文件，不遍历数千个 node_modules 文件。
+
+    完整逐文件校验仍由 provider_bundle_valid 在安装、构建和发布阶段执行。
+    日常启动只核对固定版本/来源，以及入口和依赖描述文件的清单摘要。
+    """
+    try:
+        root = root.resolve(strict=True)
+        manifest_path = root / PROVIDER_MANIFEST
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            return False
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            return False
+        if manifest.get("format") != PROVIDER_MANIFEST_FORMAT:
+            return False
+        if manifest.get("algorithm") != "sha256":
+            return False
+        if manifest.get("provider_version") != PROVIDER_VERSION:
+            return False
+        if manifest.get("upstream_commit") != PROVIDER_COMMIT:
+            return False
+        recorded = manifest.get("files")
+        if not isinstance(recorded, dict) or len(recorded) < len(_RUNTIME_CRITICAL_FILES):
+            return False
+        digest_pattern = re.compile(r"[0-9a-f]{64}")
+        for relative in _RUNTIME_CRITICAL_FILES:
+            path = root / Path(relative)
+            expected = recorded.get(relative)
+            if path.is_symlink() or not path.is_file():
+                return False
+            if not isinstance(expected, str) or not digest_pattern.fullmatch(expected):
+                return False
+            if not hmac.compare_digest(_sha256(path), expected):
+                return False
+        return True
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
 def provider_candidates() -> list[Path]:
     """Return provider roots in preference order for bundled/source modes."""
     app = _application_dir()
@@ -157,10 +205,11 @@ def provider_candidates() -> list[Path]:
     return candidates
 
 
-def find_provider() -> Path | None:
-    """Return the first provider whose full versioned manifest verifies."""
+def find_provider(strict: bool = False) -> Path | None:
+    """Return the first valid provider; strict mode is reserved for build/install."""
+    validator = provider_bundle_valid if strict else provider_bundle_runtime_valid
     for root in provider_candidates():
-        if provider_bundle_valid(root):
+        if validator(root):
             return root
     return None
 
@@ -382,9 +431,9 @@ class PotProviderManager:
                 return True
             if self._provider_root is not None:
                 provider = self._provider_root
-                valid = provider_bundle_valid(provider)
+                valid = provider_bundle_runtime_valid(provider)
             else:
-                provider = find_provider()  # find_provider 已完成严格清单校验
+                provider = find_provider()
                 valid = provider is not None
             if provider is None or not valid:
                 progress("[PO Token] 生成服务缺失或完整性校验失败，4K/高码率格式可能不可用")

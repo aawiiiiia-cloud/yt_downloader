@@ -48,7 +48,7 @@ def _sha256(path: Path) -> str:
 
 
 def provider_valid(root: Path) -> bool:
-    """Use the same strict version-and-manifest validation as runtime."""
+    """安装和构建阶段执行完整的逐文件版本与清单校验。"""
     return provider_bundle_valid(root)
 
 

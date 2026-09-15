@@ -102,6 +102,7 @@ def _reuse_project_tools(progress: Progress) -> list[Path]:
 def _ensure_pot_provider(progress: Progress) -> bool:
     """源码版缺少 provider 时安装到用户工具目录；已有 dist 则直接复用。"""
     try:
+        progress("[信息] 正在快速检查 PO Token 本地生成服务...")
         from pot_provider import find_provider
 
         if find_provider() is not None:

@@ -90,6 +90,6 @@ pyinstaller --onedir --windowed --name yt_dlp_gui \
 
 - **不要**让同事用 "Get cookies.txt" 等浏览器插件导出 cookies——yt-dlp 官方已警告
   该类插件存在恶意版本。统一使用本工具的【内置登录...】。
-- provider 固定上游 commit 和源码包 SHA-256；运行目录使用逐文件清单检查，任何关键文件变化都会拒绝启动。
+- provider 固定上游 commit 和源码包 SHA-256；安装/构建阶段执行完整逐文件清单校验，日常启动快速核验版本、清单及关键运行入口，关键文件变化仍会拒绝启动。
 - provider 的 GPL 对应源码和本地监听地址修改说明随包放在 `tools/bgutil-provider/corresponding-source/`。
 - npm 只审计最终生产依赖；发现 high/critical 时停止发布，不自动运行会改写官方锁文件的 `npm audit fix`。

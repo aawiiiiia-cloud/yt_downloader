@@ -182,6 +182,20 @@ class TestPotProvider(unittest.TestCase):
             )
             self.assertFalse(pot_provider.provider_bundle_valid(root))
 
+    def test_runtime_provider_check_is_fast_and_rejects_entry_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_valid_provider(root)
+            with mock.patch.object(
+                pot_provider, "_manifest_files",
+                side_effect=AssertionError("日常启动不应遍历 provider 文件树"),
+            ):
+                self.assertTrue(pot_provider.provider_bundle_runtime_valid(root))
+            (root / "server" / "build" / "main.js").write_text(
+                "tampered", encoding="utf-8",
+            )
+            self.assertFalse(pot_provider.provider_bundle_runtime_valid(root))
+
     def test_node_archive_is_unpacked_once_with_npm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
