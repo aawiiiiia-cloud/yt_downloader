@@ -43,6 +43,20 @@ class TestCollectorAdapters(unittest.TestCase):
         with self.assertRaises(ValueError):
             browser_post(URL, data)
 
+    def test_browser_note_upgrades_trusted_http_display_urls(self):
+        data = context()
+        data['note']['imageList'][0]['urlDefault'] = 'http://sns-webpic-qc.xhscdn.com/display1?imageView2=2'
+        image = browser_post(URL, data).images[0]
+        self.assertTrue(all(url.startswith('https://') for url in (image.url, *image.fallback_urls)))
+        self.assertIn('https://sns-webpic-qc.xhscdn.com/display1?imageView2=2', image.fallback_urls)
+
+    def test_browser_note_rejects_credentials_and_spoofed_cdn_hosts(self):
+        for url in ('http://xhscdn.com.evil.invalid/display', 'https://user:secret@sns-webpic-qc.xhscdn.com/display'):
+            data = context()
+            data['note']['imageList'][0]['urlDefault'] = url
+            with self.assertRaises(ValueError):
+                browser_post(URL, data)
+
     def test_formats_are_metadata_without_signed_stream_urls(self):
         result = normalise_video({'id': 'a', 'formats': [
             {'format_id': '137', 'url': 'https://media.invalid/?signature=secret', 'vcodec': 'h264', 'acodec': 'none', 'height': 1080},

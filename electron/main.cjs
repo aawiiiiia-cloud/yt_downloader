@@ -114,8 +114,12 @@ class CollectorApp {
     this.browser.webContents.on('will-navigate', (event, details) => {
       try { navigationUrl(typeof details === 'string' ? details : details.url); } catch { event.preventDefault(); }
     });
-    this.browser.webContents.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => {
-      if (isMainFrame) { this.invalidate(); this.state.loading = true; this.publish(); }
+    this.browser.webContents.on('did-start-navigation', (_e, url, inPlace, isMainFrame) => {
+      if (!isMainFrame) return;
+      // Analytics often replace query parameters without changing the note/video.
+      // Only invalidate an in-page result when its actual content identity changes.
+      if (inPlace && contentKey(url) && contentKey(url) === contentKey(this.state.url)) return;
+      this.invalidate(); this.state.loading = true; this.publish();
     });
     this.browser.webContents.on('did-navigate', (_event, url) => { this.documentKey = contentKey(url); });
     this.browser.webContents.on('did-navigate-in-page', (_e, url, isMainFrame) => {

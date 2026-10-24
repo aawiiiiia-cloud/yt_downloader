@@ -80,6 +80,10 @@ async function run(collector, profile, snapshotScript) {
     await collector.inspect();
     check('inspection works while an unrelated resource is still loading', collector.state.result?.items[0].title.includes('笔记 A'));
     pendingStreams.forEach(stream => stream.close()); await slowLoad;
+    const stableReceipt = collector.state.inspectionId;
+    await collector.browser.webContents.executeJavaScript("history.replaceState({}, '', '?xsec_source=pc_feed&tracking=test')");
+    await wait(100);
+    check('tracking-only URL changes preserve parsed resources', collector.state.inspectionId === stableReceipt && !!stableReceipt);
     // Windows test runners may have no capturable compositor surface.
     // Screenshot availability is reported separately from browser/worker assertions.
     if (process.env.YT_COLLECTOR_CAPTURE === '1') {

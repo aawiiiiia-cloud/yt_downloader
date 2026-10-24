@@ -26,6 +26,7 @@ npm.cmd start
 Electron 与 Python 通过本机子进程通信，不开放 HTTP 服务端口。Python 环境优先使用
 `YT_DOWNLOADER_PYTHON`；本机已配置的默认位置是 `D:\python-envs\yt-downloader`。
 更多架构、测试范围和已知限制见 `.specs/ELECTRON_PHASE1.md`。
+用户提供的 B站与小红书链接实测记录见 `.specs/ACCEPTANCE_2026-10-24.md`。
 
 一个基于 Tkinter + yt-dlp 的多网站媒体下载工具,支持视频和小红书图文,同时提供源码版与打包版两条交付线。
 

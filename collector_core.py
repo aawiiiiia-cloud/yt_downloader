@@ -80,16 +80,19 @@ def browser_post(url: str, context: dict | None):
     if not isinstance(note, dict):
         return None
     post = post_from_initial_state({"note": {"noteDetailMap": {match[1]: {"note": note}}}}, match[1], url)
-    for image in post.images:
-        for candidate in (image.url, *image.fallback_urls):
-            parsed = urlparse(candidate)
-            host = (parsed.hostname or "").lower()
-            if parsed.scheme != "https" or not any(
-                host == domain or host.endswith("." + domain)
-                for domain in ("xhscdn.com", "xiaohongshu.com", "xhsimg.com")
-            ):
-                raise ValueError("笔记图片地址不属于受支持的素材域名，请刷新后重新解析")
-    return post
+    def image_url(candidate):
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password or parsed.port not in {None, 80, 443} or not any(
+            host == domain or host.endswith("." + domain)
+            for domain in ("xhscdn.com", "xiaohongshu.com", "xhsimg.com")
+        ):
+            raise ValueError(f"笔记图片地址不属于受支持的素材域名（{parsed.scheme}://{host}），请刷新后重新解析")
+        # Real note state still contains HTTP display URLs; fetch trusted CDNs over HTTPS.
+        return parsed._replace(scheme="https", netloc=host).geturl()
+
+    return replace(post, images=tuple(replace(image, url=image_url(image.url),
+        fallback_urls=tuple(image_url(candidate) for candidate in image.fallback_urls)) for image in post.images))
 
 
 def browser_bilibili(url: str, context: dict | None, ydl):
