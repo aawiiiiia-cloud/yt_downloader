@@ -63,7 +63,7 @@ async function run(collector, profile, snapshotScript) {
       if (url.includes('youtube.com')) {
         const login = collector.login; let edgeRequested = false;
         collector.login = async site => { edgeRequested = site === 'youtube'; };
-        await collector.window.webContents.executeJavaScript('document.getElementById("web-login").click()');
+        await collector.window.webContents.executeJavaScript('document.getElementById("edge-login").click()');
         await until(() => edgeRequested, 'YouTube login did not use Edge');
         check('YouTube login button invokes Edge without replacing the current page', collector.browser.webContents.getURL() === url);
         collector.login = login;
@@ -167,6 +167,8 @@ async function run(collector, profile, snapshotScript) {
     await collector.inspect();
     check('new SPA note is parsed independently', collector.state.result.items[0].title.includes('笔记 B'));
     await require('./tabs-smoke.cjs').run(collector, check, until, wait);
+    youtubeLoggedIn = false;
+    await require('./workspace-smoke.cjs').run(collector, check, until, wait, profile);
     resolveDownload({ folder: profile, count: 1 }); await wait(100);
     check('background download queue completes', task.status === 'completed');
     collector.persist();

@@ -61,8 +61,8 @@ class CollectorApp {
     fs.mkdirSync(path.join(profile, 'tasks'), { recursive: true });
     const legacy = smoke || liveCheck || persistenceCheck ? {} : readJson(path.join(os.homedir(), '.yt_dlp_gui.json'), {});
     this.settings = { saveDir: legacy.save_dir || path.join(os.homedir(), 'Downloads'), proxy: legacy.proxy || '',
-      autoParse: true, imageFormat: 'original', imageQuality: 95, ...readJson(path.join(profile, 'settings.json'), {}) };
-    this.shared = { health: null, login: {}, loginRunning: null };
+      autoParse: true, imageFormat: 'original', imageQuality: 95, panelWidth: 390, ...readJson(path.join(profile, 'settings.json'), {}) };
+    this.shared = { health: null, login: {}, loginRunning: null, importingCookies: false };
     this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
     this.tabs.rows.forEach(tab => this.initializeTab(tab));
     this.handles = new Set(); this.cache = new Map(); this.closing = false;
@@ -119,7 +119,7 @@ class CollectorApp {
       show: !smoke && !liveCheck && !persistenceCheck, backgroundColor: '#f5f6f8', title: '拾集 · 媒体采集', autoHideMenuBar: true,
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
-    this.browserBounds = { x: 16, y: 196, width: 940, height: 660 };
+    this.browserBounds = { x: 17, y: 138, width: 1006, height: 730 };
     // Use the bundled Chromium UA for both browsing and extraction, without the app product token.
     const platform = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64' : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
     this.userAgent = `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
@@ -131,6 +131,7 @@ class CollectorApp {
       if (this.allowClose) return;
       event.preventDefault(); this.close();
     });
+    this.window.on('blur', () => this.endPaneResize());
     this.activateTab(this.tabs.activeId);
     await this.window.loadFile(path.join(__dirname, 'ui', 'index.html'));
     await this.updateLogin();
@@ -146,6 +147,21 @@ class CollectorApp {
     this.window.contentView.addChildView(view); view.setVisible(false); view.setBounds(this.browserBounds);
     const web = view.webContents;
     web.setUserAgent(this.userAgent); web.setAudioMuted(true);
+    // Native webpage views can receive the pointer while it crosses the divider.
+    // Forward only an active local drag; the remote page has no resize IPC bridge.
+    web.on('before-mouse-event', (event, mouse) => {
+      if (!this.paneResizing) return;
+      event.preventDefault();
+      if (mouse.type === 'mouseMove' || mouse.type === 'mouseUp') {
+        this.window.webContents.send('collector:resize-pointer', {
+          type: mouse.type === 'mouseUp' ? 'end' : 'move', x: view.getBounds().x + mouse.x,
+        });
+        if (mouse.type === 'mouseUp') this.paneResizing = false;
+      }
+    });
+    web.on('before-input-event', (event, input) => {
+      if (this.paneResizing && input.key === 'Escape') { event.preventDefault(); this.endPaneResize(true); }
+    });
     web.setWindowOpenHandler(({ url }) => {
       try { const next = navigationUrl(url); setImmediate(() => {
         if (this.closing || tab.closed) return;
@@ -273,6 +289,11 @@ class CollectorApp {
     const rect = Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, Math.round(Number(bounds[key]) || 0)]));
     if (rect.x < 0 || rect.y < 0 || rect.width < 200 || rect.height < 100 || rect.x + rect.width > width + 2 || rect.y + rect.height > height + 2) return;
     this.browserBounds = rect; this.browser.setBounds(rect);
+  }
+  endPaneResize(cancel = false) {
+    if (!this.paneResizing) return;
+    this.paneResizing = false;
+    if (!this.window.isDestroyed()) this.window.webContents.send('collector:resize-pointer', { type: 'end', cancel });
   }
   async applyProxy() {
     const proxy = this.settings.proxy;
@@ -404,8 +425,12 @@ class CollectorApp {
       settings: { ...this.settings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } }, item.title);
   }
   async importCookies(file, site) {
+    const info = fs.statSync(file);
+    if (!info.isFile() || info.size > 4 * 1024 * 1024) throw new Error('请选择不超过 4 MB 的 Netscape 格式 Cookies 文本文件');
+    const cookies = readCookies(fs.readFileSync(file, 'utf8'), site);
+    if (!cookies.length) throw new Error('文件中没有可用的本站点 Cookies，可能已过期或格式不符，请重新导出 Netscape 格式的 Cookies 文件');
     let count = 0;
-    for (const cookie of readCookies(fs.readFileSync(file, 'utf8'), site)) {
+    for (const cookie of cookies) {
       try { await this.browserSession.cookies.set(cookie); count++; } catch {}
     }
     await this.browserSession.cookies.flushStore(); await this.updateLogin();
@@ -413,9 +438,24 @@ class CollectorApp {
     if (site === 'youtube') await this.youtubeAuth.ensure(true);
     return count;
   }
+  async chooseCookies(site) {
+    if (!Object.hasOwn(SITES, site)) throw new Error('请选择支持的站点');
+    if (this.state.loginRunning || this.state.importingCookies) throw new Error('已有登录操作正在进行');
+    this.state.importingCookies = true; this.publish();
+    try {
+      const legacy = path.join(os.homedir(), site === 'youtube' ? '.yt_dlp_gui_cookies.txt' : `.yt_dlp_gui_${site}_cookies.txt`);
+      const selection = await dialog.showOpenDialog(this.window, {
+        title: `导入 ${SITES[site].name} Cookies`, buttonLabel: '导入',
+        properties: ['openFile'], defaultPath: fs.existsSync(legacy) ? legacy : os.homedir(),
+        filters: [{ name: 'Netscape Cookies 文本文件', extensions: ['txt'] }, { name: '所有文件', extensions: ['*'] }],
+      });
+      if (selection.canceled || !selection.filePaths.length || this.closing) return 0;
+      return await this.importCookies(selection.filePaths[0], site);
+    } finally { this.state.importingCookies = false; this.publish(); }
+  }
   async login(site) {
     if (!SITES[site]) throw new Error('请先选择支持的站点');
-    if (this.loginTask || this.state.loginRunning) throw new Error('已有登录窗口正在运行');
+    if (this.loginTask || this.state.loginRunning || this.state.importingCookies) throw new Error('已有登录操作正在进行');
     const cookieFile = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
     const tab = this.tabs.active;
     this.state.loginRunning = site; this.publish();
@@ -435,6 +475,13 @@ class CollectorApp {
     if (this.closing && method !== 'state') throw new Error('采集工具正在关闭，请稍后重新启动');
     if (method === 'state') return this.publicState();
     if (method === 'layout') return this.layout(data);
+    if (method === 'resize-start') { this.paneResizing = true; return; }
+    if (method === 'resize-end') { this.endPaneResize(); return; }
+    if (method === 'panel-width') {
+      if (!Number.isFinite(data.width)) throw new Error('面板宽度无效');
+      this.settings.panelWidth = Math.round(Math.min(Math.max(330, this.window.getContentSize()[0] - 444), Math.max(330, data.width)));
+      this.publish(); return this.settings.panelWidth;
+    }
     if (method === 'navigate') return this.navigate(data.url);
     if (method === 'switch-site') { this.switchSite(data.site); return; }
     if (method === 'new-tab') { this.openTab(SITES[this.tabs.active.group].home); return; }
@@ -455,13 +502,7 @@ class CollectorApp {
     }
     if (method === 'login') return this.login(data.site);
     if (method === 'cancel-login') { this.loginTask?.cancel(); return; }
-    if (method === 'import-login') {
-      const site = data.site;
-      if (!SITES[site]) throw new Error('请选择支持的站点');
-      const file = path.join(os.homedir(), site === 'youtube' ? '.yt_dlp_gui_cookies.txt' : `.yt_dlp_gui_${site}_cookies.txt`);
-      if (!fs.existsSync(file)) throw new Error('未找到旧版登录记录，请使用网页登录或 Edge 登录');
-      return this.importCookies(file, site);
-    }
+    if (method === 'import-cookies') return this.chooseCookies(data.site);
     if (method === 'choose-folder') {
       const result = await dialog.showOpenDialog(this.window, { properties: ['openDirectory', 'createDirectory'], defaultPath: this.settings.saveDir });
       if (!result.canceled) { this.settings.saveDir = result.filePaths[0]; this.persist(); this.publish(); }
@@ -514,6 +555,7 @@ app.whenReady().then(async () => {
     const assert = require('node:assert/strict');
     assert.equal(collector.state.login.xiaohongshu, true);
     assert.equal(collector.settings.autoParse, false);
+    assert.equal(collector.settings.panelWidth, 450);
     assert.equal(collector.queue.tasks[0].status, 'completed');
     console.log('Restart persistence: browser login, settings and task history OK');
     assert.ok(collector.tabs.rows.length >= 3);

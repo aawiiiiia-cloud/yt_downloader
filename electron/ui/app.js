@@ -151,6 +151,7 @@ function render(next) {
   const previousError = state?.error;
   saveDraft();
   state = next;
+  window.collectorLayout.load(state.settings.panelWidth);
   selectedSite = state.activeGroup;
   renderBrowserTabs();
   if (document.activeElement !== $('address')) $('address').value = /^https?:/.test(state.url) ? state.url : '';
@@ -160,10 +161,14 @@ function render(next) {
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
   const youtubeLabels = { signed_out: '未登录，下载前请通过 Edge 登录', unverified: '登录待验证', checking: '正在验证登录…', verified: '已登录并验证', expired: '登录已失效，请通过 Edge 更新' };
   $('login-state').textContent = selectedSite === 'youtube' ? `YouTube · ${youtubeLabels[state.youtubeAuth] || '登录待验证'}` : state.login[selectedSite] ? `${names[selectedSite]} · 已检测到登录凭据` : `${names[selectedSite]} · 尚未检测到登录凭据`;
-  $('web-login').disabled = !!state.loginRunning;
-  document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? 'YouTube 的「登录」通过 Edge 完成，下载前会验证。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入 Cookies 会读取旧版工具保存的本站凭据。';
-  $('edge-login').disabled = !!state.loginRunning; $('cancel-login').hidden = !state.loginRunning;
-  $('import-login').disabled = !!state.loginRunning;
+  const loginBusy = !!state.loginRunning || !!state.importingCookies;
+  $('web-login').hidden = selectedSite === 'youtube';
+  document.querySelector('.login-tools').classList.toggle('youtube', selectedSite === 'youtube');
+  $('web-login').disabled = loginBusy;
+  document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入请选择本站点的 Netscape 格式 Cookies 文件（.txt）。';
+  $('edge-login').disabled = loginBusy; $('cancel-login').hidden = !state.loginRunning;
+  $('import-login').disabled = loginBusy;
+  $('import-login').textContent = state.importingCookies ? '正在导入…' : '导入Cookies';
   $('parse-log').textContent = state.logs.join('\n');
   const id = `${state.activeTabId}:${state.inspectionId}:${state.parsing}`;
   if (id !== renderedId) {
@@ -209,7 +214,12 @@ $('save-settings').addEventListener('click', async () => {
   } catch (error) { notify(error.message); }
 });
 $('edge-login').addEventListener('click', () => call('login', { site: selectedSite }));
-$('import-login').addEventListener('click', async () => { const count = await call('import-login', { site: selectedSite }); if (count) notify('旧版保存的 Cookies 已导入，可重新解析当前页面。'); });
+$('import-login').addEventListener('click', async () => {
+  const site = selectedSite;
+  notify('');
+  const count = await call('import-cookies', { site });
+  if (count) notify(`${names[site]} Cookies 已导入（${count} 条），可重新解析当前页面。`);
+});
 $('cancel-login').addEventListener('click', () => call('cancel-login'));
 $('web-login').addEventListener('click', () => selectedSite === 'youtube' ? call('login', { site: 'youtube' }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : homes.xiaohongshu }));
 $('required-login').addEventListener('click', () => call('login', { site: 'youtube' }));
