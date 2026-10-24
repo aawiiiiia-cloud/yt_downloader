@@ -9,6 +9,23 @@ import threading
 from collector_core import Cancelled, Collector, prepare_runtime, runtime_health
 
 
+def run_provider(emit, cancel):
+    """Keep one owned provider alive until Electron closes its control pipe."""
+    from pot_provider import PotProviderManager
+    manager = PotProviderManager()
+    try:
+        if not manager.ensure_started(lambda text: emit('log', text), cancel, timeout=20):
+            emit('provider-ready', {'url': None})
+            return {'stopped': True}
+        emit('provider-ready', {'url': manager.url})
+        while not cancel.wait(0.5):
+            if not manager.is_running:
+                raise RuntimeError('YouTube 辅助服务已停止，下次解析会重新启动')
+        return {'stopped': True}
+    finally:
+        manager.stop()
+
+
 def main() -> int:
     output = sys.stdout
     lock = threading.Lock()
@@ -30,6 +47,8 @@ def main() -> int:
                         cancel.set()
                 except (ValueError, AttributeError):
                     pass
+            if request.get('command') == 'provider':
+                cancel.set()
         threading.Thread(target=read_control, daemon=True).start()
         # Third-party print() must not corrupt the structured stdout protocol.
         with contextlib.redirect_stdout(sys.stderr):
@@ -37,6 +56,8 @@ def main() -> int:
             command = request.get("command")
             if command == "health":
                 result = runtime_health()
+            elif command == 'provider':
+                result = run_provider(emit, cancel)
             elif command == "login":
                 from edge_login import run_login, SITE_CONFIGS
                 from pathlib import Path

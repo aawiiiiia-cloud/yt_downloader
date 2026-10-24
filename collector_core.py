@@ -291,7 +291,13 @@ class Collector:
         if site_for_url(url) == "youtube":
             from pot_provider import PotProviderManager
             self.provider = PotProviderManager()
-            if self.provider.ensure_started(self.log, self.cancel, timeout=20):
+            # Electron owns one service for its lifetime. Legacy callers retain
+            # their per-task lifecycle when no shared-service field is provided.
+            if 'providerUrl' in self.request:
+                ready = bool(self.request['providerUrl']) and self.provider.connect(self.request['providerUrl'])
+            else:
+                ready = self.provider.ensure_started(self.log, self.cancel, timeout=20)
+            if ready:
                 self.provider.apply_to_opts(options)
             else:
                 self.log("PO Token 服务未启用，当前可用画质以实际解析结果为准")
@@ -360,6 +366,7 @@ class Collector:
         options = self.options(url)
         options.update(retries=2, socket_timeout=20)
         with yt_dlp.YoutubeDL(options) as ydl:
+            self.configure_extractors(ydl, url)
             if site_for_url(url) == "bilibili":
                 loaded = browser_bilibili(url, self.request.get("context"), ydl)
                 if loaded:
@@ -430,6 +437,7 @@ class Collector:
                 raise ValueError("画质标识无效，请重新解析")
             options["format"] = selected_video_format(url, identifier, bool(self.request.get('formatHasAudio')))
         with yt_dlp.YoutubeDL(options) as ydl:
+            self.configure_extractors(ydl, url)
             loaded = browser_bilibili(url, self.request.get("context"), ydl) if site_for_url(url) == 'bilibili' else (
                 browser_douyin(url, self.request.get('context'), ydl) if site_for_url(url) == 'douyin' else None)
             if loaded:
@@ -441,6 +449,11 @@ class Collector:
                 raise RuntimeError("下载未完成，请查看任务日志后重试")
         self.check_cancel()
         return {"folder": str(folder), "count": 1}
+
+    def configure_extractors(self, ydl, url):
+        if site_for_url(url) == 'vimeo':
+            from vimeo_extractor import ParallelVimeoIE
+            ydl.add_info_extractor(ParallelVimeoIE(ydl, self.check_cancel))
 
     def close(self):
         if self.provider is not None:

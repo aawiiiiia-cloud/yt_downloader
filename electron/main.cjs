@@ -11,6 +11,8 @@ const { Assets, readBody } = require('./assets.cjs');
 const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
 const { SiteTabs, linkScript } = require('./site-tabs.cjs');
 const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-page.cjs');
+const { resolveDouyinContext } = require('./douyin-context.cjs');
+const { YouTubeProvider } = require('./youtube-provider.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -70,6 +72,7 @@ class CollectorApp {
     this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
     this.tabs.rows.forEach(tab => this.initializeTab(tab));
     this.handles = new Set(); this.cache = new Map(); this.closing = false;
+    this.youtubeProvider = new YouTubeProvider({ track: handle => this.track(handle) });
     this.youtubeAuth = new YouTubeAuth(() => this.browserSession.cookies.get({}), () => this.verifyYouTube(), () => this.publish());
     this.queue = new DownloadQueue((spec, onEvent) => this.withCookies(spec, onEvent), () => this.publish());
     const history = readJson(path.join(profile, 'history.json'), []);
@@ -340,31 +343,35 @@ class CollectorApp {
   }
   withCookies(spec, onEvent) {
     let task, cancelled = false;
-    const handle = { cancel() { cancelled = true; task?.cancel(); }, promise: null };
+    const controller = new AbortController();
+    const handle = { cancel() { cancelled = true; controller.abort(); task?.cancel(); }, promise: null };
     handle.promise = (async () => {
       const youtubeVerified = spec.command === 'download' && siteForUrl(spec.url) === 'youtube';
       if (youtubeVerified) await this.youtubeAuth.ensure();
       const cookieFile = await this.cookieSnapshot(siteForUrl(spec.url), youtubeVerified);
       try {
-        const proxy = await this.effectiveProxy(spec.url, spec.settings?.proxy);
+        const [proxy, providerUrl] = await Promise.all([
+          this.effectiveProxy(spec.url, spec.settings?.proxy),
+          siteForUrl(spec.url) === 'youtube' ? this.youtubeProvider.ensure(onEvent, controller.signal) : undefined,
+        ]);
         if (cancelled) { const error = new Error('操作已取消'); error.cancelled = true; throw error; }
-        task = this.track(pythonTask({ ...spec, youtubeVerified, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, (type, data) => {
+        task = this.track(pythonTask({ ...spec, ...(siteForUrl(spec.url) === 'youtube' ? { providerUrl } : {}), youtubeVerified, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, (type, data) => {
           if (type === 'auth-invalid') { this.youtubeAuth.status = 'expired'; this.youtubeAuth.until = 0; this.publish(); }
           onEvent?.(type, data);
         }));
         return await task.promise;
-      } finally { fs.unlinkSync(cookieFile); }
+      } finally { controller.abort(); fs.unlinkSync(cookieFile); }
     })();
     return this.track(handle);
   }
-  async readPage(script, tab = this.tabs.active, waitForValue = false) {
+  async readPage(script, tab = this.tabs.active, waitForValue = false, signal) {
     let timer, stopped = false;
     const sequence = tab.sequence;
     const wrapped = `(() => { if (document.readyState === 'loading') return {waiting: true};
       try { return {value: (${script})}; } catch (error) { return {error: String(error)}; } })()`;
     const read = async () => {
       while (!stopped) {
-        if (tab.closed || tab.view.webContents.isDestroyed() || tab.sequence !== sequence) throw Object.assign(new Error('页面已切换或解析已取消'), { cancelled: true });
+        if (signal?.aborted || tab.closed || tab.view.webContents.isDestroyed() || tab.sequence !== sequence) throw Object.assign(new Error('页面已切换或解析已取消'), { cancelled: true });
         let result;
         try { result = await tab.view.webContents.mainFrame.executeJavaScript(wrapped); }
         catch { await new Promise(resolve => setTimeout(resolve, 150)); continue; }
@@ -373,12 +380,17 @@ class CollectorApp {
         await new Promise(resolve => setTimeout(resolve, 150));
       }
     };
+    let abort;
     try {
       // WebContents.executeJavaScript waits for all loading to stop, including ads.
       // The document frame can be read as soon as its DOM is ready.
       return await Promise.race([read(),
+        new Promise((_, reject) => {
+          abort = () => reject(Object.assign(new Error('页面已切换或解析已取消'), { cancelled: true }));
+          signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
+        }),
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('页面响应较慢，请稍后重新解析')), 8000); })]);
-    } finally { stopped = true; clearTimeout(timer); }
+    } finally { stopped = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   async inspect(tab = this.tabs.active) {
     const state = tab.state, url = tab.view.webContents.getURL();
@@ -391,20 +403,13 @@ class CollectorApp {
       if (siteForUrl(url) === 'xiaohongshu') context = await this.readPage(snapshotScript, tab);
       if (siteForUrl(url) === 'bilibili') context = await this.readPage(biliSnapshotScript, tab, /\/video\/BV[0-9A-Za-z]+/.test(new URL(url).pathname));
       if (siteForUrl(url) === 'douyin') {
-        // Feed/modal data may arrive after DOM ready; allow the normal player time to load.
-        const deadline = Date.now() + 7000;
-        do {
-          context = this.tabs.rows.map(row => row.douyinPage?.get(url)).find(Boolean) || await this.readPage(douyinSnapshotScript, tab);
-          if (context || ticket !== tab.sequence || tab.closed || this.closing) break;
-          await new Promise(resolve => setTimeout(resolve, 200));
-        } while (Date.now() < deadline);
-        if (!context && ticket === tab.sequence && !tab.closed && !this.closing) {
-          this.log('正在补取当前视频详情，无需刷新页面…', tab);
-          try {
-            context = await this.fetchDouyinContext(url, tab.assetsAbort.signal);
-            if (context && ticket === tab.sequence && !tab.closed) tab.douyinPage?.remember(context.detail);
-          } catch { /* Keep the normal extractor fallback for unavailable or verification pages. */ }
-        }
+        context = await resolveDouyinContext({ url, signal: tab.assetsAbort.signal,
+          cached: () => this.tabs.rows.map(row => row.douyinPage?.get(url)).find(Boolean),
+          read: signal => this.readPage(douyinSnapshotScript, tab, false, signal),
+          supplement: signal => this.fetchDouyinContext(url, signal),
+          onSupplement: () => this.log('正在补取当前视频详情，无需刷新页面…', tab),
+        });
+        if (context && ticket === tab.sequence && !tab.closed) tab.douyinPage?.remember(context.detail);
       }
       if (ticket !== tab.sequence || tab.closed || this.closing) return;
       tab.parseTask = this.withCookies({ command: 'inspect', url, context, settings: { ...this.settings } },
@@ -599,7 +604,7 @@ class CollectorApp {
   }
   close() {
     if (this.closing) return;
-    this.closing = true; this.tabs.rows.forEach(tab => this.invalidate(tab)); this.queue.close(); this.handles.forEach(task => task.cancel());
+    this.closing = true; this.tabs.rows.forEach(tab => this.invalidate(tab)); this.queue.close(); this.youtubeProvider.close(); this.handles.forEach(task => task.cancel());
     this.state.error = '正在停止后台任务并保存记录…'; this.publish();
     const finish = () => {
       if (this.handles.size) { setTimeout(finish, 150); return; }

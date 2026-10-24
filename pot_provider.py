@@ -398,6 +398,22 @@ class PotProviderManager:
     def url(self) -> str | None:
         return self._url
 
+    @property
+    def is_running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def connect(self, url: str) -> bool:
+        """Borrow the application's loopback service without taking ownership."""
+        if not isinstance(url, str) or not re.fullmatch(r'http://127\.0\.0\.1:[0-9]{1,5}', url):
+            return False
+        if not 0 < int(url.rsplit(':', 1)[1]) <= 65535:
+            return False
+        info = self._ping(url)
+        if not info or str(info.get('version')) != PROVIDER_VERSION:
+            return False
+        self._url = url
+        return True
+
     @staticmethod
     def _ping(url: str, timeout: float = 1.5) -> dict | None:
         try:
