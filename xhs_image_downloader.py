@@ -294,7 +294,12 @@ def _detected_image_extension(path: Path, fallback: str, strict: bool = False) -
     }
     try:
         with Image.open(path) as image:
-            return formats.get(str(image.format or "").upper(), fallback)
+            extension = formats.get(str(image.format or "").upper(), fallback)
+            image.verify()
+        # 文件头和 Content-Length 都可能正常，但像素数据仍然被截断。
+        with Image.open(path) as image:
+            image.load()
+        return extension
     except Exception as exc:
         if strict:
             raise XhsDownloadError("服务器返回内容无法识别为有效图片") from exc
@@ -348,6 +353,10 @@ def _convert_image(source: Path, target: Path, output_format: str, quality: int)
                     subsampling=0 if quality >= 90 else 2,
                 )
             elif pillow_format == "PNG":
+                if image.mode == "CMYK":
+                    image = image.convert("RGB")
+                    # RGB 结果不能继续使用源图片的 CMYK 色彩配置。
+                    save_options.pop("icc_profile", None)
                 save_options.update(optimize=True, compress_level=6)
             elif pillow_format == "WEBP":
                 save_options.update(quality=quality, method=6)
@@ -501,7 +510,7 @@ class XhsImageDownloader:
                         if received <= 0:
                             raise XhsDownloadError(f"图片 {image.index} 内容为空")
                         extension = _detected_image_extension(
-                            temp_path, extension, strict=generic_binary,
+                            temp_path, extension, strict=True,
                         )
                         target_extension = (
                             extension

@@ -178,6 +178,8 @@ def inspect_image(
                 record.perceptual_hash = dhash.dhash_int(image)
         if options.detect_duplicates:
             record.sha256 = _sha256(path, cancel)
+    except OperationCancelled:
+        raise
     except Exception as exc:  # Pillow 可在 verify/load 时发现截断或损坏
         record.duplicate_status = "检测失败" if options.detect_duplicates else "未检测"
         record.issues.append(f"图片无法读取：{exc}")

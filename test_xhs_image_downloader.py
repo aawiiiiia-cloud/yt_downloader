@@ -54,6 +54,14 @@ def _state() -> dict:
     }
 
 
+def _image_data(format_name: str = "JPEG", mode: str = "RGB") -> bytes:
+    from PIL import Image
+
+    output = io.BytesIO()
+    Image.new(mode, (32, 24)).save(output, format=format_name)
+    return output.getvalue()
+
+
 class _Response(io.BytesIO):
     def __init__(
         self, data: bytes, content_length: int | None = None,
@@ -98,7 +106,8 @@ class TestXhsParsing(unittest.TestCase):
         self.assertEqual(post.title, "示例/标题")
         self.assertEqual(post.author, "作者")
         self.assertEqual([image.index for image in post.images], [1, 2])
-        self.assertEqual(post.images[0].url, "https://img.example/one")
+        self.assertEqual(post.images[0].url, "https://sns-na-i11.xhscdn.com/one")
+        self.assertEqual(post.images[0].fallback_urls[-1], "https://img.example/one")
         self.assertEqual(post.images[1].width, 720)
 
     def test_video_only_note_has_clear_error(self) -> None:
@@ -163,15 +172,16 @@ class TestXhsDownload(unittest.TestCase):
 
     def test_atomic_image_download_and_length_check(self) -> None:
         logs: list[str] = []
+        data = _image_data()
         downloader = XhsImageDownloader(progress=logs.append)
         target = downloader._download_one(
-            _Ydl(lambda: _Response(b"image-data", len(b"image-data"))),
+            _Ydl(lambda: _Response(data, len(data))),
             self.post,
             self.post.images[0],
             self.folder,
         )
         self.assertEqual(target.name, "01.jpg")
-        self.assertEqual(target.read_bytes(), b"image-data")
+        self.assertEqual(target.read_bytes(), data)
         self.assertFalse((self.folder / ".01.part").exists())
         self.assertTrue(any("网页展示图兜底" in line for line in logs))
 
@@ -208,7 +218,7 @@ class TestXhsDownload(unittest.TestCase):
         self.assertTrue(any("已转换为 PNG" in line for line in logs))
 
     def test_matching_target_format_preserves_original_bytes(self) -> None:
-        data = b"original-webp-bytes"
+        data = _image_data("WEBP")
         downloader = XhsImageDownloader(
             progress=lambda _msg: None, image_format="webp", image_quality=75,
         )
@@ -234,21 +244,76 @@ class TestXhsDownload(unittest.TestCase):
     def test_failed_original_url_falls_back_to_display_url(self) -> None:
         attempts = 0
         logs: list[str] = []
+        data = _image_data()
 
         def response():
             nonlocal attempts
             attempts += 1
             if attempts <= 2:
                 raise OSError("original unavailable")
-            return _Response(b"fallback-image", len(b"fallback-image"))
+            return _Response(data, len(data))
 
         image = XhsImage(
             1, "https://ci.xiaohongshu.com/token", ("https://img.example/display",),
         )
         downloader = XhsImageDownloader(progress=logs.append)
         target = downloader._download_one(_Ydl(response), self.post, image, self.folder)
-        self.assertEqual(target.read_bytes(), b"fallback-image")
+        self.assertEqual(target.read_bytes(), data)
         self.assertTrue(any("回退" in line for line in logs))
+
+    def test_invalid_image_body_preserves_previous_download(self) -> None:
+        existing = self.folder / "01.jpg"
+        previous = _image_data()
+        existing.write_bytes(previous)
+        body = b"<html>temporary CDN error</html>"
+        downloader = XhsImageDownloader(progress=lambda _msg: None)
+        with self.assertRaises(XhsDownloadError):
+            downloader._download_one(
+                _Ydl(lambda: _Response(body, len(body), "image/jpeg")),
+                self.post, self.post.images[0], self.folder,
+            )
+        self.assertEqual(existing.read_bytes(), previous)
+        self.assertFalse((self.folder / ".01.part").exists())
+
+    def test_truncated_jpeg_with_matching_length_is_rejected(self) -> None:
+        data = _image_data()[:-20]
+        downloader = XhsImageDownloader(progress=lambda _msg: None)
+        with self.assertRaises(XhsDownloadError):
+            downloader._download_one(
+                _Ydl(lambda: _Response(data, len(data))),
+                self.post, self.post.images[0], self.folder,
+            )
+        self.assertEqual(list(self.folder.iterdir()), [])
+
+    def test_cmyk_jpeg_converts_to_png(self) -> None:
+        from PIL import Image
+
+        data = _image_data(mode="CMYK")
+        downloader = XhsImageDownloader(progress=lambda _msg: None, image_format="png")
+        target = downloader._download_one(
+            _Ydl(lambda: _Response(data, len(data))),
+            self.post, self.post.images[0], self.folder,
+        )
+        with Image.open(target) as converted:
+            converted.load()
+            self.assertEqual(converted.format, "PNG")
+            self.assertEqual(converted.size, (32, 24))
+
+    def test_heif_download_converts_to_jpeg(self) -> None:
+        import pillow_heif
+        from PIL import Image
+
+        pillow_heif.register_heif_opener()
+        data = _image_data("HEIF")
+        downloader = XhsImageDownloader(progress=lambda _msg: None, image_format="jpg")
+        target = downloader._download_one(
+            _Ydl(lambda: _Response(data, len(data), "image/heic")),
+            self.post, self.post.images[0], self.folder,
+        )
+        with Image.open(target) as converted:
+            converted.load()
+            self.assertEqual(converted.format, "JPEG")
+            self.assertEqual(converted.size, (32, 24))
 
     def test_cancel_does_not_leave_partial_file(self) -> None:
         cancel = threading.Event()

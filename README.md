@@ -57,6 +57,12 @@ pip install -r requirements.txt
 python yt_dlp_gui.py
 ```
 
+本机的独立运行环境位于 `D:\python-envs\yt-downloader`，Pillow、pillow-heif、
+dhash 和下载依赖均安装在该目录。可直接双击 `start.cmd` 启动；启动器优先使用
+`YT_DOWNLOADER_PYTHON` 环境变量，未设置时使用上述 D 盘环境。
+该环境的 `Scripts` 已加入用户 PATH，新终端可直接使用 `python`。
+Pillow 是 Python 库，无需单独设置 `PYTHONPATH`。
+
 首次启动会先复用项目 `build_cache/` 或旧 `dist/yt_dlp_gui/tools/` 中已有的
 Node.js / ffmpeg，再自动安装确实缺失的环境。
 
@@ -70,8 +76,12 @@ Node.js / ffmpeg，再自动安装确实缺失的环境。
 ## 测试
 
 ```bash
-python -m unittest discover -v
+python -m unittest test_yt_dlp_gui test_xhs_image_downloader test_media_batch -v
 ```
+
+以上仅测试主项目。图片测试使用临时生成的真实 JPEG/PNG/WebP/HEIF 文件；
+本机存在 ffmpeg/ffprobe 时，还会生成临时视频验证元数据、文件摘要与黑边检测。
+测试不会访问真实网站或写入用户登录设置。
 
 ## 说明
 

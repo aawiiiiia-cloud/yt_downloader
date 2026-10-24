@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -421,6 +424,123 @@ class TestHelpers(unittest.TestCase):
                 "format": {},
             })
         self.assertEqual((record.width, record.height), (1080, 1920))
+
+
+class TestRealImageProcessing(unittest.TestCase):
+    def test_scan_decodes_images_and_finds_exact_duplicates(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            original = folder / "first.png"
+            Image.new("RGB", (40, 20), "red").save(original)
+            (folder / "copy.png").write_bytes(original.read_bytes())
+            (folder / "broken.jpg").write_bytes(b"not an image")
+            records = media_batch.scan_media(folder, ScanOptions(dhash_distance=-1))
+            by_name = {record.path.name: record for record in records}
+            first = by_name["first.png"]
+            self.assertEqual((first.width, first.height), (40, 20))
+            self.assertIsNotNone(first.perceptual_hash)
+            self.assertEqual(first.sha256, by_name["copy.png"].sha256)
+            self.assertEqual(
+                sum(bool(by_name[name].issues) for name in ("first.png", "copy.png")), 1
+            )
+            self.assertIn("图片无法读取", by_name["broken.jpg"].issues[0])
+
+    def test_cancel_during_image_hash_propagates(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "valid.png"
+            Image.new("RGB", (40, 20), "red").save(source)
+            with mock.patch.object(
+                media_batch, "_sha256", side_effect=media_batch.OperationCancelled("已取消")
+            ):
+                with self.assertRaises(media_batch.OperationCancelled):
+                    media_batch.inspect_image(source, ScanOptions())
+
+    def test_crop_honors_exif_and_preserves_original_bytes(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            source = folder / "rotated.jpg"
+            exif = Image.Exif()
+            exif[274] = 6
+            Image.new("RGB", (80, 40), "blue").save(source, exif=exif)
+            previous = source.read_bytes()
+            record = media_batch.inspect_image(source, ScanOptions())
+            self.assertEqual((record.width, record.height), (40, 80))
+            outputs = media_batch.batch_crop_images([record], "1:1", folder / "crop")
+            with Image.open(outputs[0]) as cropped:
+                cropped.load()
+                self.assertEqual(cropped.size, (40, 40))
+                self.assertNotEqual(cropped.getexif().get(274), 6)
+            self.assertEqual(source.read_bytes(), previous)
+
+    def test_crop_failure_removes_only_new_outputs(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            source = folder / "valid.png"
+            Image.new("RGB", (40, 20), "red").save(source)
+            broken = folder / "broken.png"
+            broken.write_bytes(b"not an image")
+            output = folder / "crop"
+            output.mkdir()
+            previous = output / "valid.png"
+            previous.write_bytes(b"existing output")
+            records = [MediaRecord(path, "图片") for path in (source, broken)]
+            with self.assertRaises(Exception):
+                media_batch.batch_crop_images(records, "1:1", output)
+            self.assertEqual(list(output.iterdir()), [previous])
+            self.assertEqual(previous.read_bytes(), b"existing output")
+            self.assertTrue(source.is_file())
+            self.assertTrue(broken.is_file())
+
+    def test_animated_image_is_skipped_when_cropping(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            source = folder / "animated.gif"
+            Image.new("RGB", (40, 20), "red").save(
+                source, save_all=True,
+                append_images=[Image.new("RGB", (40, 20), "blue")], duration=100, loop=0,
+            )
+            record = media_batch.inspect_image(source, ScanOptions())
+            self.assertEqual(record.frame_count, 2)
+            self.assertEqual(
+                media_batch.batch_crop_images([record], "1:1", folder / "crop"), []
+            )
+
+
+@unittest.skipUnless(
+    shutil.which("ffmpeg") and shutil.which("ffprobe"), "需要 ffmpeg 和 ffprobe"
+)
+class TestRealVideoProcessing(unittest.TestCase):
+    def test_video_metadata_hash_and_black_bars(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "padded.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "color=white:size=160x80:rate=25", "-vf", "pad=160:120:0:20",
+                    "-t", "1", "-c:v", "mpeg4", "-q:v", "2", str(source),
+                ],
+                check=True, capture_output=True, timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            previous = source.read_bytes()
+            record = media_batch.inspect_video(source, ScanOptions(detect_black_bars=True))
+            self.assertEqual((record.width, record.height), (160, 120))
+            self.assertAlmostEqual(record.fps, 25, places=1)
+            self.assertGreater(record.duration, 0.8)
+            self.assertEqual(record.sha256, hashlib.sha256(previous).hexdigest())
+            self.assertEqual(record.crop_suggestion, "crop=160:80:0:20")
+            self.assertFalse(record.issues)
+            self.assertEqual(source.read_bytes(), previous)
 
 
 if __name__ == "__main__":

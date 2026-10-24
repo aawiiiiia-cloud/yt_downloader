@@ -523,9 +523,11 @@ def _download_with_progress(
 
 def _add_to_path(directory: Path) -> None:
     """把目录临时加进当前进程 PATH(不写系统环境)。"""
-    d = str(directory)
-    if d not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+    d = str(directory.resolve())
+    current = os.environ.get("PATH", "")
+    entries = {entry.casefold() for entry in current.split(os.pathsep) if entry}
+    if d.casefold() not in entries:
+        os.environ["PATH"] = d + (os.pathsep + current if current else "")
 
 
 def _executable_works(path: Path, *args: str) -> bool:

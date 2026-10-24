@@ -77,6 +77,24 @@ class TestPortableToolsPath(unittest.TestCase):
             self.assertFalse(_prepend_tools_to_path(Path(tmp) / "missing"))
             self.assertEqual(os.environ["PATH"], before)
 
+    def test_bootstrap_path_does_not_confuse_directory_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Path(tmp) / "tools"
+            other = str(tools.resolve()) + "-other"
+            with mock.patch.dict(os.environ, {"PATH": other}):
+                bootstrap._add_to_path(tools)
+                self.assertEqual(
+                    os.environ["PATH"].split(os.pathsep), [str(tools.resolve()), other]
+                )
+
+    def test_bootstrap_path_recognizes_windows_case_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Path(tmp) / "tools"
+            existing = str(tools.resolve()).swapcase()
+            with mock.patch.dict(os.environ, {"PATH": existing}):
+                bootstrap._add_to_path(tools)
+                self.assertEqual(os.environ["PATH"], existing)
+
     def test_bootstrap_reuses_build_cache_ffmpeg_before_downloading(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"PATH": "C:\\Windows"}
