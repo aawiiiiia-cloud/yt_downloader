@@ -382,9 +382,11 @@ class XhsImageDownloader:
         item_progress: Callable[[int, int, str], None] | None = None,
         image_format: str = "original",
         image_quality: int = 95,
+        user_agent: str | None = None,
     ) -> None:
         self.cookie_file = cookie_file
         self.proxy = proxy.strip()
+        self.user_agent = user_agent
         self.progress = progress
         self.cancel_event = cancel_event
         self.item_progress = item_progress
@@ -406,7 +408,7 @@ class XhsImageDownloader:
             "socket_timeout": 30,
             "retries": 3,
             "http_headers": {
-                "User-Agent": (
+                "User-Agent": self.user_agent or (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/140.0.0.0 Safari/537.36"
@@ -453,6 +455,11 @@ class XhsImageDownloader:
 
     def download(self, url: str, output_dir: Path) -> tuple[XhsPost, tuple[Path, ...]]:
         post = self.inspect(url)
+        return self.download_post(post, output_dir)
+
+    def download_post(self, post: XhsPost, output_dir: Path) -> tuple[XhsPost, tuple[Path, ...]]:
+        """Download an inspected browser note, preserving its original image indices."""
+        self._check_cancelled()
         folder = output_dir.resolve() / _safe_name(
             f"{post.title} [{post.note_id}]", f"小红书图文 [{post.note_id}]",
         )

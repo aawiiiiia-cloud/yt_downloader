@@ -24,6 +24,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
+
+from download_core import build_download_options, site_for_url, youtube_single_video
 from urllib.parse import parse_qs, urlparse
 
 # 预载 yt_dlp_plugins 命名空间包,必须早于 import yt_dlp:
@@ -1059,19 +1061,7 @@ class DownloaderGUI:
 
     @staticmethod
     def _site_for_url(url: str) -> str | None:
-        try:
-            host = (urlparse(url).hostname or "").lower()
-        except ValueError:
-            return None
-        if host == "youtu.be" or host.endswith(".youtube.com") or host == "youtube.com":
-            return "youtube"
-        if host == "b23.tv" or host.endswith(".bilibili.com") or host == "bilibili.com":
-            return "bilibili"
-        if host == "xhslink.com" or host.endswith(".xhslink.com"):
-            return "xiaohongshu"
-        if host == "xiaohongshu.com" or host.endswith(".xiaohongshu.com"):
-            return "xiaohongshu"
-        return None
+        return site_for_url(url)
 
     def _on_proxy_change(self, *_args: object) -> None:
         """代理输入每次按键都触发,用 after 防抖(500ms 后写盘)。"""
@@ -1304,74 +1294,14 @@ class DownloaderGUI:
         self._emit("status", "正在停止...(等待当前分片结束)")
 
     def _build_ydl_opts(self, save_dir: str) -> dict[str, Any]:
-        resolution = self.resolution_var.get()
-        fmt = self.format_var.get()
-        height = RESOLUTION_OPTIONS.get(resolution)
-
-        opts: dict[str, Any] = {
-            "outtmpl": os.path.join(save_dir, "%(title)s [%(id)s].%(ext)s"),
-            "progress_hooks": [self._progress_hook],
-            "logger": _YdlLogger(
-                self._emit, self._cancel_flag, self._record_ydl_error,
-            ),
-            "noprogress": True,   # 关掉 stderr 进度,统一走 hook
-            "quiet": True,
-            "no_warnings": False,
-            "ignoreerrors": False,
-            "retries": 5,
-            "fragment_retries": 20,
-            # 默认值会跳过坏分片并仍生成成品，造成画面停顿/音频跳跃。
-            # 这里改成失败即中止，宁可明确重试，也不交付残缺视频。
-            "skip_unavailable_fragments": False,
-            "concurrent_fragment_downloads": 2,
-            "retry_sleep_functions": {
-                "fragment": lambda attempt: min(2 ** max(attempt - 1, 0), 20),
-            },
-            "socket_timeout": 30,
-            "postprocessor_hooks": [self._postprocessor_hook],
-        }
-
-        if height == "audio":
-            opts["format"] = "bestaudio/best"
-            opts["postprocessors"] = [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": fmt,
-                "preferredquality": self.audio_bitrate_var.get(),
-            }]
-        else:
-            if height is None:
-                selector = "bestvideo+bestaudio/best"
-            else:
-                selector = (
-                    f"bestvideo[height<={height}]+bestaudio/"
-                    f"best[height<={height}]/best"
-                )
-            opts["format"] = selector
-            opts["merge_output_format"] = fmt
-
-        if self.subtitle_var.get():
-            opts.update({
-                "writesubtitles": True,
-                "writeautomaticsub": True,
-                "subtitleslangs": ["zh-Hans", "zh-CN", "zh", "en"],
-                "subtitlesformat": "srt/best",
-            })
-
-        # 代理:不提供科学上网,只把已有代理地址传给 yt-dlp
-        proxy = self.proxy_var.get().strip()
-        if proxy:
-            opts["proxy"] = proxy
-
-        # 显式告诉 yt-dlp 用探测到的 JS runtime(默认只找 deno,不指定 node 就找不到)
-        # yt-dlp 2026 起要求 dict 格式: {runtime_name: {config}}
-        if self._js_runtime:
-            opts["js_runtimes"] = {self._js_runtime: {}}
-            # 允许从 GitHub 下载 EJS challenge solver 脚本供 Node/Deno 执行,
-            # 用于破解 YouTube 视频 URL 中的 n-signature 混淆。
-            # yt-dlp 2026 起为安全考虑默认关闭此项,需显式启用。
-            opts["remote_components"] = ["ejs:github"]
-
-        return opts
+        return build_download_options(
+            save_dir, height=RESOLUTION_OPTIONS.get(self.resolution_var.get()),
+            format_name=self.format_var.get(), audio_bitrate=self.audio_bitrate_var.get(),
+            subtitles=self.subtitle_var.get(), proxy=self.proxy_var.get(),
+            js_runtime=self._js_runtime,
+            logger=_YdlLogger(self._emit, self._cancel_flag, self._record_ydl_error),
+            progress_hooks=[self._progress_hook], postprocessor_hooks=[self._postprocessor_hook],
+        )
 
     def _opts_for_url(self, base_opts: dict[str, Any], url: str) -> dict[str, Any]:
         """按 URL 自动装配对应站点的登录凭据。"""
@@ -1388,19 +1318,7 @@ class DownloaderGUI:
 
     @staticmethod
     def _youtube_url_points_to_single_video(url: str) -> bool:
-        try:
-            parsed = urlparse(url)
-            host = (parsed.hostname or "").lower()
-            path = parsed.path.rstrip("/")
-            if host == "youtu.be":
-                return bool(path.strip("/"))
-            if host == "youtube.com" or host.endswith(".youtube.com"):
-                if path == "/watch":
-                    return bool(parse_qs(parsed.query).get("v"))
-                return any(path.startswith(prefix) for prefix in ("/shorts/", "/live/", "/embed/"))
-        except ValueError:
-            pass
-        return False
+        return youtube_single_video(url)
 
     def _progress_hook(self, d: dict[str, Any]) -> None:
         if self._cancel_flag.is_set():

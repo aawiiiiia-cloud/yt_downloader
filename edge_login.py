@@ -160,7 +160,7 @@ class CDP:
             pass
 
 
-def launch_browser(browser: str, profile: Path, url: str) -> subprocess.Popen:
+def launch_browser(browser: str, profile: Path, url: str, proxy: str = "") -> subprocess.Popen:
     return subprocess.Popen(
         [
             browser,
@@ -173,6 +173,7 @@ def launch_browser(browser: str, profile: Path, url: str) -> subprocess.Popen:
             # 应用模式移除地址栏/标签栏，视觉上更接近应用内认证弹窗；
             # 仍是系统 Edge，因此验证码、二维码、两步验证都可正常工作。
             "--window-size=520,720",
+            *([f"--proxy-server={proxy}"] if proxy else []),
             f"--app={url}",
         ],
         stdout=subprocess.DEVNULL,
@@ -374,6 +375,7 @@ def run_login(
     login_timeout: float = 600,
     site: str = "youtube",
     cancel_event: threading.Event | None = None,
+    proxy: str = "",
 ) -> Path:
     """执行完整「Edge 登录 → 抓取 cookies → 写文件 → 验证」流程。
 
@@ -412,7 +414,10 @@ def run_login(
     try:
         progress(f"[1/4] 启动 {Path(browser).name} (独立配置目录)...")
         _raise_if_cancelled(cancel_event)
-        proc = launch_browser(browser, profile, config["login_url"])
+        if proxy:
+            proc = launch_browser(browser, profile, config["login_url"], proxy=proxy)
+        else:
+            proc = launch_browser(browser, profile, config["login_url"])
         with _ACTIVE_LOCK:
             _ACTIVE_PROC = proc
         port = wait_for_debug_port(profile, cancel_event=cancel_event)
@@ -480,6 +485,7 @@ def run_login(
                     "no_warnings": False,
                     "socket_timeout": 15,
                     "logger": validation_logger,
+                    **({"proxy": proxy} if proxy else {}),
                 }) as ydl:
                     _raise_if_cancelled(cancel_event)
                     info = ydl.extract_info(verify_url, download=False)

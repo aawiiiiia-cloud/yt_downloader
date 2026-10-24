@@ -1,5 +1,32 @@
 # yt-dlp GUI 下载工具
 
+## Electron 采集工具（第一阶段）
+
+双击 `start-collector.cmd` 启动新界面：左侧正常浏览网页，右侧解析当前内容、
+选择图片或视频画质并加入下载队列。第一阶段支持 YouTube、B站、小红书；
+其他网站可浏览，采集适配后续加入。旧版 Tkinter 仍使用 `start.cmd`。
+
+- 在左侧打开视频或笔记详情页后自动解析，也可点击“解析当前页面”。
+- B站分P或列表内容在右侧选择条目；图片可单选或全选，保留原图顺序编号。
+- 可直接在网页中登录；“导入旧版登录”会按站点读取已有凭据，不修改旧文件。
+- YouTube 内嵌登录受限时，可使用“Edge 备用登录”，完成后同步回采集浏览器。
+- 设置中可选择保存目录、代理和图片格式。未指定代理时，下载任务会按浏览器
+  对该网址解析出的系统代理路线执行。
+- 浏览、解析与下载相互独立：切页会丢弃旧解析结果，已入队下载继续执行。
+- 登录信息、设置和任务历史默认位于 `~/.media-collector/`，与旧版配置隔离。
+  可通过 `YT_COLLECTOR_HOME` 指定其他位置。登录凭据仅用于本机，请勿分享配置目录。
+
+开发运行要求 Node.js 22.12+、项目 Python 环境和 ffmpeg。首次在新电脑准备：
+
+```powershell
+npm.cmd install
+npm.cmd start
+```
+
+Electron 与 Python 通过本机子进程通信，不开放 HTTP 服务端口。Python 环境优先使用
+`YT_DOWNLOADER_PYTHON`；本机已配置的默认位置是 `D:\python-envs\yt-downloader`。
+更多架构、测试范围和已知限制见 `.specs/ELECTRON_PHASE1.md`。
+
 一个基于 Tkinter + yt-dlp 的多网站媒体下载工具,支持视频和小红书图文,同时提供源码版与打包版两条交付线。
 
 ## 功能特性
@@ -30,6 +57,11 @@
 
 ```
 source-code/
+├── electron/              # Electron 浏览器、右侧采集面板与桌面测试
+├── collector_worker.py    # 本地 JSON 行任务入口（无 Tkinter）
+├── collector_core.py      # 采集适配、格式解析与任务执行
+├── download_core.py       # 新旧界面共享的下载参数
+├── start-collector.cmd    # 新采集界面启动器
 ├── yt_dlp_gui.py          # 主 GUI(源码版/打包版共用)
 ├── bootstrap.py           # 源码版环境自检 + 自动安装(Node/ffmpeg/yt-dlp)
 ├── edge_login.py          # 内置登录(Edge + CDP 抓 cookie)
@@ -76,12 +108,18 @@ Node.js / ffmpeg，再自动安装确实缺失的环境。
 ## 测试
 
 ```bash
-python -m unittest test_yt_dlp_gui test_xhs_image_downloader test_media_batch -v
+python -m unittest test_yt_dlp_gui test_xhs_image_downloader test_media_batch test_collector_core -v
+npm.cmd test
+npm.cmd run test:electron
 ```
 
 以上仅测试主项目。图片测试使用临时生成的真实 JPEG/PNG/WebP/HEIF 文件；
 本机存在 ffmpeg/ffprobe 时，还会生成临时视频验证元数据、文件摘要与黑边检测。
 测试不会访问真实网站或写入用户登录设置。
+
+`npm.cmd run test:electron` 会实际启动 Electron，使用 `electron-artifacts/` 下的隔离
+配置与受控页面测试左右视图、登录同步、切页防串、任务队列及重启持久化。
+`npm.cmd run test:live` 是另外的只读公开页面检查，会真实联网获取元数据，不下载视频或登录账号。
 
 ## 说明
 

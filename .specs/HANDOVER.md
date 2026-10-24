@@ -1,5 +1,7 @@
 # yt-dlp GUI 项目 · 交接文档
 
+> 2026-10-24 新增 Electron 采集工具，当前阶段的启动方式、架构与验收边界见 [ELECTRON_PHASE1.md](ELECTRON_PHASE1.md)。下文保留旧版 Python 工具说明。
+
 > 新 agent 会话开始时,把这份文档丢给 AI 先读一遍,能省 1-2 小时的重新对齐。
 
 ## 一、项目产出
@@ -21,7 +23,7 @@ Python Tkinter 媒体下载 GUI，基于 yt-dlp 下载视频，并内置小红�
 | `build.py` | 一键打包脚本(pyinstaller onedir + 工具下载),产出 dist/yt_dlp_gui/ |
 | `requirements.txt` | yt-dlp, yt-dlp-ejs, PO Token provider, websocket-client, Pillow, pillow-heif, dhash |
 | `使用说明.txt` | 给众包同事的说明(build.py 会把它拷进 dist) |
-| `test_yt_dlp_gui.py` / `test_xhs_image_downloader.py` / `test_media_batch.py` | GUI、图文和批处理回归测试，运行 `python -m unittest discover -v` |
+| `test_yt_dlp_gui.py` / `test_xhs_image_downloader.py` / `test_media_batch.py` | GUI、图文和批处理回归测试，按模块运行，避免递归进入独立子项目 |
 | `.specs/HANDOVER.md` | 本文档 |
 | `.specs/BUILD_NOTES.md` | 打包与分发笔记 |
 
