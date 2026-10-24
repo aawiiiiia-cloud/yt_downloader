@@ -4,6 +4,7 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': 
 const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore' };
 const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
+let settingsDirty = false;
 const openedLogs = new Set();
 const previews = new Map(), pendingDownloads = new Set();
 const drafts = new Map();
@@ -65,16 +66,23 @@ function updateMediaInfo() {
       (state.youtubeAuth === 'checking' ? '正在验证登录…' : state.login.youtube ? '验证登录并下载 ↓' : '通过 Edge 登录并下载 ↓') : '加入下载队列 ↓';
   }
 }
-function showTab(tasks) {
-  $('tasks-panel').hidden = !tasks; $('resources-panel').hidden = tasks;
-  $('tasks-tab').classList.toggle('active', tasks); $('resources-tab').classList.toggle('active', !tasks);
+function showPanel(name) {
+  saveDraft();
+  for (const panel of ['resources', 'tasks', 'settings']) {
+    const active = panel === name;
+    $(panel + '-panel').hidden = !active;
+    $(panel + '-tab').classList.toggle('active', active);
+    $(panel + '-tab').setAttribute('aria-selected', String(active));
+  }
+  if (name === 'resources') { restoreDraft(); updateMediaInfo(); restoreResourceScroll(); }
+  if (name === 'settings' && !settingsDirty) fillSettings();
 }
 function syncLayout() {
   const r = $('browser-slot').getBoundingClientRect();
   call('layout', { x: Math.ceil(r.x), y: Math.ceil(r.y), width: Math.floor(r.width), height: Math.floor(r.height) });
 }
 function saveDraft() {
-  if (!state?.activeTabId || !state.inspectionId) return;
+  if (!state?.activeTabId || !state.inspectionId || $('resources-panel').hidden) return;
   const old = drafts.get(state.activeTabId);
   const draft = old?.receipt === state.inspectionId ? old : { receipt: state.inspectionId, items: {} };
   draft.itemIndex = selectedItem; draft.scroll = $('resources-panel').scrollTop;
@@ -94,7 +102,10 @@ function restoreDraft() {
     if ($('audio-only')) $('audio-only').checked = item.audio;
     if ($('subtitles')) $('subtitles').checked = item.subtitles;
   }
-  $('resources-panel').scrollTop = draft.scroll || 0;
+}
+function restoreResourceScroll() {
+  const draft = drafts.get(state.activeTabId);
+  if (draft?.receipt === state.inspectionId) $('resources-panel').scrollTop = draft.scroll || 0;
 }
 function renderBrowserTabs() {
   const signature = JSON.stringify([state.activeGroup, state.activeTabId, state.tabs]);
@@ -126,7 +137,7 @@ function renderResources() {
     html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
   $('resources').innerHTML = html + '<button id="download" class="primary download-action">加入下载队列 ↓</button><p class="muted" id="resource-size-note"></p>';
-  restoreDraft(); updateMediaInfo();
+  restoreDraft(); updateMediaInfo(); restoreResourceScroll();
   previewObserver = new IntersectionObserver(entries => entries.forEach(entry => {
     if (entry.isIntersecting) { previewObserver.unobserve(entry.target); loadPreview(entry.target); }
   }), { root: $('resources-panel'), rootMargin: '100px' });
@@ -149,11 +160,10 @@ function render(next) {
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
   const youtubeLabels = { signed_out: '未登录，下载前请通过 Edge 登录', unverified: '登录待验证', checking: '正在验证登录…', verified: '已登录并验证', expired: '登录已失效，请通过 Edge 更新' };
   $('login-state').textContent = selectedSite === 'youtube' ? `YouTube · ${youtubeLabels[state.youtubeAuth] || '登录待验证'}` : state.login[selectedSite] ? `${names[selectedSite]} · 已检测到登录凭据` : `${names[selectedSite]} · 尚未检测到登录凭据`;
-  $('web-login').textContent = selectedSite === 'youtube' ? 'Edge 登录' : '网页登录';
   $('web-login').disabled = !!state.loginRunning;
-  $('edge-login').hidden = selectedSite === 'youtube';
-  document.querySelector('.login-help').textContent = selectedSite === 'youtube' ? 'YouTube 登录通过 Edge 完成；登录信息保存在本机，下载前会验证。' : '可直接在左侧网页登录；下载时会同步该站点的登录状态。';
+  document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? 'YouTube 的「登录」通过 Edge 完成，下载前会验证。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入 Cookies 会读取旧版工具保存的本站凭据。';
   $('edge-login').disabled = !!state.loginRunning; $('cancel-login').hidden = !state.loginRunning;
+  $('import-login').disabled = !!state.loginRunning;
   $('parse-log').textContent = state.logs.join('\n');
   const id = `${state.activeTabId}:${state.inspectionId}:${state.parsing}`;
   if (id !== renderedId) {
@@ -167,7 +177,7 @@ function render(next) {
   else if (previousError && $('notice').textContent === previousError) notify('');
   $('task-count').textContent = state.tasks.filter(t => ['running', 'queued', 'cancelling'].includes(t.status)).length;
   renderTasks();
-  if ($('settings-panel').hidden) fillSettings();
+  if (!settingsDirty) fillSettings();
   const h = state.health;
   $('core-status').textContent = h ? (!h.ffmpeg ? '视频合并工具缺失，请查看设置' : '下载核心已连接 · 本地保存') : '正在连接下载核心…';
   $('health-detail').textContent = h ? `视频合并：${h.ffmpeg ? '就绪' : '缺失'}；YouTube 解算：${h.node ? '就绪' : '缺少 Node'}；YouTube 增强：${h.provider ? '就绪' : '未就绪，部分画质可能不可用'}` : '正在检查运行环境…';
@@ -187,13 +197,19 @@ $('browser-tabs').addEventListener('click', event => {
   if (button?.dataset.closeTab) call('close-tab', { id: button.dataset.closeTab });
   else if (button?.dataset.tab) call('activate-tab', { id: button.dataset.tab });
 });
-$('resources-tab').addEventListener('click', () => showTab(false)); $('tasks-tab').addEventListener('click', () => showTab(true));
-$('settings-toggle').addEventListener('click', () => { $('settings-panel').hidden = !$('settings-panel').hidden; fillSettings(); });
-$('choose-folder').addEventListener('click', async () => { await call('choose-folder'); fillSettings(); });
+for (const panel of ['resources', 'tasks', 'settings']) $(panel + '-tab').addEventListener('click', () => showPanel(panel));
+$('settings-panel').addEventListener('input', event => { if (event.target.matches('input:not([readonly]),select')) settingsDirty = true; });
+$('settings-panel').addEventListener('change', event => { if (event.target.matches('input:not([readonly]),select')) settingsDirty = true; });
+$('choose-folder').addEventListener('click', async () => { await call('choose-folder'); $('save-dir').value = state.settings.saveDir; });
 $('open-folder').addEventListener('click', () => call('open-folder'));
-$('save-settings').addEventListener('click', async () => { await call('settings', { proxy: $('proxy').value, imageFormat: $('image-format').value, autoParse: $('auto-parse').checked }); });
+$('save-settings').addEventListener('click', async () => {
+  try {
+    await window.collector.call('settings', { proxy: $('proxy').value, imageFormat: $('image-format').value, autoParse: $('auto-parse').checked });
+    settingsDirty = false; notify('设置已保存。');
+  } catch (error) { notify(error.message); }
+});
 $('edge-login').addEventListener('click', () => call('login', { site: selectedSite }));
-$('import-login').addEventListener('click', async () => { const count = await call('import-login', { site: selectedSite }); if (count) notify('旧版登录已导入，可重新解析当前页面。'); });
+$('import-login').addEventListener('click', async () => { const count = await call('import-login', { site: selectedSite }); if (count) notify('旧版保存的 Cookies 已导入，可重新解析当前页面。'); });
 $('cancel-login').addEventListener('click', () => call('cancel-login'));
 $('web-login').addEventListener('click', () => selectedSite === 'youtube' ? call('login', { site: 'youtube' }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : homes.xiaohongshu }));
 $('required-login').addEventListener('click', () => call('login', { site: 'youtube' }));
@@ -224,7 +240,7 @@ $('resources').addEventListener('click', async event => {
         await window.collector.call('login', { site: 'youtube' });
         id = await window.collector.call('download', args);
       }
-      if (id && state.inspectionId === args.inspectionId) { notify(''); showTab(true); }
+      if (id && state.inspectionId === args.inspectionId) { notify(''); showPanel('tasks'); }
     } catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
     finally { pendingDownloads.delete(args.inspectionId); updateMediaInfo(); }
   }
