@@ -7,6 +7,8 @@ const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { SITES, navigationUrl, siteForUrl, contentKey, cookieText, readCookies, hasAuth, DownloadQueue } = require('./model.cjs');
 const { pythonTask } = require('./bridge.cjs');
+const { Assets, readBody } = require('./assets.cjs');
+const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -50,7 +52,7 @@ const biliSnapshotScript = String.raw`(() => {
   if (!videoId || !video || !play) return null;
   return JSON.parse(JSON.stringify({ videoId, part: Number(new URL(location.href).searchParams.get('p') || 1),
     video: {title: video.title, pic: video.pic, duration: video.duration, owner: {name: video.owner?.name},
-      pages: (video.pages || []).slice(0, 200).map(p => ({page: p.page, part: p.part}))}, playInfo: play }));
+      pages: (video.pages || []).slice(0, 200).map(p => ({page: p.page, part: p.part, duration: p.duration}))}, playInfo: play }));
 })()`;
 
 class CollectorApp {
@@ -62,6 +64,8 @@ class CollectorApp {
     this.state = { url: '', title: '', site: null, loading: false, parsing: false, result: null,
       inspectionId: null, error: '', health: null, login: {}, loginRunning: null, logs: [] };
     this.handles = new Set(); this.sequence = 0; this.cache = new Map(); this.closing = false;
+    this.assetsAbort = new AbortController();
+    this.youtubeAuth = new YouTubeAuth(() => this.browserSession.cookies.get({}), () => this.verifyYouTube(), () => this.publish());
     this.queue = new DownloadQueue((spec, onEvent) => this.withCookies(spec, onEvent), () => this.publish());
     const history = readJson(path.join(profile, 'history.json'), []);
     this.queue.tasks = (Array.isArray(history) ? history : []).filter(t => t && typeof t === 'object').slice(0, 60).map(t => ({
@@ -69,7 +73,7 @@ class CollectorApp {
       error: ['queued', 'running', 'cancelling'].includes(t.status) ? '上次任务已中断，请重新解析后下载' : t.error,
     }));
   }
-  publicState() { return { ...this.state, settings: this.settings,
+  publicState() { return { ...this.state, settings: this.settings, youtubeAuth: this.youtubeAuth.status,
     tasks: this.queue.list().map(t => ({ ...t, canRetry: !!this.queue.tasks.find(row => row.id === t.id)?.spec })) }; }
   publish() {
     if (!this.window?.isDestroyed() && this.window?.webContents && !this.window.webContents.isDestroyed())
@@ -89,6 +93,8 @@ class CollectorApp {
   log(text) { this.state.logs = [...this.state.logs, String(text)].slice(-35); this.publish(); }
   async create() {
     this.browserSession = session.fromPartition('persist:collector-web');
+    this.assets = new Assets((url, options) => this.browserSession.fetch(url, { ...options,
+      headers: { 'User-Agent': this.userAgent, ...options.headers } }));
     this.browserSession.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'fullscreen'));
     this.browserSession.setPermissionCheckHandler((_contents, permission) => permission === 'fullscreen');
     await this.applyProxy();
@@ -152,6 +158,7 @@ class CollectorApp {
   }
   invalidate() {
     this.sequence++; clearTimeout(this.parseTimer); this.parseTask?.cancel();
+    this.assetsAbort.abort(); this.assetsAbort = new AbortController();
     Object.assign(this.state, { result: null, inspectionId: null, parsing: false, error: '', logs: [] });
   }
   pageReady() {
@@ -180,10 +187,12 @@ class CollectorApp {
   async updateLogin() {
     const cookies = await this.browserSession.cookies.get({});
     for (const site of Object.keys(SITES)) this.state.login[site] = hasAuth(cookies, site);
+    this.youtubeAuth.observe(cookies);
     this.publish();
   }
-  async cookieSnapshot(site) {
+  async cookieSnapshot(site, verified = false) {
     const cookies = await this.browserSession.cookies.get({});
+    if (verified && (this.youtubeAuth.status !== 'verified' || fingerprint(cookies) !== this.youtubeAuth.key)) throw authRequired();
     const file = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
     fs.writeFileSync(file, cookieText(cookies, site), { mode: 0o600 });
     return file;
@@ -201,11 +210,16 @@ class CollectorApp {
     let task, cancelled = false;
     const handle = { cancel() { cancelled = true; task?.cancel(); }, promise: null };
     handle.promise = (async () => {
-      const cookieFile = await this.cookieSnapshot(siteForUrl(spec.url));
+      const youtubeVerified = spec.command === 'download' && siteForUrl(spec.url) === 'youtube';
+      if (youtubeVerified) await this.youtubeAuth.ensure();
+      const cookieFile = await this.cookieSnapshot(siteForUrl(spec.url), youtubeVerified);
       try {
         const proxy = await this.effectiveProxy(spec.url, spec.settings?.proxy);
         if (cancelled) { const error = new Error('操作已取消'); error.cancelled = true; throw error; }
-        task = this.track(pythonTask({ ...spec, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, onEvent));
+        task = this.track(pythonTask({ ...spec, youtubeVerified, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, (type, data) => {
+          if (type === 'auth-invalid') { this.youtubeAuth.status = 'expired'; this.youtubeAuth.until = 0; this.publish(); }
+          onEvent?.(type, data);
+        }));
         return await task.promise;
       } finally { fs.unlinkSync(cookieFile); }
     })();
@@ -254,11 +268,35 @@ class CollectorApp {
       if (ticket === this.sequence && !error.cancelled) this.state.error = error.message.replace(/\u001b\[[0-9;]*m/g, '');
     } finally { if (ticket === this.sequence) { this.state.parsing = false; this.publish(); } }
   }
-  download(data) {
+  async verifyYouTube() {
+    const response = await this.browserSession.fetch('https://www.youtube.com/', {
+      credentials: 'include', redirect: 'error', signal: AbortSignal.timeout(15000), headers: { 'User-Agent': this.userAgent },
+    });
+    if (!response.ok) { await response.body?.cancel(); throw new Error('YouTube 登录验证连接失败，请检查网络或代理'); }
+    return loginEvidence((await readBody(response, 8 * 1024 * 1024)).toString('utf8'));
+  }
+  asset(data, mode) {
+    const record = this.cache.get(data.inspectionId);
+    if (!record || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析');
+    const item = record.result.items[Number(data.itemIndex)], site = siteForUrl(item?.url);
+    if (!item || !site) throw new Error('资源不存在');
+    const image = item.images?.find(row => row.index === Number(data.imageIndex));
+    if (item.kind === 'images' && !image) throw new Error('图片不存在');
+    if (mode === 'size') {
+      if (!image) throw new Error('当前内容不是图片');
+      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.assetsAbort.signal);
+    }
+    const url = image ? image.fallback_urls?.at(-1) || image.url : item.thumbnail;
+    if (!url) throw new Error('当前页面未提供视频封面');
+    return this.assets.preview(url, site, this.assetsAbort.signal, !!data.refresh);
+  }
+  async download(data) {
     const snapshot = this.cache.get(data.inspectionId);
     if (!snapshot || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const item = snapshot.result.items[Number(data.itemIndex)];
     if (!item || !siteForUrl(item.url)) throw new Error('资源不存在，请重新解析');
+    if (siteForUrl(item.url) === 'youtube') await this.youtubeAuth.ensure();
+    if (data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const indices = Array.isArray(data.indices) ? data.indices.filter(i => item.images?.some(image => image.index === i)) : [];
     if (item.kind === 'images' && !indices.length) throw new Error('请至少选择一张图片');
     const formatId = String(data.formatId || '');
@@ -275,23 +313,27 @@ class CollectorApp {
     }
     await this.browserSession.cookies.flushStore(); await this.updateLogin();
     if (!count) throw new Error('没有可导入的有效登录凭据，请重新登录');
+    if (site === 'youtube') await this.youtubeAuth.ensure(true);
     return count;
   }
   async login(site) {
     if (!SITES[site]) throw new Error('请先选择支持的站点');
-    if (this.loginTask) throw new Error('已有登录窗口正在运行');
+    if (this.loginTask || this.state.loginRunning) throw new Error('已有登录窗口正在运行');
     const cookieFile = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
     this.state.loginRunning = site; this.publish();
-    const proxy = await this.effectiveProxy(SITES[site].home, this.settings.proxy);
-    this.loginTask = this.track(pythonTask({ command: 'login', site, cookieFile, proxy },
-      (type, data) => { if (type === 'log') this.log(data); }));
-    try { await this.loginTask.promise; await this.importCookies(cookieFile, site); this.log('登录凭据已同步，可重新解析当前内容'); }
+    try {
+      const proxy = await this.effectiveProxy(SITES[site].home, this.settings.proxy);
+      this.loginTask = this.track(pythonTask({ command: 'login', site, cookieFile, proxy },
+        (type, data) => { if (type === 'log') this.log(data); }));
+      await this.loginTask.promise; await this.importCookies(cookieFile, site); this.log('登录凭据已同步，可重新解析当前内容');
+    }
     finally {
       this.loginTask = null; this.state.loginRunning = null;
       if (fs.existsSync(cookieFile)) fs.unlinkSync(cookieFile); this.publish();
     }
   }
   async invoke(method, data = {}) {
+    if (this.closing && method !== 'state') throw new Error('采集工具正在关闭，请稍后重新启动');
     if (method === 'state') return this.publicState();
     if (method === 'layout') return this.layout(data);
     if (method === 'navigate') return this.navigate(data.url);
@@ -301,8 +343,13 @@ class CollectorApp {
     if (method === 'inspect') return this.inspect();
     if (method === 'cancel-inspect') { this.invalidate(); this.publish(); return; }
     if (method === 'download') return this.download(data);
+    if (method === 'preview' || method === 'image-size') return this.asset(data, method === 'preview' ? 'preview' : 'size');
     if (method === 'cancel-task') return this.queue.cancel(String(data.id));
-    if (method === 'retry-task') return this.queue.retry(String(data.id));
+    if (method === 'retry-task') {
+      const task = this.queue.tasks.find(row => row.id === String(data.id));
+      if (siteForUrl(task?.spec?.url) === 'youtube') await this.youtubeAuth.ensure();
+      return this.queue.retry(String(data.id));
+    }
     if (method === 'login') return this.login(data.site);
     if (method === 'cancel-login') { this.loginTask?.cancel(); return; }
     if (method === 'import-login') {
@@ -354,7 +401,7 @@ app.whenReady().then(async () => {
     if (event.sender !== collector.window.webContents || event.senderFrame !== event.sender.mainFrame ||
         event.senderFrame.url !== pathToFileURL(path.join(__dirname, 'ui', 'index.html')).href) throw new Error('请求来源不受信任');
     try { return { ok: true, data: await collector.invoke(method, data) }; }
-    catch (error) { return { ok: false, error: error.message }; }
+    catch (error) { return { ok: false, error: error.message, code: error.code }; }
   });
   await collector.create();
   if (smoke) await require('./smoke.cjs').run(collector, profile, snapshotScript);

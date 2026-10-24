@@ -25,6 +25,7 @@ async function run(collector, profile) {
   ];
   if (!Array.isArray(targets) || targets.length > 3 || !targets.length || targets.some(row =>
     !Array.isArray(row) || row.length !== 2 || siteForUrl(row[1]) !== row[0])) throw new Error('验收链接配置无效');
+  if (!targets.some(([site]) => !process.env.YT_COLLECTOR_TEST_SITE || process.env.YT_COLLECTOR_TEST_SITE === site)) throw new Error('验收配置中没有所选站点的链接');
   try {
     for (const [site, url] of targets) {
       if (process.env.YT_COLLECTOR_TEST_SITE && process.env.YT_COLLECTOR_TEST_SITE !== site) continue;
@@ -58,6 +59,36 @@ async function run(collector, profile) {
           result.duration = collector.state.result?.items?.[0]?.duration;
           if (collector.state.error) result.error = collector.state.error;
           if (!result.parsed && !result.error) result.error = '解析期间页面发生变化，请在当前内容加载稳定后重试';
+          if (process.env.YT_COLLECTOR_TEST_PREVIEW === '1' && result.parsed) {
+            const item = collector.state.result.items[0];
+            const args = { inspectionId: collector.state.inspectionId, itemIndex: 0, imageIndex: item.images?.[0]?.index };
+            const preview = await collector.asset(args, 'preview');
+            result.previewLoaded = preview.dataUrl.startsWith('data:image/');
+            if (item.kind === 'images') result.originalSize = (await collector.asset(args, 'size')).size;
+            const deadline = Date.now() + 15000;
+            const readyPreview = '(() => { const img = document.querySelector("[data-preview-image]"); return !!img?.complete && img.naturalWidth > 0 && !img.hidden; })()';
+            while (Date.now() < deadline && !await collector.window.webContents.mainFrame.executeJavaScript(readyPreview)) await wait(200);
+            result.previewDecodedInPanel = await collector.window.webContents.mainFrame.executeJavaScript(readyPreview);
+            if (item.kind === 'images') {
+              const visibleState = `(() => { const area = document.getElementById('resources-panel').getBoundingClientRect(); const images = [...document.querySelectorAll('[data-preview-image]')].filter(img => {const r=img.parentElement.getBoundingClientRect(); return r.top<area.bottom && r.bottom>area.top;}); return {visible:images.length,decoded:images.filter(img=>img.complete && img.naturalWidth>0 && !img.hidden).length}; })()`;
+              const until = Date.now() + 15000;
+              while (Date.now() < until) {
+                result.visiblePreviews = await collector.window.webContents.mainFrame.executeJavaScript(visibleState);
+                if (result.visiblePreviews.visible === result.visiblePreviews.decoded) break;
+                await wait(200);
+              }
+              if (result.visiblePreviews.visible !== result.visiblePreviews.decoded) throw new Error('部分可见图片预览尚未加载成功');
+            }
+            result.panelMetadata = await collector.window.webContents.mainFrame.executeJavaScript('document.querySelector(".media-summary")?.textContent || document.querySelector("[data-image-size]")?.textContent');
+            if (!result.previewDecodedInPanel) throw new Error('资源已取得，但右侧预览未能解码');
+            try {
+              const rect = await collector.window.webContents.mainFrame.executeJavaScript('(() => { const r = document.querySelector("aside").getBoundingClientRect(); return {x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}; })()');
+              let screenshotTimer;
+              const screenshot = await Promise.race([collector.window.webContents.capturePage(rect),
+                new Promise((_, reject) => { screenshotTimer = setTimeout(() => reject(new Error('截图超时')), 5000); })]).finally(() => clearTimeout(screenshotTimer));
+              fs.writeFileSync(path.join(profile, '..', `preview-${site}-panel.png`), screenshot.toPNG());
+            } catch (error) { result.screenshotNote = error.message || String(error); }
+          }
           if (process.env.YT_COLLECTOR_TEST_DOWNLOAD === '1' && result.parsed) {
             const item = collector.state.result.items[0];
             const formats = (item.formats || []).filter(f => f.video && f.height && f.height <= 360);
@@ -65,7 +96,7 @@ async function run(collector, profile) {
             if (item.kind !== 'images' && !format) throw new Error('没有 360p 或以下的小样本画质，不执行下载');
             const indices = item.kind === 'images' ? (process.env.YT_COLLECTOR_TEST_ALL_IMAGES === '1' ? item.images.map(image => image.index) : [item.images[0].index]) : [];
             collector.settings.saveDir = path.join(profile, 'downloads', site);
-            const id = collector.download({ inspectionId: collector.state.inspectionId, itemIndex: 0,
+            const id = await collector.download({ inspectionId: collector.state.inspectionId, itemIndex: 0,
               formatId: format?.id, indices });
             const task = collector.queue.tasks.find(t => t.id === id);
             const deadline = Date.now() + 90000;

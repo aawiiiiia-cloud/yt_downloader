@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('collector', {
   call: async (method, data) => {
     const response = await ipcRenderer.invoke('collector:invoke', method, data);
-    if (!response.ok) throw new Error(response.error);
+    if (!response.ok) throw Object.assign(new Error(response.error), { code: response.code });
     return response.data;
   },
   onState: callback => {

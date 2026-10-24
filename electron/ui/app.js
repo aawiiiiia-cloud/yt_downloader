@@ -5,12 +5,64 @@ const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bili
 const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 const openedLogs = new Set();
-const imageUrl = value => { try { const u = new URL(value); return u.protocol === 'https:' ? u.href : ''; } catch { return ''; } };
+const previews = new Map(), pendingDownloads = new Set();
+let previewObserver;
 async function call(method, data) {
   try { return await window.collector.call(method, data); }
-  catch (error) { notify(error.message); }
+  catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
 }
-function notify(message) { $('notice').textContent = message; $('notice').hidden = !message; clearTimeout(noticeTimer); }
+function notify(message, login = false) { $('notice').textContent = message; $('notice').hidden = !message; $('required-login').hidden = !login; clearTimeout(noticeTimer); }
+function rememberPreview(key, value) {
+  previews.set(key, { ...previews.get(key), ...value });
+  while (previews.size > 48 || [...previews.values()].reduce((sum, row) => sum + (row.dataUrl?.length || 0), 0) > 24000000) previews.delete(previews.keys().next().value);
+}
+function previewFrame(index, title) {
+  return `<div class="preview-frame ${index === 'cover' ? 'cover-frame' : ''}" data-preview="${index}"><img data-preview-image alt="${escape(title)}" hidden><span class="preview-message">正在加载预览…</span><button type="button" class="preview-retry" data-retry-preview="${index}" hidden>重试</button></div>`;
+}
+function loadPreview(frame, refresh = false) {
+  const receipt = state.inspectionId, itemIndex = selectedItem, imageIndex = frame.dataset.preview;
+  const key = `${receipt}:${itemIndex}:${imageIndex}`;
+  const current = () => frame.isConnected && state.inspectionId === receipt && selectedItem === itemIndex;
+  const img = frame.querySelector('img'), message = frame.querySelector('.preview-message'), retry = frame.querySelector('button');
+  const display = result => {
+    if (!current()) return;
+    img.onload = () => { if (current()) { img.hidden = false; message.hidden = true; retry.hidden = true; } };
+    img.onerror = () => { if (current()) { img.hidden = true; message.hidden = false; message.textContent = '预览加载失败'; retry.hidden = false; } };
+    img.src = result.dataUrl;
+    if (img.complete && img.naturalWidth > 0) img.onload();
+  };
+  const args = { inspectionId: receipt, itemIndex, imageIndex: imageIndex === 'cover' ? null : Number(imageIndex), refresh };
+  if (previews.get(key)?.dataUrl && !refresh) display(previews.get(key));
+  else {
+    message.hidden = false; message.textContent = '正在加载预览…'; retry.hidden = true;
+    window.collector.call('preview', args).then(result => { rememberPreview(key, result); display(result); }, error => {
+      if (current()) { img.hidden = true; message.hidden = false; message.textContent = error.message; retry.hidden = false; }
+    });
+  }
+  if (imageIndex === 'cover') return;
+  const label = frame.closest('.image-card').querySelector('[data-image-size]');
+  const showSize = value => { if (current()) label.textContent = `${value.displayFallback ? '网页图' : '原图'} ${mediaInfo.size(value.size)}`; };
+  if (previews.get(key)?.sizeLoaded) showSize(previews.get(key));
+  else window.collector.call('image-size', args).then(value => {
+    rememberPreview(key, { ...value, sizeLoaded: true }); showSize(value);
+  }, () => { if (current()) label.textContent = '原图大小未知'; });
+}
+function updateMediaInfo() {
+  const item = state?.result?.items?.[selectedItem];
+  if (!item) return;
+  if (item.kind === 'video' && $('video-size')) {
+    const value = mediaInfo.videoSize(item, $('format-select')?.value, $('audio-only')?.checked);
+    $('video-size').textContent = mediaInfo.size(value.size, value.estimated);
+  }
+  if ($('resource-size-note')) $('resource-size-note').textContent = item.kind === 'images' ?
+    (state.settings.imageFormat === 'original' ? '预览使用网页展示图；大小按原始素材查询，下载优先原图。' : '图片显示源文件大小；格式转换后的大小以实际保存结果为准。') : '大小随画质更新，包含需要合并的音频；估算值以“约”标记。';
+  const button = $('download');
+  if (button) {
+    button.disabled = pendingDownloads.has(state.inspectionId);
+    button.textContent = button.disabled ? '正在处理…' : state.result.site === 'youtube' && state.youtubeAuth !== 'verified' ?
+      (state.youtubeAuth === 'checking' ? '正在验证登录…' : state.login.youtube ? '验证登录并下载 ↓' : '通过 Edge 登录并下载 ↓') : '加入下载队列 ↓';
+  }
+}
 function showTab(tasks) {
   $('tasks-panel').hidden = !tasks; $('resources-panel').hidden = tasks;
   $('tasks-tab').classList.toggle('active', tasks); $('resources-tab').classList.toggle('active', !tasks);
@@ -20,21 +72,26 @@ function syncLayout() {
   call('layout', { x: Math.ceil(r.x), y: Math.ceil(r.y), width: Math.floor(r.width), height: Math.floor(r.height) });
 }
 function renderResources() {
+  previewObserver?.disconnect();
   const items = state.result?.items || [], item = items[selectedItem];
   if (!item) {
     $('resources').innerHTML = `<div class="empty"><div class="empty-icon">${state.parsing ? '◌' : '▧'}</div><strong>${state.parsing ? '正在识别当前内容…' : '等待值得收藏的内容'}</strong><p>${state.parsing ? '正在获取资源与实际可用画质，<br>你可以继续浏览或查看下载任务。' : '在左侧打开视频或笔记详情页，<br>或点击「解析当前页面」。'}</p></div>`;
     return;
   }
   const parts = items.length > 1 ? `<select id="part-select" class="part-select" aria-label="视频条目">${items.map((row, index) => `<option value="${index}" ${index === selectedItem ? 'selected' : ''}>${index + 1}. ${escape(row.title)}</option>`).join('')}</select>` : '';
-  let html = parts + `<h2 class="content-title">${escape(item.title)}</h2><div class="author">${escape(item.author)}${item.duration ? ' · ' + Math.round(item.duration / 60) + ' 分钟' : ''}</div>`;
+  let html = parts + `<h2 class="content-title">${escape(item.title)}</h2><div class="author">${escape(item.author)}</div>`;
   if (item.parts?.length > 1) html += `<label class="muted">选择分P<select id="bili-part" class="part-select">${item.parts.map(p => `<option value="${p.index}" ${p.index === item.currentPart ? 'selected' : ''}>P${p.index} · ${escape(p.title)}</option>`).join('')}</select></label>`;
   if (item.kind === 'images') {
-    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<label class="image-card"><input type="checkbox" data-image="${image.index}" checked><img src="${escape(imageUrl(image.fallback_urls?.at(-1) || image.url))}" loading="lazy" alt="第 ${image.index} 张图片"><span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '原图优先'}</span></span></label>`).join('')}</div>`;
+    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<label class="image-card"><input type="checkbox" data-image="${image.index}" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}<span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '原图优先'}</span></span><span class="image-size" data-image-size>正在查询原图大小…</span></label>`).join('')}</div>`;
   } else {
-    html += `<img class="cover" src="${escape(imageUrl(item.thumbnail))}" alt="视频封面"><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
+    html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
-  $('resources').innerHTML = html + '<button id="download" class="primary download-action">加入下载队列 ↓</button><p class="muted">实际保存结果以下载日志为准；网页浏览可继续。</p>';
-  $('resources').querySelectorAll('img').forEach(img => img.addEventListener('error', () => { img.style.opacity = '.15'; }, { once: true }));
+  $('resources').innerHTML = html + '<button id="download" class="primary download-action">加入下载队列 ↓</button><p class="muted" id="resource-size-note"></p>';
+  updateMediaInfo();
+  previewObserver = new IntersectionObserver(entries => entries.forEach(entry => {
+    if (entry.isIntersecting) { previewObserver.unobserve(entry.target); loadPreview(entry.target); }
+  }), { root: $('resources-panel'), rootMargin: '100px' });
+  $('resources').querySelectorAll('[data-preview]').forEach(frame => previewObserver.observe(frame));
 }
 function renderTasks() {
   const labels = { queued: '等待下载', running: '下载中', cancelling: '正在停止', cancelled: '已取消', completed: '已完成', failed: '下载失败' };
@@ -49,11 +106,17 @@ function render(next) {
   $('site-label').textContent = names[state.site] || '通用浏览';
   $('parse').textContent = state.parsing ? '停止解析' : '解析当前页面';
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.site));
-  $('login-state').textContent = state.login[selectedSite] ? `${names[selectedSite]} · 已检测到登录凭据` : `${names[selectedSite]} · 尚未检测到登录凭据`;
+  const youtubeLabels = { signed_out: '未登录，下载前请通过 Edge 登录', unverified: '登录待验证', checking: '正在验证登录…', verified: '已登录并验证', expired: '登录已失效，请通过 Edge 更新' };
+  $('login-state').textContent = selectedSite === 'youtube' ? `YouTube · ${youtubeLabels[state.youtubeAuth] || '登录待验证'}` : state.login[selectedSite] ? `${names[selectedSite]} · 已检测到登录凭据` : `${names[selectedSite]} · 尚未检测到登录凭据`;
+  $('web-login').textContent = selectedSite === 'youtube' ? 'Edge 登录' : '网页登录';
+  $('web-login').disabled = !!state.loginRunning;
+  $('edge-login').hidden = selectedSite === 'youtube';
+  document.querySelector('.login-help').textContent = selectedSite === 'youtube' ? 'YouTube 登录通过 Edge 完成；登录信息保存在本机，下载前会验证。' : '可直接在左侧网页登录；下载时会同步该站点的登录状态。';
   $('edge-login').disabled = !!state.loginRunning; $('cancel-login').hidden = !state.loginRunning;
   $('parse-log').textContent = state.logs.join('\n');
   const id = `${state.inspectionId}:${state.parsing}`;
   if (id !== renderedId) { selectedItem = 0; renderedId = id; renderResources(); }
+  updateMediaInfo();
   if (state.error) notify(state.error);
   else if (previousError && $('notice').textContent === previousError) notify('');
   $('task-count').textContent = state.tasks.filter(t => ['running', 'queued', 'cancelling'].includes(t.status)).length;
@@ -80,7 +143,8 @@ $('save-settings').addEventListener('click', async () => { await call('settings'
 $('edge-login').addEventListener('click', () => call('login', { site: selectedSite }));
 $('import-login').addEventListener('click', async () => { const count = await call('import-login', { site: selectedSite }); if (count) notify('旧版登录已导入，可重新解析当前页面。'); });
 $('cancel-login').addEventListener('click', () => call('cancel-login'));
-$('web-login').addEventListener('click', () => call('navigate', { url: selectedSite === 'youtube' ? 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.youtube.com' : selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : homes.xiaohongshu }));
+$('web-login').addEventListener('click', () => selectedSite === 'youtube' ? call('login', { site: 'youtube' }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : homes.xiaohongshu }));
+$('required-login').addEventListener('click', () => call('login', { site: 'youtube' }));
 $('resources').addEventListener('change', event => {
   if (event.target.id === 'part-select') { selectedItem = Number(event.target.value); renderResources(); }
   if (event.target.id === 'bili-part') {
@@ -88,14 +152,29 @@ $('resources').addEventListener('change', event => {
     if (part) call('navigate', { url: part.url });
   }
   if (event.target.id === 'audio-only') $('format-select').disabled = event.target.checked;
+  updateMediaInfo();
 });
 $('resources').addEventListener('click', async event => {
+  if (event.target.dataset.retryPreview) { event.preventDefault(); loadPreview(event.target.closest('[data-preview]'), true); }
   if (event.target.id === 'select-all') { const inputs = [...document.querySelectorAll('[data-image]')], all = inputs.every(i => i.checked); inputs.forEach(i => { i.checked = !all; }); }
   if (event.target.id === 'download') {
-    const id = await call('download', { inspectionId: state.inspectionId, itemIndex: selectedItem,
+    const args = { inspectionId: state.inspectionId, itemIndex: selectedItem,
       indices: [...document.querySelectorAll('[data-image]:checked')].map(i => Number(i.dataset.image)),
-      formatId: $('format-select')?.value || '', audioOnly: $('audio-only')?.checked, subtitles: $('subtitles')?.checked });
-    if (id) showTab(true);
+      formatId: $('format-select')?.value || '', audioOnly: $('audio-only')?.checked, subtitles: $('subtitles')?.checked };
+    if (pendingDownloads.has(args.inspectionId)) return;
+    pendingDownloads.add(args.inspectionId); updateMediaInfo();
+    try {
+      let id;
+      try { id = await window.collector.call('download', args); }
+      catch (error) {
+        if (error.code !== 'YOUTUBE_AUTH_REQUIRED' || state.inspectionId !== args.inspectionId) throw error;
+        notify('请在 Edge 中完成 YouTube 登录，完成后继续下载。');
+        await window.collector.call('login', { site: 'youtube' });
+        id = await window.collector.call('download', args);
+      }
+      if (id && state.inspectionId === args.inspectionId) { notify(''); showTab(true); }
+    } catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
+    finally { pendingDownloads.delete(args.inspectionId); updateMediaInfo(); }
   }
 });
 $('tasks').addEventListener('click', event => {

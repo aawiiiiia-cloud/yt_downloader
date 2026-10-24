@@ -153,6 +153,46 @@ class TestCollectorAdapters(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '可下载画质'):
                 service.inspect()
 
+    def test_youtube_download_rejects_missing_or_unverified_auth_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw) / 'must-not-exist'
+            for verified in (False, True):
+                service = Collector({'url':'https://www.youtube.com/watch?v=fixture', 'youtubeVerified':verified,
+                                     'settings':{'saveDir':str(folder)}}, lambda *_: None)
+                with self.assertRaisesRegex(ValueError, 'Edge'):
+                    service.download()
+            self.assertFalse(folder.exists())
+
+    def test_video_sizes_keep_estimate_flags_and_bitrate(self):
+        result = normalise_video({'duration':3527,'formats':[
+            {'format_id':'1','url':'https://fixture.invalid/a','filesize':340000},
+            {'format_id':'2','url':'https://fixture.invalid/b','filesize_approx':420000,'tbr':800},
+        ]}, 'https://youtube.com/watch?v=fixture')
+        self.assertFalse(result['formats'][0]['sizeEstimated'])
+        self.assertTrue(result['formats'][1]['sizeEstimated'])
+        self.assertEqual(result['formats'][1]['bitrate'],800)
+
+    def test_youtube_worker_requires_both_verified_state_and_site_auth_cookie(self):
+        with tempfile.TemporaryDirectory() as raw:
+            cookies = Path(raw) / 'youtube.cookies.txt'
+            cookies.write_text('# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture\n',encoding='utf-8')
+            request = {'url':'https://www.youtube.com/watch?v=fixture','cookieFile':str(cookies),
+                       'settings':{'saveDir':str(Path(raw)/'downloads')}}
+            service = Collector(request,lambda *_:None)
+            with self.assertRaisesRegex(ValueError,'Edge'):
+                service.download()
+            service.request['youtubeVerified'] = True
+            with mock.patch.object(service,'options',return_value={}), mock.patch('yt_dlp.YoutubeDL') as ydl:
+                ydl.return_value.__enter__.return_value.download.return_value = 0
+                self.assertEqual(service.download()['count'],1)
+
+    def test_explicit_invalid_youtube_credentials_cannot_fall_back_to_unsigned_download(self):
+        events=[]
+        service=Collector({'youtubeVerified':True},lambda *event:events.append(event))
+        with self.assertRaisesRegex(RuntimeError,'登录已失效'):
+            service.warning('The provided YouTube account cookies are no longer valid')
+        self.assertEqual(events[0][0],'auth-invalid')
+
 
 if __name__ == '__main__':
     unittest.main()

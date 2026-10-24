@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import importlib.metadata
+import http.cookiejar
 import re
 import shutil
 import threading
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode
@@ -61,9 +63,11 @@ def normalise_video(info: dict, source_url: str) -> dict:
         formats.append({"id": identifier, "height": item.get("height"), "width": item.get("width"),
                         "fps": item.get("fps"), "ext": item.get("ext"), "video": video,
                         "audio": audio, "size": item.get("filesize") or item.get("filesize_approx"),
+                        "sizeEstimated": not bool(item.get("filesize")), "bitrate": item.get("tbr"),
                         "note": str(item.get("format_note") or "")[:100]})
     return {"id": str(info.get("id") or ""), "kind": "video", "url": source_url,
-            "title": str(info.get("title") or "未命名视频"), "thumbnail": info.get("thumbnail"),
+            "title": str(info.get("title") or "未命名视频"), "thumbnail": info.get("thumbnail") or next(
+                (thumb.get('url') for thumb in reversed(info.get('thumbnails') or []) if thumb.get('url')), None),
             "author": info.get("uploader") or info.get("channel") or "",
             "duration": info.get("duration"), "formats": formats,
             "subtitles": list((info.get("subtitles") or {}).keys()),
@@ -129,7 +133,8 @@ def browser_bilibili(url: str, context: dict | None, ydl):
     return {"id": match[1] + f"_p{part}", "title": video.get("title") or match[1],
             "extractor": "BiliBili", "extractor_key": "BiliBili",
             "thumbnail": video.get("pic"), "uploader": video.get("owner", {}).get("name", ""),
-            "duration": video.get("duration"), "formats": formats, "webpage_url": url,
+            "duration": next((page.get('duration') for page in video.get('pages', []) if page.get('page') == part and page.get('duration')), video.get('duration')),
+            "formats": formats, "webpage_url": url,
             "parts": parts, "currentPart": part,
             "http_headers": {"Referer": "https://www.bilibili.com/", "Origin": "https://www.bilibili.com"}}
 
@@ -180,6 +185,11 @@ class Collector:
         return options
 
     def debug(self, message):
+        if self.request.get('youtubeVerified') and any(marker in str(message).lower() for marker in (
+            'cookies are no longer valid', 'account cookies have been rotated', 'cookies have expired',
+        )):
+            self.emit('auth-invalid', 'YouTube 登录已失效，请通过 Edge 重新登录')
+            raise RuntimeError('YouTube 登录已失效，请通过 Edge 重新登录')
         if not str(message).startswith("[debug]"):
             self.log(message)
 
@@ -266,6 +276,18 @@ class Collector:
         from xhs_image_downloader import XhsVideoPost
         url = checked_url(self.request["url"])
         settings = self.request.get("settings") or {}
+        if site_for_url(url) == 'youtube':
+            jar = http.cookiejar.MozillaCookieJar()
+            try:
+                jar.load(self.request.get('cookieFile') or '', ignore_discard=True, ignore_expires=True)
+            except (OSError, http.cookiejar.LoadError):
+                pass
+            auth = {'SID', 'SAPISID', 'LOGIN_INFO', '__Secure-3PAPISID', '__Secure-1PSID'}
+            valid = any(cookie.value and cookie.name in auth and
+                (cookie.domain.lstrip('.') == 'youtube.com' or cookie.domain.endswith('.youtube.com')) and
+                (not cookie.expires or cookie.expires > time.time()) for cookie in jar)
+            if not self.request.get('youtubeVerified') or not valid:
+                raise ValueError('请先通过 Edge 登录并验证 YouTube，再下载视频')
         folder = Path(settings["saveDir"]).expanduser().resolve()
         folder.mkdir(parents=True, exist_ok=True)
         self.check_cancel()

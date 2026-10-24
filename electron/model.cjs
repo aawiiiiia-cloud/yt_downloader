@@ -51,6 +51,7 @@ function cookieAllowed(cookie, site) {
 }
 function hasAuth(cookies, site) {
   return cookies.some(c => cookieAllowed(c, site) && SITES[site].auth.includes(c.name) && c.value &&
+    (!c.expirationDate || c.expirationDate > Date.now() / 1000) &&
     belongs(String(c.domain).replace(/^\./, ''), site === 'youtube' ? 'youtube.com' : site === 'bilibili' ? 'bilibili.com' : 'xiaohongshu.com'));
 }
 function cookieText(cookies, site) {
