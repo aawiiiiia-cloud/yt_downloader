@@ -7,7 +7,7 @@ async function run(collector, check, until, wait) {
   await collector.browser.webContents.mainFrame.executeJavaScript("(() => { const data=window.__INITIAL_STATE__; delete window.__INITIAL_STATE__; setTimeout(()=>window.__INITIAL_STATE__=data,700); })()");
   await collector.inspect();
   check('real Python parses matching Douyin data even when it arrives after DOM ready',collector.state.result?.site==='douyin'&&collector.state.result.items[0].formats[0].height===360);
-  const douyin=collector.tabs.active,receipt=collector.state.inspectionId;
+  const douyin=collector.tabs.active;
   await until(()=>ui("document.querySelector('.cover-frame img')?.naturalWidth>0 && document.querySelector('.media-summary')?.textContent.includes('00:58')"),'Douyin cover or duration did not render');
   check('Douyin cover, precise duration and size render in the collection panel',await ui("document.querySelector('.media-summary').textContent.includes('0.34 MB')"));
   const invoke=collector.invoke.bind(collector);let requestedSite;
@@ -16,6 +16,8 @@ async function run(collector, check, until, wait) {
   await until(()=>requestedSite==='douyin','Douyin Edge login was not routed');
   collector.invoke=invoke;
   check('new site login actions use their own site identifier',requestedSite==='douyin');
+  await require('./douyin-open-smoke.cjs').run(collector,check,until,wait);
+  const receipt=collector.state.inspectionId;
   collector.openTab('https://vimeo.com/12345678',{group:'vimeo'});
   await until(()=>!collector.browser.webContents.isLoadingMainFrame()&&collector.state.url.includes('12345678'),'Vimeo fixture did not load');
   const runner=collector.withCookies;

@@ -380,10 +380,17 @@ class CollectorApp {
         // Feed/modal data may arrive after DOM ready; allow the normal player time to load.
         const deadline = Date.now() + 7000;
         do {
-          context = tab.douyinPage?.get(url) || await this.readPage(douyinSnapshotScript, tab);
+          context = this.tabs.rows.map(row => row.douyinPage?.get(url)).find(Boolean) || await this.readPage(douyinSnapshotScript, tab);
           if (context || ticket !== tab.sequence || tab.closed || this.closing) break;
           await new Promise(resolve => setTimeout(resolve, 200));
         } while (Date.now() < deadline);
+        if (!context && ticket === tab.sequence && !tab.closed && !this.closing) {
+          this.log('正在补取当前视频详情，无需刷新页面…', tab);
+          try {
+            context = await this.fetchDouyinContext(url, tab.assetsAbort.signal);
+            if (context && ticket === tab.sequence && !tab.closed) tab.douyinPage?.remember(context.detail);
+          } catch { /* Keep the normal extractor fallback for unavailable or verification pages. */ }
+        }
       }
       if (ticket !== tab.sequence || tab.closed || this.closing) return;
       tab.parseTask = this.withCookies({ command: 'inspect', url, context, settings: { ...this.settings } },
@@ -395,6 +402,41 @@ class CollectorApp {
     } catch (error) {
       if (ticket === tab.sequence && !error.cancelled) state.error = error.message.replace(/\u001b\[[0-9;]*m/g, '');
     } finally { if (ticket === tab.sequence && !tab.closed) { state.parsing = false; this.publish(); } }
+  }
+  async fetchDouyinContext(url, signal) {
+    const id = contentKey(url)?.match(/^douyin:(\d+)$/)?.[1];
+    if (!id) return null;
+    // A plain HTTP request can receive a placeholder page. Use normal browser loading
+    // in the same session, without reloading or moving the visible page.
+    const probe = new WebContentsView({ webPreferences: { session: this.browserSession,
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+    const web = probe.webContents; let stopped = false, timer;
+    const close = () => { if (!web.isDestroyed()) web.close({ waitForBeforeUnload: false }); };
+    const restrict = (event, details) => {
+      try { const next = new URL(typeof details === 'string' ? details : details.url);
+        if (next.protocol !== 'https:' || next.hostname !== 'www.douyin.com') event.preventDefault();
+      } catch { event.preventDefault(); }
+    };
+    web.setUserAgent(this.userAgent); web.setAudioMuted(true);
+    web.setWindowOpenHandler(() => ({ action: 'deny' }));
+    web.on('will-navigate', restrict); web.on('will-redirect', restrict);
+    signal.addEventListener('abort', close, { once: true });
+    try {
+      if (signal.aborted) return null;
+      web.loadURL(`https://www.douyin.com/jingxuan?modal_id=${id}`).catch(() => {});
+      const read = async () => {
+        while (!stopped && !signal.aborted && !web.isDestroyed()) {
+          try { const context = await web.mainFrame.executeJavaScript(douyinSnapshotScript);
+            if (context?.videoId === id) return context;
+          } catch {}
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        return null;
+      };
+      return await Promise.race([read(), new Promise(resolve => { timer = setTimeout(() => resolve(null), 10000); })]);
+    } finally {
+      stopped = true; clearTimeout(timer); signal.removeEventListener('abort', close); close();
+    }
   }
   async verifyYouTube() {
     const response = await this.browserSession.fetch('https://www.youtube.com/', {

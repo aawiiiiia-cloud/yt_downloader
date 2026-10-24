@@ -37,6 +37,7 @@ Electron 与 Python 通过本机子进程通信，不开放 HTTP 服务端口。
 封面、大小时长与 YouTube 强制登录的修改记录见 `.specs/PREVIEW_AUTH_2026-10-24.md`。
 站点分组与多标签的行为及验收范围见 `.specs/SITE_TABS_2026-10-24.md`。
 Vimeo、抖音适配方式及用户链接实测见 `.specs/VIMEO_DOUYIN_2026-10-24.md`。
+抖音列表首次点开的预加载数据与后台补齐修复见 `.specs/DOUYIN_FIRST_OPEN_2026-10-24.md`。
 
 一个基于 Tkinter + yt-dlp 的多网站媒体下载工具,支持视频和小红书图文,同时提供源码版与打包版两条交付线。
 
