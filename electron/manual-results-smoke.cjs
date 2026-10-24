@@ -21,8 +21,8 @@ async function run(collector, check, until, wait) {
     await wait(1000);
     check('manual mode keeps the completed snapshot and video choices across short-video swipes',
       tab.state.inspectionId === oldReceipt && tab.state.result === oldResult && await ui(`document.querySelector('.content-title').dataset.retained==='yes'&&document.getElementById('format-select').value===${JSON.stringify(format)}&&document.getElementById('audio-only').checked&&document.getElementById('subtitles').checked`));
-    check('a retained result is visibly identified as belonging to the previous video',
-      !collector.resultMatchesPage(tab) && await ui("!document.getElementById('retained-result-note').hidden"));
+    check('the manual-results reminder appears only in settings directly below automatic parsing',
+      !collector.resultMatchesPage(tab) && await ui("(() => { const help = document.getElementById('auto-parse-help'); return help?.closest('#settings-panel') && help.previousElementSibling.contains(document.getElementById('auto-parse')) && help.textContent === '关闭后保留上次结果，手动解析才更新。' && !document.getElementById('retained-result-note') && !document.querySelector('#resources-panel #auto-parse-help'); })()"));
     check('retained previews remain usable after a swipe', (await collector.asset({ inspectionId: oldReceipt, itemIndex: 0 }, 'preview')).dataUrl.startsWith('data:image/'));
     const add = collector.queue.add; let saved;
     collector.queue.add = spec => { saved = spec; return 'retained-fixture'; };
@@ -32,8 +32,8 @@ async function run(collector, check, until, wait) {
       saved.url === oldResult.items[0].url && saved.context.videoId === oldSnapshot.context.videoId && saved.context.detail.aweme_id === initial.aweme.detail.aweme_id);
     await ui("document.getElementById('parse').click()");
     await until(() => !!tab.state.result && tab.state.inspectionId !== oldReceipt, 'manual parse did not update the snapshot');
-    check('the manual parse button updates to the current video and clears the retained-result notice',
-      tab.state.result.items[0].title === '手动更新后的视频 B' && collector.resultMatchesPage(tab) && await ui("document.getElementById('retained-result-note').hidden"));
+    check('the manual parse button updates to the current video',
+      tab.state.result.items[0].title === '手动更新后的视频 B' && collector.resultMatchesPage(tab));
     await assert.rejects(() => collector.download({ inspectionId: oldReceipt, itemIndex: 0, formatId: format }), /页面已切换/);
     assert.throws(() => collector.asset({ inspectionId: oldReceipt, itemIndex: 0 }, 'preview'), /页面已切换/);
     check('replaced snapshots can no longer trigger previews or downloads', true);
