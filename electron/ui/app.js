@@ -6,6 +6,8 @@ const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书' }
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 const openedLogs = new Set();
 const previews = new Map(), pendingDownloads = new Set();
+const drafts = new Map();
+let tabsSignature = '';
 let previewObserver;
 async function call(method, data) {
   try { return await window.collector.call(method, data); }
@@ -71,6 +73,43 @@ function syncLayout() {
   const r = $('browser-slot').getBoundingClientRect();
   call('layout', { x: Math.ceil(r.x), y: Math.ceil(r.y), width: Math.floor(r.width), height: Math.floor(r.height) });
 }
+function saveDraft() {
+  if (!state?.activeTabId || !state.inspectionId) return;
+  const old = drafts.get(state.activeTabId);
+  const draft = old?.receipt === state.inspectionId ? old : { receipt: state.inspectionId, items: {} };
+  draft.itemIndex = selectedItem; draft.scroll = $('resources-panel').scrollTop;
+  draft.items[selectedItem] = {
+    indices: [...document.querySelectorAll('[data-image]:checked')].map(input => Number(input.dataset.image)),
+    format: $('format-select')?.value || '', audio: !!$('audio-only')?.checked, subtitles: !!$('subtitles')?.checked,
+  };
+  drafts.set(state.activeTabId, draft);
+}
+function restoreDraft() {
+  const draft = drafts.get(state.activeTabId);
+  if (draft?.receipt !== state.inspectionId) return;
+  const item = draft.items[selectedItem];
+  if (item) {
+    document.querySelectorAll('[data-image]').forEach(input => { input.checked = item.indices.includes(Number(input.dataset.image)); });
+    if ($('format-select')) { $('format-select').value = item.format; $('format-select').disabled = item.audio; }
+    if ($('audio-only')) $('audio-only').checked = item.audio;
+    if ($('subtitles')) $('subtitles').checked = item.subtitles;
+  }
+  $('resources-panel').scrollTop = draft.scroll || 0;
+}
+function renderBrowserTabs() {
+  const signature = JSON.stringify([state.activeGroup, state.activeTabId, state.tabs]);
+  if (signature === tabsSignature) return;
+  const activeChanged = !$('browser-tabs').querySelector(`[data-tab="${CSS.escape(state.activeTabId)}"][aria-selected="true"]`);
+  tabsSignature = signature;
+  $('browser-tabs').innerHTML = state.tabs.filter(tab => tab.group === state.activeGroup).map(tab => {
+    const home = !tab.url || tab.url.replace(/\/$/, '') === homes[tab.group].replace(/\/$/, '');
+    const title = home ? '首页' : tab.title || '新标签页';
+    return `<div class="browser-tab ${tab.id === state.activeTabId ? 'active' : ''}"><button role="tab" data-tab="${escape(tab.id)}" aria-selected="${tab.id === state.activeTabId}" title="${escape(title)}">${tab.loading ? '◌ ' : ''}${escape(title)}</button><button class="close-tab" data-close-tab="${escape(tab.id)}" title="关闭 ${escape(title)}" aria-label="关闭 ${escape(title)}">×</button></div>`;
+  }).join('');
+  if (activeChanged) $('browser-tabs').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  document.querySelectorAll('[data-site-count]').forEach(label => { label.textContent = state.tabs.filter(tab => tab.group === label.dataset.siteCount).length; });
+  for (const key of drafts.keys()) if (!state.tabs.some(tab => tab.id === key)) drafts.delete(key);
+}
 function renderResources() {
   previewObserver?.disconnect();
   const items = state.result?.items || [], item = items[selectedItem];
@@ -87,7 +126,7 @@ function renderResources() {
     html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
   $('resources').innerHTML = html + '<button id="download" class="primary download-action">加入下载队列 ↓</button><p class="muted" id="resource-size-note"></p>';
-  updateMediaInfo();
+  restoreDraft(); updateMediaInfo();
   previewObserver = new IntersectionObserver(entries => entries.forEach(entry => {
     if (entry.isIntersecting) { previewObserver.unobserve(entry.target); loadPreview(entry.target); }
   }), { root: $('resources-panel'), rootMargin: '100px' });
@@ -99,13 +138,15 @@ function renderTasks() {
 }
 function render(next) {
   const previousError = state?.error;
+  saveDraft();
   state = next;
-  if (state.site) selectedSite = state.site;
+  selectedSite = state.activeGroup;
+  renderBrowserTabs();
   if (document.activeElement !== $('address')) $('address').value = /^https?:/.test(state.url) ? state.url : '';
   $('page-status').textContent = state.loading ? '网页加载中…' : state.title || '开始浏览';
   $('site-label').textContent = names[state.site] || '通用浏览';
   $('parse').textContent = state.parsing ? '停止解析' : '解析当前页面';
-  document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.site));
+  document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
   const youtubeLabels = { signed_out: '未登录，下载前请通过 Edge 登录', unverified: '登录待验证', checking: '正在验证登录…', verified: '已登录并验证', expired: '登录已失效，请通过 Edge 更新' };
   $('login-state').textContent = selectedSite === 'youtube' ? `YouTube · ${youtubeLabels[state.youtubeAuth] || '登录待验证'}` : state.login[selectedSite] ? `${names[selectedSite]} · 已检测到登录凭据` : `${names[selectedSite]} · 尚未检测到登录凭据`;
   $('web-login').textContent = selectedSite === 'youtube' ? 'Edge 登录' : '网页登录';
@@ -114,8 +155,13 @@ function render(next) {
   document.querySelector('.login-help').textContent = selectedSite === 'youtube' ? 'YouTube 登录通过 Edge 完成；登录信息保存在本机，下载前会验证。' : '可直接在左侧网页登录；下载时会同步该站点的登录状态。';
   $('edge-login').disabled = !!state.loginRunning; $('cancel-login').hidden = !state.loginRunning;
   $('parse-log').textContent = state.logs.join('\n');
-  const id = `${state.inspectionId}:${state.parsing}`;
-  if (id !== renderedId) { selectedItem = 0; renderedId = id; renderResources(); }
+  const id = `${state.activeTabId}:${state.inspectionId}:${state.parsing}`;
+  if (id !== renderedId) {
+    const draft = drafts.get(state.activeTabId);
+    selectedItem = draft?.receipt === state.inspectionId ? draft.itemIndex : 0;
+    if (!state.result?.items[selectedItem]) selectedItem = 0;
+    renderedId = id; renderResources();
+  }
   updateMediaInfo();
   if (state.error) notify(state.error);
   else if (previousError && $('notice').textContent === previousError) notify('');
@@ -134,7 +180,13 @@ function fillSettings() {
 $('address-form').addEventListener('submit', event => { event.preventDefault(); notify(''); call('navigate', { url: $('address').value }); });
 for (const action of ['back', 'forward', 'reload']) $(action).addEventListener('click', () => call(action));
 $('parse').addEventListener('click', () => { notify(''); call(state?.parsing ? 'cancel-inspect' : 'inspect'); });
-document.querySelectorAll('[data-site]').forEach(button => button.addEventListener('click', () => { selectedSite = button.dataset.site; notify(''); call('navigate', { url: homes[selectedSite] }); }));
+document.querySelectorAll('[data-site]').forEach(button => button.addEventListener('click', () => { notify(''); call('switch-site', { site: button.dataset.site }); }));
+$('new-tab').addEventListener('click', () => call('new-tab'));
+$('browser-tabs').addEventListener('click', event => {
+  const button = event.target.closest('button');
+  if (button?.dataset.closeTab) call('close-tab', { id: button.dataset.closeTab });
+  else if (button?.dataset.tab) call('activate-tab', { id: button.dataset.tab });
+});
 $('resources-tab').addEventListener('click', () => showTab(false)); $('tasks-tab').addEventListener('click', () => showTab(true));
 $('settings-toggle').addEventListener('click', () => { $('settings-panel').hidden = !$('settings-panel').hidden; fillSettings(); });
 $('choose-folder').addEventListener('click', async () => { await call('choose-folder'); fillSettings(); });
@@ -146,7 +198,7 @@ $('cancel-login').addEventListener('click', () => call('cancel-login'));
 $('web-login').addEventListener('click', () => selectedSite === 'youtube' ? call('login', { site: 'youtube' }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : homes.xiaohongshu }));
 $('required-login').addEventListener('click', () => call('login', { site: 'youtube' }));
 $('resources').addEventListener('change', event => {
-  if (event.target.id === 'part-select') { selectedItem = Number(event.target.value); renderResources(); }
+  if (event.target.id === 'part-select') { saveDraft(); selectedItem = Number(event.target.value); renderResources(); }
   if (event.target.id === 'bili-part') {
     const part = state.result.items[selectedItem].parts.find(p => p.index === Number(event.target.value));
     if (part) call('navigate', { url: part.url });

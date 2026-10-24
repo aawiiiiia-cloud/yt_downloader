@@ -9,6 +9,7 @@ const { SITES, navigationUrl, siteForUrl, contentKey, cookieText, readCookies, h
 const { pythonTask } = require('./bridge.cjs');
 const { Assets, readBody } = require('./assets.cjs');
 const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
+const { SiteTabs, linkScript } = require('./site-tabs.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -61,10 +62,10 @@ class CollectorApp {
     const legacy = smoke || liveCheck || persistenceCheck ? {} : readJson(path.join(os.homedir(), '.yt_dlp_gui.json'), {});
     this.settings = { saveDir: legacy.save_dir || path.join(os.homedir(), 'Downloads'), proxy: legacy.proxy || '',
       autoParse: true, imageFormat: 'original', imageQuality: 95, ...readJson(path.join(profile, 'settings.json'), {}) };
-    this.state = { url: '', title: '', site: null, loading: false, parsing: false, result: null,
-      inspectionId: null, error: '', health: null, login: {}, loginRunning: null, logs: [] };
-    this.handles = new Set(); this.sequence = 0; this.cache = new Map(); this.closing = false;
-    this.assetsAbort = new AbortController();
+    this.shared = { health: null, login: {}, loginRunning: null };
+    this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
+    this.tabs.rows.forEach(tab => this.initializeTab(tab));
+    this.handles = new Set(); this.cache = new Map(); this.closing = false;
     this.youtubeAuth = new YouTubeAuth(() => this.browserSession.cookies.get({}), () => this.verifyYouTube(), () => this.publish());
     this.queue = new DownloadQueue((spec, onEvent) => this.withCookies(spec, onEvent), () => this.publish());
     const history = readJson(path.join(profile, 'history.json'), []);
@@ -73,7 +74,22 @@ class CollectorApp {
       error: ['queued', 'running', 'cancelling'].includes(t.status) ? '上次任务已中断，请重新解析后下载' : t.error,
     }));
   }
-  publicState() { return { ...this.state, settings: this.settings, youtubeAuth: this.youtubeAuth.status,
+  get state() { return this.tabs.active.state; }
+  get browser() { return this.tabs.active.view; }
+  get documentKey() { return this.tabs.active.documentKey; }
+  initializeTab(tab) {
+    if (tab.state) return tab;
+    tab.state = { url: tab.url, title: tab.title, site: siteForUrl(tab.url), loading: false, parsing: false,
+      result: null, inspectionId: null, error: '', logs: [] };
+    for (const key of Object.keys(this.shared)) Object.defineProperty(tab.state, key, {
+      enumerable: true, get: () => this.shared[key], set: value => { this.shared[key] = value; },
+    });
+    tab.sequence = 0; tab.assetsAbort = new AbortController(); return tab;
+  }
+  publicState() { return { ...this.state, activeTabId: this.tabs.activeId, activeGroup: this.tabs.active.group,
+    tabs: this.tabs.rows.map(tab => ({ id: tab.id, group: tab.group, title: tab.title,
+      url: tab.url, loading: tab.state?.loading || false, parsing: tab.state?.parsing || false })),
+    settings: this.settings, youtubeAuth: this.youtubeAuth.status,
     tasks: this.queue.list().map(t => ({ ...t, canRetry: !!this.queue.tasks.find(row => row.id === t.id)?.spec })) }; }
   publish() {
     if (!this.window?.isDestroyed() && this.window?.webContents && !this.window.webContents.isDestroyed())
@@ -84,13 +100,14 @@ class CollectorApp {
   persist() {
     writeJson(path.join(profile, 'settings.json'), this.settings);
     writeJson(path.join(profile, 'history.json'), this.queue.list());
+    writeJson(path.join(profile, 'tabs.json'), this.tabs.serialize());
   }
   track(handle) {
     this.handles.add(handle);
     handle.promise.then(() => this.handles.delete(handle), () => this.handles.delete(handle));
     return handle;
   }
-  log(text) { this.state.logs = [...this.state.logs, String(text)].slice(-35); this.publish(); }
+  log(text, tab = this.tabs.active) { tab.state.logs = [...tab.state.logs, String(text)].slice(-35); this.publish(); }
   async create() {
     this.browserSession = session.fromPartition('persist:collector-web');
     this.assets = new Assets((url, options) => this.browserSession.fetch(url, { ...options,
@@ -102,82 +119,160 @@ class CollectorApp {
       show: !smoke && !liveCheck && !persistenceCheck, backgroundColor: '#f5f6f8', title: '拾集 · 媒体采集', autoHideMenuBar: true,
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
-    this.browser = new WebContentsView({ webPreferences: { session: this.browserSession,
-      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
-    this.window.contentView.addChildView(this.browser);
-    this.browser.setBounds({ x: 16, y: 114, width: 940, height: 740 });
+    this.browserBounds = { x: 16, y: 196, width: 940, height: 660 };
     // Use the bundled Chromium UA for both browsing and extraction, without the app product token.
     const platform = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64' : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
     this.userAgent = `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
-    this.browser.webContents.setUserAgent(this.userAgent);
     this.browserSession.setUserAgent(this.userAgent);
     session.defaultSession.setUserAgent(this.userAgent);
     this.window.webContents.setUserAgent(this.userAgent);
-    this.browser.webContents.setWindowOpenHandler(({ url }) => {
-      try { const next = navigationUrl(url); setImmediate(() => this.navigate(next)); } catch {}
-      return { action: 'deny' };
-    });
-    this.browser.webContents.on('will-navigate', (event, details) => {
-      try { navigationUrl(typeof details === 'string' ? details : details.url); } catch { event.preventDefault(); }
-    });
-    this.browser.webContents.on('did-start-navigation', (_e, url, inPlace, isMainFrame) => {
-      if (!isMainFrame) return;
-      // Analytics often replace query parameters without changing the note/video.
-      // Only invalidate an in-page result when its actual content identity changes.
-      if (inPlace && contentKey(url) && contentKey(url) === contentKey(this.state.url)) return;
-      this.invalidate(); this.state.loading = true; this.publish();
-    });
-    this.browser.webContents.on('did-navigate', (_event, url) => { this.documentKey = contentKey(url); });
-    this.browser.webContents.on('did-navigate-in-page', (_e, url, isMainFrame) => {
-      if (!isMainFrame) return;
-      // B站的静态 __playinfo__ 可能在 SPA 分P切换后仍指向上一段。
-      // 第一阶段以新内容链接重新加载，确保浏览器快照对应当前视频/分P。
-      if (siteForUrl(url) === 'bilibili' && contentKey(url) && contentKey(url) !== this.documentKey) {
-        this.browser.webContents.reload(); return;
-      }
-      this.pageReady();
-    });
-    this.browser.webContents.on('did-finish-load', () => this.pageReady());
-    this.browser.webContents.on('dom-ready', () => this.pageReady());
-    this.browser.webContents.on('did-stop-loading', () => { this.state.loading = false; this.publish(); });
-    this.browser.webContents.on('page-title-updated', () => { this.state.title = this.browser.webContents.getTitle(); this.publish(); });
-    this.browser.webContents.on('did-fail-load', (_event, code, description, _url, main) => {
-      if (main && code !== -3) { this.state.loading = false; this.state.error = '网页加载失败，请检查网络或代理设置（' + description + '）'; this.publish(); }
-    });
     this.browserSession.cookies.on('changed', () => this.updateLogin().catch(() => {}));
     this.window.on('close', event => {
       if (this.allowClose) return;
       event.preventDefault(); this.close();
     });
+    this.activateTab(this.tabs.activeId);
     await this.window.loadFile(path.join(__dirname, 'ui', 'index.html'));
-    await this.browser.webContents.loadFile(path.join(__dirname, 'ui', 'welcome.html'));
     await this.updateLogin();
     this.healthTask = this.track(pythonTask({ command: 'health' }));
     this.healthTask.promise.then(health => { this.state.health = health; this.publish(); }, error => { this.state.error = error.message; this.publish(); });
     return this;
   }
-  invalidate() {
-    this.sequence++; clearTimeout(this.parseTimer); this.parseTask?.cancel();
-    this.assetsAbort.abort(); this.assetsAbort = new AbortController();
-    Object.assign(this.state, { result: null, inspectionId: null, parsing: false, error: '', logs: [] });
+  ensureView(tab) {
+    this.initializeTab(tab);
+    if (tab.view) return;
+    const view = tab.view = new WebContentsView({ webPreferences: { session: this.browserSession,
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+    this.window.contentView.addChildView(view); view.setVisible(false); view.setBounds(this.browserBounds);
+    const web = view.webContents;
+    web.setUserAgent(this.userAgent); web.setAudioMuted(true);
+    web.setWindowOpenHandler(({ url }) => {
+      try { const next = navigationUrl(url); setImmediate(() => {
+        if (this.closing || tab.closed) return;
+        try { this.openTab(next, { group: siteForUrl(next) || tab.group, reuse: true }); }
+        catch (error) { this.state.error = error.message; this.publish(); }
+      }); } catch {}
+      return { action: 'deny' };
+    });
+    web.on('will-navigate', (event, details) => {
+      try {
+        const next = navigationUrl(typeof details === 'string' ? details : details.url), group = siteForUrl(next);
+        const key = contentKey(next), current = contentKey(tab.state.url);
+        const sameBiliVideo = current?.startsWith('bilibili:') && current.split(':')[1] === key?.split(':')[1];
+        if ((group && group !== tab.group) || (key && key !== current && !sameBiliVideo)) {
+          event.preventDefault(); tab.state.loading = false;
+          setImmediate(() => {
+            if (this.closing || tab.closed) return;
+            try { this.openTab(next, { group: group || tab.group, reuse: true }); }
+            catch (error) { tab.state.error = error.message; this.publish(); }
+          });
+          this.publish();
+        }
+      } catch { event.preventDefault(); tab.state.loading = false; this.publish(); }
+    });
+    web.on('did-start-navigation', (_e, url, inPlace, isMainFrame) => {
+      if (!isMainFrame || tab.closed) return;
+      // Analytics often replace query parameters without changing the note/video.
+      // Only invalidate an in-page result when its actual content identity changes.
+      if (inPlace && contentKey(url) && contentKey(url) === contentKey(tab.state.url)) return;
+      if (inPlace) this.invalidate(tab);
+      tab.state.loading = true; this.publish();
+    });
+    // A cancelled/provisional navigation must not discard the source tab's resources.
+    web.on('did-navigate', (_event, url) => { this.invalidate(tab); tab.documentKey = contentKey(url); });
+    web.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+      if (!isMainFrame || tab.closed) return;
+      // B站的静态 __playinfo__ 可能在 SPA 分P切换后仍指向上一段。
+      // 第一阶段以新内容链接重新加载，确保浏览器快照对应当前视频/分P。
+      if (siteForUrl(url) === 'bilibili' && contentKey(url) && contentKey(url) !== tab.documentKey) {
+        web.reload(); return;
+      }
+      this.pageReady(tab);
+    });
+    web.on('did-finish-load', () => this.pageReady(tab));
+    web.on('dom-ready', () => {
+      web.mainFrame.executeJavaScript(linkScript).catch(() => {}); this.pageReady(tab);
+    });
+    web.on('did-stop-loading', () => { if (!tab.closed) { tab.state.loading = false; this.publish(); } });
+    web.on('page-title-updated', () => {
+      if (!tab.closed) { tab.title = tab.state.title = web.getTitle(); this.publish(); }
+    });
+    web.on('did-fail-load', (_event, code, description, _url, main) => {
+      if (main && code !== -3 && !tab.closed) { tab.state.loading = false; tab.state.error = '网页加载失败，请检查网络或代理设置（' + description + '）'; this.publish(); }
+    });
+    web.on('media-started-playing', () => { if (this.tabs.activeId !== tab.id) this.pauseTab(tab); });
+    web.on('render-process-gone', () => {
+      if (!tab.closed && !this.closing) { this.invalidate(tab); tab.state.loading = false;
+        tab.state.error = '此标签页面已停止运行，点击刷新即可重新加载'; this.publish(); }
+    });
+    const load = tab.url ? web.loadURL(tab.url) : web.loadFile(path.join(__dirname, 'ui', 'welcome.html'));
+    load.catch(() => {});
   }
-  pageReady() {
-    this.state.url = this.browser.webContents.getURL(); this.state.site = siteForUrl(this.state.url);
-    this.state.title = this.browser.webContents.getTitle(); this.state.loading = false;
-    this.publish(); clearTimeout(this.parseTimer);
-    if (this.settings.autoParse && contentKey(this.state.url) && !this.state.result && !this.state.parsing)
-      this.parseTimer = setTimeout(() => this.inspect().catch(error => { this.state.error = error.message; this.publish(); }), 850);
+  pauseTab(tab) {
+    if (!tab.view || tab.view.webContents.isDestroyed()) return;
+    tab.view.webContents.setAudioMuted(true);
+    tab.view.webContents.mainFrame.executeJavaScript("document.querySelectorAll('video,audio').forEach(media => media.pause())").catch(() => {});
+  }
+  activateTab(id) {
+    const previous = this.tabs.active;
+    const tab = this.initializeTab(this.tabs.select(id));
+    if (previous && previous !== tab && previous.view) { previous.view.setVisible(false); this.pauseTab(previous); }
+    this.ensureView(tab); tab.view.setBounds(this.browserBounds); tab.view.setVisible(true);
+    tab.view.webContents.setAudioMuted(false); this.publish(); return tab;
+  }
+  switchSite(group) {
+    const previous = this.tabs.active;
+    const tab = this.tabs.switchGroup(group);
+    // switchGroup changes the model first; hide the former view explicitly.
+    if (previous !== tab && previous.view) { previous.view.setVisible(false); this.pauseTab(previous); }
+    this.activateTab(tab.id);
+    if (!tab.url) this.navigate(SITES[group].home);
+    return tab;
+  }
+  openTab(url, { group = siteForUrl(url) || this.tabs.active.group, reuse = false } = {}) {
+    const target = navigationUrl(url || SITES[group]?.home);
+    const existing = reuse && this.tabs.find(target, group);
+    return this.activateTab(existing ? existing.id : this.initializeTab(this.tabs.add(group, target)).id);
+  }
+  closeTab(id) {
+    const tab = this.tabs.rows.find(row => row.id === id);
+    if (!tab) return;
+    this.disposeTab(tab); this.tabs.remove(id); this.activateTab(this.tabs.activeId);
+  }
+  disposeTab(tab) {
+    tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort();
+    if (tab.view && !tab.view.webContents.isDestroyed()) {
+      this.window.contentView.removeChildView(tab.view); tab.view.webContents.close({ waitForBeforeUnload: false });
+    }
+  }
+  destroyViews() { this.tabs.rows.forEach(tab => this.disposeTab(tab)); }
+  invalidate(tab = this.tabs.active) {
+    tab.sequence++; clearTimeout(tab.parseTimer); tab.parseTask?.cancel();
+    tab.assetsAbort.abort(); tab.assetsAbort = new AbortController();
+    this.cache.delete(tab.state.inspectionId);
+    Object.assign(tab.state, { result: null, inspectionId: null, parsing: false, error: '', logs: [] });
+  }
+  pageReady(tab) {
+    if (tab.closed || this.closing) return;
+    const web = tab.view.webContents, state = tab.state;
+    state.url = web.getURL(); state.site = siteForUrl(state.url);
+    tab.url = /^https?:/.test(state.url) ? state.url : ''; tab.title = state.title = web.getTitle(); state.loading = false;
+    this.publish(); clearTimeout(tab.parseTimer);
+    if (this.settings.autoParse && contentKey(state.url) && !state.result && !state.parsing)
+      tab.parseTimer = setTimeout(() => this.inspect(tab).catch(error => { state.error = error.message; this.publish(); }), 850);
   }
   navigate(url) {
-    const target = navigationUrl(url); this.invalidate();
-    this.state.url = target; this.state.site = siteForUrl(target); this.state.loading = true; this.publish();
+    const target = navigationUrl(url), group = siteForUrl(target);
+    if (group && group !== this.tabs.active.group) { this.openTab(target, { group, reuse: true }); return; }
+    this.invalidate(); this.tabs.active.url = this.state.url = target;
+    this.state.site = group; this.state.loading = true; this.publish();
     this.browser.webContents.loadURL(target).catch(() => {});
   }
   layout(bounds) {
     const [width, height] = this.window.getContentSize();
     const rect = Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, Math.round(Number(bounds[key]) || 0)]));
     if (rect.x < 0 || rect.y < 0 || rect.width < 200 || rect.height < 100 || rect.x + rect.width > width + 2 || rect.y + rect.height > height + 2) return;
-    this.browser.setBounds(rect);
+    this.browserBounds = rect; this.browser.setBounds(rect);
   }
   async applyProxy() {
     const proxy = this.settings.proxy;
@@ -225,17 +320,19 @@ class CollectorApp {
     })();
     return this.track(handle);
   }
-  async readPage(script) {
+  async readPage(script, tab = this.tabs.active, waitForValue = false) {
     let timer, stopped = false;
+    const sequence = tab.sequence;
     const wrapped = `(() => { if (document.readyState === 'loading') return {waiting: true};
       try { return {value: (${script})}; } catch (error) { return {error: String(error)}; } })()`;
     const read = async () => {
       while (!stopped) {
+        if (tab.closed || tab.view.webContents.isDestroyed() || tab.sequence !== sequence) throw Object.assign(new Error('页面已切换或解析已取消'), { cancelled: true });
         let result;
-        try { result = await this.browser.webContents.mainFrame.executeJavaScript(wrapped); }
+        try { result = await tab.view.webContents.mainFrame.executeJavaScript(wrapped); }
         catch { await new Promise(resolve => setTimeout(resolve, 150)); continue; }
         if (result?.error) throw new Error(result.error);
-        if (!result?.waiting) return result?.value;
+        if (!result?.waiting && (!waitForValue || result?.value != null)) return result?.value;
         await new Promise(resolve => setTimeout(resolve, 150));
       }
     };
@@ -246,27 +343,26 @@ class CollectorApp {
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('页面响应较慢，请稍后重新解析')), 8000); })]);
     } finally { stopped = true; clearTimeout(timer); }
   }
-  async inspect() {
-    const url = this.browser.webContents.getURL();
+  async inspect(tab = this.tabs.active) {
+    const state = tab.state, url = tab.view.webContents.getURL();
     if (!contentKey(url)) throw new Error('请先在左侧打开 YouTube 视频、B站视频或小红书笔记详情页');
-    if (siteForUrl(url) === 'bilibili' && this.documentKey !== contentKey(url)) throw new Error('播放器正在切换内容，请稍后重新解析');
-    this.parseTask?.cancel(); const ticket = ++this.sequence;
-    Object.assign(this.state, { parsing: true, result: null, inspectionId: null, error: '', logs: [] }); this.publish();
+    if (siteForUrl(url) === 'bilibili' && tab.documentKey !== contentKey(url)) throw new Error('播放器正在切换内容，请稍后重新解析');
+    this.invalidate(tab); const ticket = ++tab.sequence;
+    Object.assign(state, { parsing: true, result: null, inspectionId: null, error: '', logs: [] }); this.publish();
     let context = null;
     try {
-      if (siteForUrl(url) === 'xiaohongshu') context = await this.readPage(snapshotScript);
-      if (siteForUrl(url) === 'bilibili') context = await this.readPage(biliSnapshotScript);
-      if (ticket !== this.sequence || this.closing) return;
-      this.parseTask = this.withCookies({ command: 'inspect', url, context, settings: { ...this.settings } },
-        (type, data) => { if (ticket === this.sequence && type === 'log') this.log(data); });
-      const result = await this.parseTask.promise;
-      if (ticket !== this.sequence || this.closing) return;
+      if (siteForUrl(url) === 'xiaohongshu') context = await this.readPage(snapshotScript, tab);
+      if (siteForUrl(url) === 'bilibili') context = await this.readPage(biliSnapshotScript, tab, /\/video\/BV[0-9A-Za-z]+/.test(new URL(url).pathname));
+      if (ticket !== tab.sequence || tab.closed || this.closing) return;
+      tab.parseTask = this.withCookies({ command: 'inspect', url, context, settings: { ...this.settings } },
+        (type, data) => { if (ticket === tab.sequence && type === 'log') this.log(data, tab); });
+      const result = await tab.parseTask.promise;
+      if (ticket !== tab.sequence || tab.closed || this.closing) return;
       const id = randomUUID(); this.cache.set(id, { result, context, url });
-      if (this.cache.size > 30) this.cache.delete(this.cache.keys().next().value);
-      Object.assign(this.state, { result, inspectionId: id, error: '' });
+      Object.assign(state, { result, inspectionId: id, error: '' });
     } catch (error) {
-      if (ticket === this.sequence && !error.cancelled) this.state.error = error.message.replace(/\u001b\[[0-9;]*m/g, '');
-    } finally { if (ticket === this.sequence) { this.state.parsing = false; this.publish(); } }
+      if (ticket === tab.sequence && !error.cancelled) state.error = error.message.replace(/\u001b\[[0-9;]*m/g, '');
+    } finally { if (ticket === tab.sequence && !tab.closed) { state.parsing = false; this.publish(); } }
   }
   async verifyYouTube() {
     const response = await this.browserSession.fetch('https://www.youtube.com/', {
@@ -284,19 +380,20 @@ class CollectorApp {
     if (item.kind === 'images' && !image) throw new Error('图片不存在');
     if (mode === 'size') {
       if (!image) throw new Error('当前内容不是图片');
-      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.assetsAbort.signal);
+      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal);
     }
     const url = image ? image.fallback_urls?.at(-1) || image.url : item.thumbnail;
     if (!url) throw new Error('当前页面未提供视频封面');
-    return this.assets.preview(url, site, this.assetsAbort.signal, !!data.refresh);
+    return this.assets.preview(url, site, this.tabs.active.assetsAbort.signal, !!data.refresh);
   }
   async download(data) {
+    const tab = this.tabs.active;
     const snapshot = this.cache.get(data.inspectionId);
     if (!snapshot || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const item = snapshot.result.items[Number(data.itemIndex)];
     if (!item || !siteForUrl(item.url)) throw new Error('资源不存在，请重新解析');
     if (siteForUrl(item.url) === 'youtube') await this.youtubeAuth.ensure();
-    if (data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
+    if (tab.closed || this.tabs.active !== tab || data.inspectionId !== tab.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const indices = Array.isArray(data.indices) ? data.indices.filter(i => item.images?.some(image => image.index === i)) : [];
     if (item.kind === 'images' && !indices.length) throw new Error('请至少选择一张图片');
     const formatId = String(data.formatId || '');
@@ -320,12 +417,14 @@ class CollectorApp {
     if (!SITES[site]) throw new Error('请先选择支持的站点');
     if (this.loginTask || this.state.loginRunning) throw new Error('已有登录窗口正在运行');
     const cookieFile = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
+    const tab = this.tabs.active;
     this.state.loginRunning = site; this.publish();
     try {
       const proxy = await this.effectiveProxy(SITES[site].home, this.settings.proxy);
       this.loginTask = this.track(pythonTask({ command: 'login', site, cookieFile, proxy },
-        (type, data) => { if (type === 'log') this.log(data); }));
-      await this.loginTask.promise; await this.importCookies(cookieFile, site); this.log('登录凭据已同步，可重新解析当前内容');
+        (type, data) => { if (type === 'log' && !tab.closed) this.log(data, tab); }));
+      await this.loginTask.promise; await this.importCookies(cookieFile, site);
+      if (!tab.closed) this.log('登录凭据已同步，可重新解析当前内容', tab);
     }
     finally {
       this.loginTask = null; this.state.loginRunning = null;
@@ -337,6 +436,10 @@ class CollectorApp {
     if (method === 'state') return this.publicState();
     if (method === 'layout') return this.layout(data);
     if (method === 'navigate') return this.navigate(data.url);
+    if (method === 'switch-site') { this.switchSite(data.site); return; }
+    if (method === 'new-tab') { this.openTab(SITES[this.tabs.active.group].home); return; }
+    if (method === 'activate-tab') { this.activateTab(String(data.id)); return; }
+    if (method === 'close-tab') { this.closeTab(String(data.id)); return; }
     if (method === 'back') { if (this.browser.webContents.navigationHistory.canGoBack()) this.browser.webContents.navigationHistory.goBack(); return; }
     if (method === 'forward') { if (this.browser.webContents.navigationHistory.canGoForward()) this.browser.webContents.navigationHistory.goForward(); return; }
     if (method === 'reload') { this.browser.webContents.reload(); return; }
@@ -384,12 +487,12 @@ class CollectorApp {
   }
   close() {
     if (this.closing) return;
-    this.closing = true; this.invalidate(); this.queue.close(); this.handles.forEach(task => task.cancel());
+    this.closing = true; this.tabs.rows.forEach(tab => this.invalidate(tab)); this.queue.close(); this.handles.forEach(task => task.cancel());
     this.state.error = '正在停止后台任务并保存记录…'; this.publish();
     const finish = () => {
       if (this.handles.size) { setTimeout(finish, 150); return; }
       clearTimeout(this.saveTimer); this.persist();
-      this.browser.webContents.close(); this.allowClose = true; this.window.close();
+      this.destroyViews(); this.allowClose = true; this.window.close();
     }; finish();
   }
 }
@@ -413,7 +516,11 @@ app.whenReady().then(async () => {
     assert.equal(collector.settings.autoParse, false);
     assert.equal(collector.queue.tasks[0].status, 'completed');
     console.log('Restart persistence: browser login, settings and task history OK');
-    collector.browser.webContents.close(); collector.window.destroy(); app.exit(0);
+    assert.ok(collector.tabs.rows.length >= 3);
+    assert.equal(collector.tabs.active.group, 'xiaohongshu');
+    assert.equal(collector.tabs.rows.filter(tab => tab.view).length, 1);
+    console.log('Restart persistence: site tabs restored lazily');
+    collector.destroyViews(); collector.window.destroy(); app.exit(0);
   }
 }).catch(error => { console.error(error); app.exit(1); });
 app.on('window-all-closed', () => app.quit());

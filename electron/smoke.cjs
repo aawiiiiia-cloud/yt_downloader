@@ -57,7 +57,8 @@ async function run(collector, profile, snapshotScript) {
       return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
     });
     for (const url of ['https://www.youtube.com/watch?v=fixture', 'https://www.bilibili.com/video/BVfixture', `https://www.xiaohongshu.com/explore/${a}`]) {
-      await collector.browser.webContents.loadURL(url);
+      collector.navigate(url);
+      await until(() => collector.browser.webContents.getURL() === url && !collector.browser.webContents.isLoadingMainFrame(), 'site did not load');
       check('embedded navigation: ' + new URL(url).hostname, collector.browser.webContents.getURL() === url);
       if (url.includes('youtube.com')) {
         const login = collector.login; let edgeRequested = false;
@@ -98,6 +99,9 @@ async function run(collector, profile, snapshotScript) {
         check('HTTP Bilibili cover loads after upgrade and retry', assetRequests.some(row => row.url === 'https://i0.hdslb.com/cover.png' && row.referer === 'https://www.bilibili.com/'));
         check('video displays precise duration and estimated size', await collector.window.webContents.executeJavaScript('document.querySelector(".media-summary").textContent.includes("58:47") && document.getElementById("video-size").textContent.includes("MB")'));
         check('Bilibili part selector reaches the right panel', await collector.window.webContents.executeJavaScript('document.querySelectorAll("#bili-part option").length === 2'));
+        await collector.browser.webContents.executeJavaScript('const delayedPlayerData=window.__playinfo__; delete window.__playinfo__; setTimeout(()=>{window.__playinfo__=delayedPlayerData},350)');
+        await collector.inspect();
+        check('inspection waits for Bilibili player data arriving after DOM ready', collector.state.result?.items[0].formats[0].height === 360);
         const loadedPart = new Promise(resolve => collector.browser.webContents.once('did-finish-load', resolve));
         await collector.browser.webContents.executeJavaScript("history.pushState({}, '', '?p=2')");
         await loadedPart;
@@ -162,6 +166,7 @@ async function run(collector, profile, snapshotScript) {
     collector.withCookies = realRunner;
     await collector.inspect();
     check('new SPA note is parsed independently', collector.state.result.items[0].title.includes('笔记 B'));
+    await require('./tabs-smoke.cjs').run(collector, check, until, wait);
     resolveDownload({ folder: profile, count: 1 }); await wait(100);
     check('background download queue completes', task.status === 'completed');
     collector.persist();
@@ -172,7 +177,7 @@ async function run(collector, profile, snapshotScript) {
     check('persistent browser profile created', fs.existsSync(path.join(profile, 'Partitions')));
     fs.writeFileSync(path.join(profile, '..', 'smoke-result.json'), JSON.stringify({ ok: true, results, warnings, profile }, null, 2));
     console.log(JSON.stringify({ ok: true, checks: results.length, profile }));
-    collector.browser.webContents.close(); collector.window.destroy(); app.exit(0);
+    collector.destroyViews(); collector.window.destroy(); app.exit(0);
   } catch (error) {
     fs.writeFileSync(path.join(profile, '..', 'smoke-result.json'), JSON.stringify({ ok: false, results, warnings, error: error.stack, profile }, null, 2));
     console.error(error); app.exit(1);

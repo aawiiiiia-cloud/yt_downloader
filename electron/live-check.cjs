@@ -15,7 +15,7 @@ function reportUrl(value) {
   return url.href;
 }
 async function run(collector, profile) {
-  const results = [];
+  const results = [], visited = [];
   collector.window.showInactive();
   collector.settings.autoParse = false;
   const targets = process.env.YT_COLLECTOR_TEST_TARGETS ? JSON.parse(fs.readFileSync(process.env.YT_COLLECTOR_TEST_TARGETS, 'utf8')) : [
@@ -36,9 +36,12 @@ async function run(collector, profile) {
       try {
         await Promise.race([
           new Promise((resolve, reject) => {
-            const loaded = () => resolve();
-            collector.browser.webContents.once('dom-ready', loaded);
-            collector.browser.webContents.loadURL(url).then(loaded, error => { if (error.errno !== -3) reject(error); });
+            const tab = collector.openTab(url, { group: site, reuse: true }), web = tab.view.webContents;
+            const loaded = () => { web.removeListener('did-fail-load', failed); resolve(); };
+            const failed = (_event, code, description, _url, main) => {
+              if (main && code !== -3) { web.removeListener('dom-ready', loaded); reject(new Error(description)); }
+            };
+            web.once('dom-ready', loaded); web.on('did-fail-load', failed);
           }),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('公开页面加载超过 35 秒')), 35000); }),
         ]);
@@ -49,6 +52,7 @@ async function run(collector, profile) {
         result.pageSummary = await collector.readPage('document.body.innerText.slice(0, 180)');
         if (needsParse) {
           console.log('LIVE: extracting ' + site);
+          if (site === 'bilibili') console.log('LIVE: player data', await collector.readPage('({video:!!window.__INITIAL_STATE__?.videoData,play:!!window.__playinfo__})'));
           await collector.inspect();
           result.parsed = !!collector.state.result?.items?.length;
           result.items = collector.state.result?.items?.length || 0;
@@ -57,6 +61,7 @@ async function run(collector, profile) {
           result.contentTitle = collector.state.result?.items?.[0]?.title;
           result.images = collector.state.result?.items?.[0]?.images?.length || 0;
           result.duration = collector.state.result?.items?.[0]?.duration;
+          visited.push({ tab: collector.tabs.active, receipt: collector.state.inspectionId, url: collector.state.url });
           if (collector.state.error) result.error = collector.state.error;
           if (!result.parsed && !result.error) result.error = '解析期间页面发生变化，请在当前内容加载稳定后重试';
           if (process.env.YT_COLLECTOR_TEST_PREVIEW === '1' && result.parsed) {
@@ -132,12 +137,53 @@ print(json.dumps({'decodedImages':images,'bytes':sum(i['bytes'] for i in images)
       if (result.downloaded) fs.writeFileSync(path.join(profile, '..', `live-${site}-download-result.json`), JSON.stringify(result, null, 2));
       console.log(JSON.stringify(result));
     }
+    if (process.env.YT_COLLECTOR_TEST_TABS === '1') {
+      for (const entry of visited) {
+        const others = visited.filter(row => row !== entry);
+        collector.switchSite(entry.tab.group);
+        await wait(200);
+        const samePage = collector.tabs.active === entry.tab && contentKey(collector.state.url) === contentKey(entry.url);
+        const sameResult = !!entry.receipt && collector.state.inspectionId === entry.receipt;
+        const backgroundMuted = others.every(row => !row.tab.view.getVisible() && row.tab.view.webContents.isAudioMuted());
+        const backgroundPaused = (await Promise.all(others.map(row => collector.readPage("[...document.querySelectorAll('video,audio')].every(media => media.paused)", row.tab)))).every(Boolean);
+        if (!samePage || !sameResult || !backgroundMuted || !backgroundPaused) throw new Error('真实网站标签恢复检查失败：' + entry.tab.group);
+        results.find(row => row.site === entry.tab.group).tabsRestored = true;
+        results.find(row => row.site === entry.tab.group).backgroundPlaybackPaused = backgroundPaused;
+        if (process.env.YT_COLLECTOR_TEST_LINK_TABS === '1') {
+          const links = await collector.readPage("[...document.querySelectorAll('a[href]')].map(anchor => anchor.href).slice(0,2500)", entry.tab);
+          const next = links.find(url => siteForUrl(url) === entry.tab.group && contentKey(url) &&
+            contentKey(url) !== contentKey(entry.url) && !collector.tabs.find(url, entry.tab.group));
+          const report = results.find(row => row.site === entry.tab.group);
+          if (!next) report.linkTabCheck = 'no alternate detail link on this page';
+          else {
+            await entry.tab.view.webContents.mainFrame.executeJavaScript(`
+              [...document.querySelectorAll('a[href]')].find(anchor => anchor.href === ${JSON.stringify(next)}).click()`, true);
+            const deadline = Date.now() + 5000;
+            while (Date.now() < deadline && collector.tabs.active === entry.tab) await wait(100);
+            const opened = collector.tabs.active;
+            if (opened === entry.tab || opened.group !== entry.tab.group || contentKey(opened.url) !== contentKey(next) ||
+              contentKey(entry.tab.view.webContents.getURL()) !== contentKey(entry.url) || entry.tab.state.inspectionId !== entry.receipt)
+              throw new Error('真实网站详情链接新标签检查失败：' + entry.tab.group);
+            report.linkOpenedInGroup = true;
+            collector.closeTab(opened.id); collector.activateTab(entry.tab.id);
+            console.log('LIVE: real detail link opened a group tab and retained its source: ' + entry.tab.group);
+          }
+        }
+      }
+      fs.writeFileSync(path.join(profile, '..', process.env.YT_COLLECTOR_TEST_LINK_TABS === '1' ? 'live-link-tabs-result.json' : 'live-tabs-result.json'), JSON.stringify({ results, profile }, null, 2));
+      if (visited.length) {
+        collector.switchSite(visited[0].tab.group); await wait(250);
+        fs.writeFileSync(path.join(profile, '..', 'site-tabs-toolbar.png'),
+          (await collector.window.webContents.capturePage({ x: 0, y: 0, width: 1440, height: 198 })).toPNG());
+      }
+      console.log('LIVE: real-site group switching preserves all page views and resource receipts');
+    }
   } finally {
     collector.handles.forEach(task => task.cancel());
     const deadline = Date.now() + 45000;
     while (collector.handles.size && Date.now() < deadline) await wait(150);
     const failed = results.some(result => result.error || !result.browsing || (result.requiresParse && !result.parsed));
-    collector.browser.webContents.close(); collector.window.destroy(); app.exit(failed ? 1 : 0);
+    collector.destroyViews(); collector.window.destroy(); app.exit(failed ? 1 : 0);
   }
 }
 module.exports = { run };
