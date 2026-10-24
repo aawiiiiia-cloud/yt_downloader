@@ -17,6 +17,7 @@ async function run(collector, check, until, wait) {
   collector.invoke=invoke;
   check('new site login actions use their own site identifier',requestedSite==='douyin');
   await require('./douyin-open-smoke.cjs').run(collector,check,until,wait);
+  await require('./manual-results-smoke.cjs').run(collector,check,until,wait);
   const receipt=collector.state.inspectionId;
   collector.openTab('https://vimeo.com/12345678',{group:'vimeo'});
   await until(()=>!collector.browser.webContents.isLoadingMainFrame()&&collector.state.url.includes('12345678'),'Vimeo fixture did not load');

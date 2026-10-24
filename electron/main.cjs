@@ -90,7 +90,11 @@ class CollectorApp {
     });
     tab.sequence = 0; tab.assetsAbort = new AbortController(); return tab;
   }
-  publicState() { return { ...this.state, activeTabId: this.tabs.activeId, activeGroup: this.tabs.active.group,
+  resultMatchesPage(tab = this.tabs.active) {
+    const record = this.cache.get(tab.state.inspectionId);
+    return !!record && contentKey(record.url) === contentKey(tab.state.url);
+  }
+  publicState() { return { ...this.state, resultMatchesPage: this.resultMatchesPage(), activeTabId: this.tabs.activeId, activeGroup: this.tabs.active.group,
     tabs: this.tabs.rows.map(tab => ({ id: tab.id, group: tab.group, title: tab.title,
       url: tab.url, loading: tab.state?.loading || false, parsing: tab.state?.parsing || false })),
     settings: this.settings, youtubeAuth: this.youtubeAuth.status,
@@ -196,11 +200,11 @@ class CollectorApp {
       // Analytics often replace query parameters without changing the note/video.
       // Only invalidate an in-page result when its actual content identity changes.
       if (inPlace && contentKey(url) && contentKey(url) === contentKey(tab.state.url)) return;
-      if (inPlace) this.invalidate(tab);
+      if (inPlace) this.invalidate(tab, { preserveResult: !this.settings.autoParse });
       tab.state.loading = true; this.publish();
     });
     // A cancelled/provisional navigation must not discard the source tab's resources.
-    web.on('did-navigate', (_event, url) => { this.invalidate(tab); tab.douyinPage?.reset(); tab.documentKey = contentKey(url); });
+    web.on('did-navigate', (_event, url) => { this.invalidate(tab, { preserveResult: !this.settings.autoParse }); tab.douyinPage?.reset(); tab.documentKey = contentKey(url); });
     web.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (!isMainFrame || tab.closed) return;
       // B站的静态 __playinfo__ 可能在 SPA 分P切换后仍指向上一段。
@@ -267,8 +271,12 @@ class CollectorApp {
     }
   }
   destroyViews() { this.tabs.rows.forEach(tab => this.disposeTab(tab)); }
-  invalidate(tab = this.tabs.active) {
+  invalidate(tab = this.tabs.active, { preserveResult = false } = {}) {
     tab.sequence++; clearTimeout(tab.parseTimer); tab.parseTask?.cancel();
+    // Browsing may cancel in-flight extraction while a completed manual snapshot stays usable.
+    if (preserveResult && tab.state.result && this.cache.has(tab.state.inspectionId)) {
+      Object.assign(tab.state, { parsing: false, error: '' }); return;
+    }
     tab.assetsAbort.abort(); tab.assetsAbort = new AbortController();
     this.cache.delete(tab.state.inspectionId);
     Object.assign(tab.state, { result: null, inspectionId: null, parsing: false, error: '', logs: [] });
@@ -279,13 +287,16 @@ class CollectorApp {
     state.url = web.getURL(); state.site = siteForUrl(state.url);
     tab.url = /^https?:/.test(state.url) ? state.url : ''; tab.title = state.title = web.getTitle(); state.loading = false;
     this.publish(); clearTimeout(tab.parseTimer);
-    if (this.settings.autoParse && contentKey(state.url) && !state.result && !state.parsing)
-      tab.parseTimer = setTimeout(() => this.inspect(tab).catch(error => { state.error = error.message; this.publish(); }), 850);
+    if (this.settings.autoParse && contentKey(state.url) && (!state.result || !this.resultMatchesPage(tab)) && !state.parsing)
+      tab.parseTimer = setTimeout(() => {
+        if (!this.settings.autoParse || tab.closed || this.closing) return;
+        this.inspect(tab).catch(error => { state.error = error.message; this.publish(); });
+      }, 850);
   }
   navigate(url) {
     const target = navigationUrl(url), group = siteForUrl(target);
     if (group && group !== this.tabs.active.group) { this.openTab(target, { group, reuse: true }); return; }
-    this.invalidate(); this.tabs.active.url = this.state.url = target;
+    this.invalidate(this.tabs.active, { preserveResult: !this.settings.autoParse }); this.tabs.active.url = this.state.url = target;
     this.state.site = group; this.state.loading = true; this.publish();
     this.browser.webContents.loadURL(target).catch(() => {});
   }
@@ -577,8 +588,12 @@ class CollectorApp {
         if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('请使用不含账号密码的 HTTP 或 SOCKS5 代理地址');
       }
       if (!['original', 'jpg', 'png', 'webp'].includes(data.imageFormat)) throw new Error('图片格式无效');
+      const wasAutomatic = this.settings.autoParse;
       this.settings = { ...this.settings, proxy, imageFormat: data.imageFormat, autoParse: !!data.autoParse };
-      await this.applyProxy(); this.persist(); this.publish(); return;
+      await this.applyProxy(); this.persist(); this.publish();
+      if (!this.settings.autoParse) this.tabs.rows.forEach(tab => clearTimeout(tab.parseTimer));
+      else if (!wasAutomatic) this.pageReady(this.tabs.active);
+      return;
     }
     throw new Error('不支持此操作');
   }

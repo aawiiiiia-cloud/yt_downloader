@@ -11,3 +11,5 @@
 .browser-area{container-type:inline-size}.site-links{display:flex;align-items:center;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:thin;flex:1}.site-links button{flex-shrink:0;white-space:nowrap}#page-status{flex-shrink:1;min-width:0}@container(max-width:600px){#page-status{display:none}}
 
 .panel-heading{gap:12px}.panel-heading>div{min-width:0}.panel-title{display:flex;align-items:center;gap:8px;min-width:0}.panel-title h1,.panel-title .badge{white-space:nowrap}.panel-heading #parse{flex-shrink:0;height:36px;font-size:12px;white-space:nowrap}
+
+.retained-result-note{margin:0 0 14px;padding:8px 10px;border-radius:6px;background:var(--soft);color:var(--accent);font-size:11px;line-height:1.7}

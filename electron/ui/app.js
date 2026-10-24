@@ -158,6 +158,7 @@ function render(next) {
   $('page-status').textContent = state.loading ? '网页加载中…' : state.title || '开始浏览';
   $('site-label').textContent = names[state.site] || '通用浏览';
   $('parse').textContent = state.parsing ? '停止解析' : '解析当前页面';
+  $('retained-result-note').hidden = !state.inspectionId || state.resultMatchesPage;
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
   const youtubeLabels = { signed_out: '未登录，下载前请通过 Edge 登录', unverified: '登录待验证', checking: '正在验证登录…', verified: '已登录并验证', expired: '登录已失效，请通过 Edge 更新' };
   $('login-state').textContent = selectedSite === 'youtube' ? `YouTube · ${youtubeLabels[state.youtubeAuth] || '登录待验证'}` : state.login[selectedSite] ? `${names[selectedSite]} · 已检测到登录凭据` : `${names[selectedSite]} · 尚未检测到登录凭据`;
