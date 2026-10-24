@@ -38,10 +38,10 @@ def main() -> int:
             if command == "health":
                 result = runtime_health()
             elif command == "login":
-                from edge_login import run_login
+                from edge_login import run_login, SITE_CONFIGS
                 from pathlib import Path
                 site = request["site"]
-                if site not in {"youtube", "bilibili", "xiaohongshu"}:
+                if site not in SITE_CONFIGS:
                     raise ValueError("不支持该站点登录")
                 result = run_login(
                     Path(request["cookieFile"]), site=site, progress=lambda text: emit("log", text),

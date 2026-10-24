@@ -649,7 +649,7 @@ class TestEdgeLoginCore(unittest.TestCase):
             if method == "Network.getAllCookies":
                 return {"cookies": [{
                     "domain": ".youtube.com", "path": "/", "secure": True,
-                    "expires": 123, "name": "SID", "value": "new-value",
+                    "expires": 4102444800, "name": "SID", "value": "new-value",
                     "httpOnly": True,
                 }]}
             return {}
@@ -666,7 +666,7 @@ class TestEdgeLoginCore(unittest.TestCase):
             mock.patch("edge_login.time.sleep"),
             mock.patch.dict(sys.modules, {"yt_dlp": fake_module}),
         ):
-            return run_login(out_path=out, site="youtube", verify=True)
+            return run_login(out_path=out, site="youtube", verify=True, login_timeout=1)
 
     def test_failed_verification_preserves_previous_cookie_file(self) -> None:
         class FailingDownloader:

@@ -5,6 +5,8 @@ const SITES = {
   youtube: { name: 'YouTube', home: 'https://www.youtube.com/', domains: ['youtube.com', 'google.com', 'youtu.be'], auth: ['SID', 'SAPISID', 'LOGIN_INFO', '__Secure-3PAPISID', '__Secure-1PSID'] },
   bilibili: { name: 'B站', home: 'https://www.bilibili.com/', domains: ['bilibili.com', 'b23.tv'], auth: ['SESSDATA'] },
   xiaohongshu: { name: '小红书', home: 'https://www.xiaohongshu.com/explore', domains: ['xiaohongshu.com', 'xhslink.com'], auth: ['web_session'] },
+  vimeo: { name: 'Vimeo', home: 'https://vimeo.com/', domains: ['vimeo.com'], auth: ['vimeo'] },
+  douyin: { name: '抖音', home: 'https://www.douyin.com/', domains: ['douyin.com', 'iesdouyin.com', 'amemv.com'], auth: ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt'] },
 };
 function belongs(host, domain) { return host === domain || host.endsWith('.' + domain); }
 function navigationUrl(value) {
@@ -42,6 +44,15 @@ function contentKey(value) {
       const id = path.match(/\/(?:explore|discovery\/item|user\/profile\/[^/]+)\/([\da-f]{16,32})/i)?.[1];
       if (id) return `xiaohongshu:${id.toLowerCase()}`;
     }
+    if (site === 'vimeo') {
+      const match = path.match(/^\/(?:video\/|channels\/[^/]+\/|groups\/[^/]+\/videos\/|ondemand\/[^/]+\/)?(\d+)(?:\/([\da-f]+))?\/?$/i);
+      if (match) return `vimeo:${match[1]}:${match[2] || url.searchParams.get('h') || ''}`;
+    }
+    if (site === 'douyin') {
+      if (url.hostname === 'v.douyin.com' && /^\/[\w-]+\/?$/.test(path)) return `douyin:short:${path.replace(/\//g, '')}`;
+      const id = url.searchParams.get('modal_id') || path.match(/^\/(?:video|share\/video)\/(\d+)/)?.[1];
+      if (/^\d+$/.test(id || '')) return `douyin:${id}`;
+    }
   } catch {}
   return null;
 }
@@ -52,7 +63,7 @@ function cookieAllowed(cookie, site) {
 function hasAuth(cookies, site) {
   return cookies.some(c => cookieAllowed(c, site) && SITES[site].auth.includes(c.name) && c.value &&
     (!c.expirationDate || c.expirationDate > Date.now() / 1000) &&
-    belongs(String(c.domain).replace(/^\./, ''), site === 'youtube' ? 'youtube.com' : site === 'bilibili' ? 'bilibili.com' : 'xiaohongshu.com'));
+    belongs(String(c.domain).replace(/^\./, ''), SITES[site].domains[0]));
 }
 function cookieText(cookies, site) {
   const lines = ['# Netscape HTTP Cookie File', '# Local task snapshot; never share this file.'];

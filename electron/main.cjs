@@ -10,6 +10,7 @@ const { pythonTask } = require('./bridge.cjs');
 const { Assets, readBody } = require('./assets.cjs');
 const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
 const { SiteTabs, linkScript } = require('./site-tabs.cjs');
+const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-page.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -146,6 +147,7 @@ class CollectorApp {
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
     this.window.contentView.addChildView(view); view.setVisible(false); view.setBounds(this.browserBounds);
     const web = view.webContents;
+    if (tab.group === 'douyin') tab.douyinPage = new DouyinPage(web);
     web.setUserAgent(this.userAgent); web.setAudioMuted(true);
     // Native webpage views can receive the pointer while it crosses the divider.
     // Forward only an active local drag; the remote page has no resize IPC bridge.
@@ -195,7 +197,7 @@ class CollectorApp {
       tab.state.loading = true; this.publish();
     });
     // A cancelled/provisional navigation must not discard the source tab's resources.
-    web.on('did-navigate', (_event, url) => { this.invalidate(tab); tab.documentKey = contentKey(url); });
+    web.on('did-navigate', (_event, url) => { this.invalidate(tab); tab.douyinPage?.reset(); tab.documentKey = contentKey(url); });
     web.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (!isMainFrame || tab.closed) return;
       // B站的静态 __playinfo__ 可能在 SPA 分P切换后仍指向上一段。
@@ -256,7 +258,7 @@ class CollectorApp {
     this.disposeTab(tab); this.tabs.remove(id); this.activateTab(this.tabs.activeId);
   }
   disposeTab(tab) {
-    tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort();
+    tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort(); tab.douyinPage?.dispose();
     if (tab.view && !tab.view.webContents.isDestroyed()) {
       this.window.contentView.removeChildView(tab.view); tab.view.webContents.close({ waitForBeforeUnload: false });
     }
@@ -366,7 +368,7 @@ class CollectorApp {
   }
   async inspect(tab = this.tabs.active) {
     const state = tab.state, url = tab.view.webContents.getURL();
-    if (!contentKey(url)) throw new Error('请先在左侧打开 YouTube 视频、B站视频或小红书笔记详情页');
+    if (!contentKey(url)) throw new Error('请先在左侧打开支持的视频或小红书笔记详情页（YouTube、B站、小红书、Vimeo、抖音）');
     if (siteForUrl(url) === 'bilibili' && tab.documentKey !== contentKey(url)) throw new Error('播放器正在切换内容，请稍后重新解析');
     this.invalidate(tab); const ticket = ++tab.sequence;
     Object.assign(state, { parsing: true, result: null, inspectionId: null, error: '', logs: [] }); this.publish();
@@ -374,6 +376,15 @@ class CollectorApp {
     try {
       if (siteForUrl(url) === 'xiaohongshu') context = await this.readPage(snapshotScript, tab);
       if (siteForUrl(url) === 'bilibili') context = await this.readPage(biliSnapshotScript, tab, /\/video\/BV[0-9A-Za-z]+/.test(new URL(url).pathname));
+      if (siteForUrl(url) === 'douyin') {
+        // Feed/modal data may arrive after DOM ready; allow the normal player time to load.
+        const deadline = Date.now() + 7000;
+        do {
+          context = tab.douyinPage?.get(url) || await this.readPage(douyinSnapshotScript, tab);
+          if (context || ticket !== tab.sequence || tab.closed || this.closing) break;
+          await new Promise(resolve => setTimeout(resolve, 200));
+        } while (Date.now() < deadline);
+      }
       if (ticket !== tab.sequence || tab.closed || this.closing) return;
       tab.parseTask = this.withCookies({ command: 'inspect', url, context, settings: { ...this.settings } },
         (type, data) => { if (ticket === tab.sequence && type === 'log') this.log(data, tab); });
@@ -560,6 +571,8 @@ app.whenReady().then(async () => {
     console.log('Restart persistence: browser login, settings and task history OK');
     assert.ok(collector.tabs.rows.length >= 3);
     assert.equal(collector.tabs.active.group, 'xiaohongshu');
+    assert.ok(collector.tabs.rows.some(tab => tab.group === 'vimeo'));
+    assert.ok(collector.tabs.rows.some(tab => tab.group === 'douyin'));
     assert.equal(collector.tabs.rows.filter(tab => tab.view).length, 1);
     console.log('Restart persistence: site tabs restored lazily');
     collector.destroyViews(); collector.window.destroy(); app.exit(0);

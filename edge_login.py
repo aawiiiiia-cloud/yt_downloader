@@ -99,6 +99,17 @@ SITE_CONFIGS = {
         "default_file": ".yt_dlp_gui_xiaohongshu_cookies.txt",
         "verify_url": None,
     },
+    "vimeo": {
+        "name": "Vimeo", "login_url": "https://vimeo.com/log_in", "home_url": "https://vimeo.com/",
+        "capture_url": "https://vimeo.com/", "auth_names": {"vimeo"}, "auth_domain": "vimeo.com",
+        "cookie_domains": ("vimeo.com",), "default_file": ".yt_dlp_gui_vimeo_cookies.txt", "verify_url": None,
+    },
+    "douyin": {
+        "name": "抖音", "login_url": "https://www.douyin.com/", "home_url": "https://www.douyin.com/",
+        "capture_url": "https://www.douyin.com/", "auth_names": {"sessionid", "sessionid_ss", "sid_guard", "sid_tt"},
+        "auth_domain": "douyin.com", "cookie_domains": ("douyin.com",),
+        "default_file": ".yt_dlp_gui_douyin_cookies.txt", "verify_url": None,
+    },
 }
 
 # 兼容旧代码/测试所用的常量。
@@ -233,7 +244,9 @@ def has_site_auth_cookie(cookies: list[dict], site: str) -> bool:
     config = SITE_CONFIGS[site]
     return any(
         c.get("name") in config["auth_names"]
-        and config["auth_domain"] in c.get("domain", "")
+        and bool(c.get('value'))
+        and ((domain := str(c.get('domain', '')).lstrip('.').lower()) == config['auth_domain'] or domain.endswith('.' + config['auth_domain']))
+        and (not c.get('expires') or c['expires'] < 0 or c['expires'] > time.time())
         for c in cookies
     )
 
@@ -249,7 +262,7 @@ def get_site_cookies(cookies: list[dict], site: str) -> list[dict]:
     domains = SITE_CONFIGS[site]["cookie_domains"]
     return [
         c for c in cookies
-        if any(domain in c.get("domain", "") for domain in domains)
+        if any(str(c.get('domain', '')).lstrip('.').lower() == domain or str(c.get('domain', '')).lstrip('.').lower().endswith('.' + domain) for domain in domains)
     ]
 
 

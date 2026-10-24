@@ -11,7 +11,7 @@ const { pythonExecutable } = require('./bridge.cjs');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 function reportUrl(value) {
   const url = new URL(value);
-  for (const key of [...url.searchParams.keys()]) if (/token|signature|^sig$/i.test(key)) url.searchParams.set(key, '[redacted]');
+  for (const key of [...url.searchParams.keys()]) if (/token|signature|^sig$|^h$|bogus/i.test(key)) url.searchParams.set(key, '[redacted]');
   return url.href;
 }
 async function run(collector, profile) {
@@ -23,9 +23,11 @@ async function run(collector, profile) {
     ['bilibili', 'https://www.bilibili.com/video/BV12iFezdEZS'],
     ['xiaohongshu', 'https://www.xiaohongshu.com/explore'],
   ];
-  if (!Array.isArray(targets) || targets.length > 3 || !targets.length || targets.some(row =>
+  if (!Array.isArray(targets) || targets.length > 5 || !targets.length || targets.some(row =>
     !Array.isArray(row) || row.length !== 2 || siteForUrl(row[1]) !== row[0])) throw new Error('验收链接配置无效');
   if (!targets.some(([site]) => !process.env.YT_COLLECTOR_TEST_SITE || process.env.YT_COLLECTOR_TEST_SITE === site)) throw new Error('验收配置中没有所选站点的链接');
+  const maxHeight = Number(process.env.YT_COLLECTOR_TEST_MAX_HEIGHT || 360);
+  if (!Number.isInteger(maxHeight) || maxHeight < 144 || maxHeight > 2160) throw new Error('验收画质上限无效');
   try {
     for (const [site, url] of targets) {
       if (process.env.YT_COLLECTOR_TEST_SITE && process.env.YT_COLLECTOR_TEST_SITE !== site) continue;
@@ -96,15 +98,17 @@ async function run(collector, profile) {
           }
           if (process.env.YT_COLLECTOR_TEST_DOWNLOAD === '1' && result.parsed) {
             const item = collector.state.result.items[0];
-            const formats = (item.formats || []).filter(f => f.video && f.height && f.height <= 360);
+            const formats = (item.formats || []).filter(f => f.video && f.height && f.height <= maxHeight).sort((a,b) => a.height-b.height);
             const format = formats.find(f => f.audio) || formats[0];
-            if (item.kind !== 'images' && !format) throw new Error('没有 360p 或以下的小样本画质，不执行下载');
+            if (item.kind !== 'images' && !format) throw new Error(`没有 ${maxHeight}p 或以下的小样本画质，不执行下载`);
+            const expectedSize = format?.size || (format?.bitrate * 1000 * item.duration / 8);
+            if (expectedSize > 64000000) throw new Error('该验收画质预计超过 64 MB，不执行样本下载');
             const indices = item.kind === 'images' ? (process.env.YT_COLLECTOR_TEST_ALL_IMAGES === '1' ? item.images.map(image => image.index) : [item.images[0].index]) : [];
             collector.settings.saveDir = path.join(profile, 'downloads', site);
             const id = await collector.download({ inspectionId: collector.state.inspectionId, itemIndex: 0,
               formatId: format?.id, indices });
             const task = collector.queue.tasks.find(t => t.id === id);
-            const deadline = Date.now() + 90000;
+            const deadline = Date.now() + 180000;
             while (['queued', 'running', 'cancelling'].includes(task.status) && Date.now() < deadline) await wait(250);
             if (task.status !== 'completed') { collector.queue.cancel(id); throw new Error(task.error || '样本下载未在限定时间完成'); }
             if (item.kind === 'images') {

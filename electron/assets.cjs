@@ -3,8 +3,10 @@ const DOMAINS = {
   youtube: ['ytimg.com', 'ggpht.com', 'googleusercontent.com'],
   bilibili: ['hdslb.com', 'bilibili.com'],
   xiaohongshu: ['xhscdn.com', 'xiaohongshu.com', 'xhsimg.com'],
+  vimeo: ['vimeocdn.com', 'vimeo.com'],
+  douyin: ['douyinpic.com', 'douyincdn.com', 'byteimg.com', 'ibytedtos.com', 'pstatp.com'],
 };
-const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/' };
+const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/' };
 function assetUrl(value, site) {
   const url = new URL(String(value).startsWith('//') ? 'https:' + value : value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || ![null, '', '80', '443'].includes(url.port) ||

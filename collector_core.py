@@ -22,8 +22,37 @@ def checked_url(value: str) -> str:
     value = str(value).strip()
     parsed = urlparse(value)
     if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password or not site_for_url(value):
-        raise ValueError("第一阶段仅支持 YouTube、B站、小红书的内容链接")
+        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo 和抖音的内容链接")
+    if site_for_url(value) == 'douyin':
+        video_id = parse_qs(parsed.query).get('modal_id', [''])[0]
+        if not video_id and (match := re.search(r'/(?:video|share/video)/(\d+)', parsed.path)):
+            video_id = match[1]
+        if re.fullmatch(r'\d+', video_id):
+            return f'https://www.douyin.com/video/{video_id}'
+        if parsed.path.startswith('/note/'):
+            raise ValueError('目前支持抖音视频，抖音图集暂未接入')
     return value
+
+
+def vimeo_player_url(url: str) -> str:
+    """Use Vimeo's public embedded player, retaining unlisted video access hashes."""
+    if site_for_url(url) != 'vimeo':
+        return url
+    parsed = urlparse(url)
+    match = re.fullmatch(r'/(?:video/|channels/[^/]+/|groups/[^/]+/videos/|ondemand/[^/]+/)?(\d+)(?:/([\da-f]+))?/?', parsed.path, re.I)
+    if not match:
+        return url
+    access = match[2] or parse_qs(parsed.query).get('h', [''])[0]
+    return f'https://player.vimeo.com/video/{match[1]}' + ('?' + urlencode({'h': access}) if access else '')
+
+
+def selected_video_format(url: str, identifier: str, has_audio: bool) -> str:
+    if has_audio:
+        return identifier
+    if site_for_url(url) == 'vimeo' and (match := re.fullmatch(r'(hls-.+)-\d+', identifier)):
+        # Prefer audio delivered by the same CDN as the selected video, retaining fallback.
+        return f'{identifier}+bestaudio[format_id^={match[1]}-audio]/{identifier}+bestaudio/{identifier}'
+    return f'{identifier}+bestaudio/{identifier}'
 
 
 def prepare_runtime() -> None:
@@ -57,7 +86,8 @@ def normalise_video(info: dict, source_url: str) -> dict:
         if item.get("has_drm"):
             continue
         video = item.get("vcodec") != "none"
-        audio = item.get("acodec") not in {None, "none"}
+        # HLS audio-only tracks may omit the codec name while explicitly excluding video.
+        audio = item.get("acodec") != "none" and (item.get("acodec") is not None or not video)
         if not video and not audio:
             continue
         formats.append({"id": identifier, "height": item.get("height"), "width": item.get("width"),
@@ -139,6 +169,89 @@ def browser_bilibili(url: str, context: dict | None, ydl):
             "http_headers": {"Referer": "https://www.bilibili.com/", "Origin": "https://www.bilibili.com"}}
 
 
+def browser_douyin(url: str, context: dict | None, ydl):
+    """Parse only matching video data the normal browser has already received."""
+    from yt_dlp.extractor.tiktok import DouyinIE
+    match = re.search(r'/video/(\d+)', urlparse(url).path)
+    if not match or not isinstance(context, dict) or str(context.get('videoId')) != match[1]:
+        return None
+    detail = context.get('detail') or {}
+    if not isinstance(detail, dict) or str(detail.get('aweme_id')) != match[1]:
+        return None
+    raw = detail.get('video')
+    if not isinstance(raw, dict):
+        return None
+    media_domains = ('douyinvod.com', 'zjcdn.com', 'douyin.com', 'amemv.com', 'snssdk.com', 'bytecdn.cn')
+    image_domains = ('douyinpic.com', 'douyincdn.com', 'byteimg.com', 'ibytedtos.com', 'pstatp.com')
+
+    def trusted(value, domains):
+        parsed = urlparse('https:' + value if value.startswith('//') else value)
+        host = (parsed.hostname or '').lower()
+        if parsed.scheme not in {'https', 'http'} or parsed.username or parsed.password or parsed.port not in {None, 80, 443} or not any(
+            host == domain or host.endswith('.' + domain) for domain in domains
+        ):
+            raise ValueError('抖音播放器资源地址不属于支持的素材域名，请刷新后重新解析')
+        return parsed._replace(scheme='https', netloc=host).geturl()
+
+    def address(value, domains=media_domains):
+        if isinstance(value, dict):
+            urls = value.get('url_list') or value.get('urlList') or ([value.get('src')] if value.get('src') else [])
+            meta = {key: value[key] for key in ('width', 'height', 'data_size', 'url_key') if value.get(key) is not None}
+        else:
+            urls, meta = ([value] if isinstance(value, str) else value or []), {}
+        if not isinstance(urls, (list, tuple)):
+            urls = [urls] if isinstance(urls, str) else []
+        candidates = []
+        for row in list(urls)[:8]:
+            candidate = row.get('src') or row.get('url') if isinstance(row, dict) else row
+            if isinstance(candidate, str) and candidate:
+                candidates.append(trusted(candidate, domains))
+        return {**meta, 'url_list': candidates}
+
+    video = {key: raw[key] for key in ('width', 'height', 'duration', 'is_h265', 'is_bytevc1') if key in raw}
+    for snake, camel in (('play_addr', 'playAddr'), ('play_addr_h264', 'playAddrH264'),
+                         ('play_addr_bytevc1', 'playAddrBytevc1'), ('download_addr', 'downloadAddr')):
+        if value := raw.get(snake) or raw.get(camel):
+            video[snake] = address(value)
+    for snake, camel in (('cover', 'cover'), ('origin_cover', 'originCover')):
+        if value := raw.get(snake) or raw.get(camel):
+            video[snake] = address(value, image_domains)
+    video['bit_rate'] = []
+    format_metadata = {}
+    for index, row in enumerate((raw.get('bit_rate') or raw.get('bitRateList') or [])[:100]):
+        # Browser DASH rows are video-only byte ranges; a complete MP4 is required here.
+        if isinstance(row, dict) and str(row.get('format') or row.get('videoFormat') or '').lower() == 'dash':
+            continue
+        if isinstance(row, dict) and (value := row.get('play_addr') or row.get('playAddr')):
+            addr = address(value)
+            metadata = {key: row[key] for key in ('width', 'height') if row.get(key)}
+            metadata.update({key: val for key, val in {
+                'filesize': row.get('data_size') or row.get('dataSize') or addr.get('data_size'),
+                'fps': row.get('FPS') or row.get('fps'),
+                'vcodec': 'h265' if row.get('is_bytevc1') or row.get('isBytevc1') or row.get('isH265') or row.get('is_h265') else 'h264',
+            }.items() if val is not None})
+            for stream in addr['url_list']:
+                format_metadata[stream] = metadata
+            video['bit_rate'].append({'gear_name': row.get('gear_name') or row.get('gearName') or f'browser-{index}',
+                                      'bit_rate': row.get('bit_rate') or row.get('bitRate'),
+                                      'is_bytevc1': row.get('is_bytevc1') or row.get('isBytevc1') or row.get('isH265'),
+                                      'FPS': row.get('FPS') or row.get('fps'), 'play_addr': addr})
+    info = DouyinIE(ydl)._parse_aweme_video_app({'aweme_id': match[1], 'desc': detail.get('desc') or '',
+                                                'author': detail.get('author') or {}, 'video': video})
+    if not info.get('formats'):
+        return None
+    for entry in info['formats']:
+        entry.update(format_metadata.get(entry['url'], {}))
+    info.update(extractor='Douyin', extractor_key='Douyin', webpage_url=url,
+                http_headers={'Referer': 'https://www.douyin.com/'})
+    for cover in ('origin_cover', 'cover'):
+        if urls := (video.get(cover) or {}).get('url_list'):
+            info['thumbnail'] = urls[0]; break
+    author = detail.get('author') or {}
+    info['uploader'] = author.get('nickname') or info.get('uploader')
+    return info
+
+
 class Collector:
     def __init__(self, request: dict, emit, cancel: threading.Event | None = None):
         self.request, self.emit = request, emit
@@ -153,7 +266,7 @@ class Collector:
     def log(self, message):
         self.check_cancel()
         # Logs must never become a cookie/header dump or retain signed URL tokens.
-        message = re.sub(r"(?i)(xsec_token|token|signature|sig)=([^&\s]+)", r"\1=…", str(message))
+        message = re.sub(r"(?i)(xsec_token|token|signature|sig|h|a_bogus|x-bogus|mstoken)=([^&\s]+)", r"\1=…", str(message))
         self.emit("log", message[:1600])
 
     def options(self, url: str) -> dict:
@@ -185,6 +298,8 @@ class Collector:
         return options
 
     def debug(self, message):
+        if site_for_url(str(self.request.get('url') or '')) == 'douyin' and 'fresh cookies' in str(message).lower():
+            raise RuntimeError('抖音尚未返回可下载的视频信息。请先在左侧完成页面加载、必要的验证或登录，再重新解析；也可导入近期导出的 Cookies。')
         if self.request.get('youtubeVerified') and any(marker in str(message).lower() for marker in (
             'cookies are no longer valid', 'account cookies have been rotated', 'cookies have expired',
         )):
@@ -250,7 +365,12 @@ class Collector:
                 if loaded:
                     loaded = ydl.process_ie_result(loaded, download=False)
                     return {"site": "bilibili", "url": url, "items": [normalise_video(loaded, url)]}
-            data = ydl.extract_info(url, download=False)
+            if site_for_url(url) == 'douyin':
+                loaded = browser_douyin(url, self.request.get('context'), ydl)
+                if loaded:
+                    loaded = ydl.process_ie_result(loaded, download=False)
+                    return {'site': 'douyin', 'url': url, 'items': [normalise_video(loaded, url)]}
+            data = ydl.extract_info(vimeo_player_url(url), download=False)
         self.check_cancel()
         if not data:
             raise RuntimeError("未取得可下载内容，请检查登录状态或刷新页面")
@@ -308,14 +428,15 @@ class Collector:
         if identifier and not settings.get("audioOnly"):
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", identifier):
                 raise ValueError("画质标识无效，请重新解析")
-            options["format"] = identifier if self.request.get("formatHasAudio") else f"{identifier}+bestaudio/{identifier}"
+            options["format"] = selected_video_format(url, identifier, bool(self.request.get('formatHasAudio')))
         with yt_dlp.YoutubeDL(options) as ydl:
-            loaded = browser_bilibili(url, self.request.get("context"), ydl) if site_for_url(url) == 'bilibili' else None
+            loaded = browser_bilibili(url, self.request.get("context"), ydl) if site_for_url(url) == 'bilibili' else (
+                browser_douyin(url, self.request.get('context'), ydl) if site_for_url(url) == 'douyin' else None)
             if loaded:
                 ydl.process_ie_result(loaded, download=True)
                 result = 0
             else:
-                result = ydl.download([url])
+                result = ydl.download([vimeo_player_url(url)])
             if result:
                 raise RuntimeError("下载未完成，请查看任务日志后重试")
         self.check_cancel()

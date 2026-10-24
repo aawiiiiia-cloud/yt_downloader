@@ -7,3 +7,5 @@
 .login-tools.youtube{grid-template-columns:repeat(2,minmax(0,1fr))}#pane-divider{flex:0 0 12px;position:relative;cursor:col-resize;touch-action:none;border-radius:5px}#pane-divider::after{content:"";position:absolute;top:0;bottom:0;left:5px;width:2px;border-radius:3px;background:#dce5df;transition:background .15s}#pane-divider:hover::after,#pane-divider:focus-visible::after,.resizing-panes #pane-divider::after{background:#8dbdaa}#pane-divider:focus-visible{outline:2px solid #abd3c6;outline-offset:-2px}.resizing-panes,.resizing-panes *{cursor:col-resize!important;user-select:none!important}#resources-panel,#tasks-panel{min-height:0}
 
 #pane-divider::before{content:"";position:absolute;top:calc(50% - 15px);left:4px;width:4px;height:30px;border-radius:3px;background:#a3b9ad;z-index:1}
+
+.browser-area{container-type:inline-size}.site-links{display:flex;align-items:center;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:thin;flex:1}.site-links button{flex-shrink:0;white-space:nowrap}#page-status{flex-shrink:1;min-width:0}@container(max-width:600px){#page-status{display:none}}

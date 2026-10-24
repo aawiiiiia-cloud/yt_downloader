@@ -39,12 +39,16 @@ async function run(collector, profile, snapshotScript) {
     const fixture = `<html><head><title>受控站点页面</title></head><body><h1>受控页面</h1><script>window.__INITIAL_STATE__=${JSON.stringify({
       note: { noteDetailMap: { [a]: { note: note(a) }, [b]: { note: note(b) } } },
       videoData: { title: '受控 B站视频', pic:'http://i0.hdslb.com/cover.png', duration:3527, pages: [{page:1,part:'第一段',duration:3527},{page:2,part:'第二段',duration:3601}] },
+      aweme: { detail: { aweme_id: '1234567890123456789', desc: '受控抖音视频', author: { nickname: '测试作者' },
+        video: { duration: 58000, width: 640, height: 360,
+          play_addr: { url_list: ['https://fixture.douyinvod.com/video.mp4'], data_size: 340000 },
+          cover: { url_list: ['https://p3.douyinpic.com/cover.png'] } } } },
     })}; window.__playinfo__={data:{dash:{video:[{id:16,baseUrl:'https://fixture.bilivideo.com/video.m4s',bandwidth:800000,mimeType:'video/mp4',codecs:'avc1.64001e',height:360,width:640}]}}};</script></body></html>`;
     const pendingStreams = [];
     await session.defaultSession.protocol.handle('https', () => new Response('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="140"><rect width="100" height="140" fill="#eaf4ef"/></svg>', { headers: { 'content-type': 'image/svg+xml' } }));
     await collector.browserSession.protocol.handle('https', request => {
       const resource = new URL(request.url);
-      if (resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com')) {
+      if (resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
         assetRequests.push({ url:request.url, method:request.method, referer:request.headers.get('referer') });
         if (resource.hostname.endsWith('.hdslb.com') && !coverFailed) { coverFailed = true; return new Response('unavailable', {status:503}); }
         return new Response(request.method === 'HEAD' ? null : imageBytes, { headers: { 'content-type':'image/png', 'content-length':request.method === 'HEAD' ? '340000' : String(imageBytes.length) } });
@@ -169,6 +173,7 @@ async function run(collector, profile, snapshotScript) {
     await require('./tabs-smoke.cjs').run(collector, check, until, wait);
     youtubeLoggedIn = false;
     await require('./workspace-smoke.cjs').run(collector, check, until, wait, profile);
+    await require('./new-sites-smoke.cjs').run(collector, check, until, wait);
     resolveDownload({ folder: profile, count: 1 }); await wait(100);
     check('background download queue completes', task.status === 'completed');
     collector.persist();

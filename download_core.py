@@ -14,6 +14,8 @@ def site_for_url(url: str) -> str | None:
         "youtube": ("youtube.com", "youtu.be"),
         "bilibili": ("bilibili.com", "b23.tv"),
         "xiaohongshu": ("xiaohongshu.com", "xhslink.com"),
+        "vimeo": ("vimeo.com",),
+        "douyin": ("douyin.com", "iesdouyin.com", "amemv.com"),
     }.items():
         if any(host == domain or host.endswith("." + domain) for domain in domains):
             return site
