@@ -61,8 +61,11 @@ class CollectorApp {
   constructor() {
     fs.mkdirSync(path.join(profile, 'tasks'), { recursive: true });
     const legacy = smoke || liveCheck || persistenceCheck ? {} : readJson(path.join(os.homedir(), '.yt_dlp_gui.json'), {});
+    const savedSettings = readJson(path.join(profile, 'settings.json'), {}) || {};
     this.settings = { saveDir: legacy.save_dir || path.join(os.homedir(), 'Downloads'), proxy: legacy.proxy || '',
-      autoParse: true, imageFormat: 'original', imageQuality: 95, panelWidth: 390, ...readJson(path.join(profile, 'settings.json'), {}) };
+      autoParse: false, imageFormat: 'original', imageQuality: 95, panelWidth: 390, ...savedSettings, settingsVersion: 1 };
+    // Disable the former default once on upgrade, then remember explicit user choices.
+    if (!savedSettings.settingsVersion) this.settings.autoParse = false;
     this.shared = { health: null, login: {}, loginRunning: null, importingCookies: false };
     this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
     this.tabs.rows.forEach(tab => this.initializeTab(tab));
