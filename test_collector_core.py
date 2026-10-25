@@ -194,5 +194,45 @@ class TestCollectorAdapters(unittest.TestCase):
         self.assertEqual(events[0][0],'auth-invalid')
 
 
+class TestWorkerErrors(unittest.TestCase):
+    def test_nested_timeout_is_preserved_without_a_traceback(self):
+        from collector_errors import error_payload
+        outer = RuntimeError('download failed')
+        outer.__cause__ = TimeoutError('socket timed out')
+        outer.__cause__.__cause__ = outer
+        result = error_payload(outer)
+        self.assertEqual(result['kind'], 'timeout')
+        self.assertIn('socket timed out', result['message'])
+        self.assertLess(len(result['message']), 1801)
+
+    def test_http_status_is_not_misclassified_as_a_filesystem_error(self):
+        from urllib.error import HTTPError
+        from collector_errors import error_payload
+        result = error_payload(HTTPError('https://cdn.invalid/private?signature=secret', 403, 'Forbidden', {}, None))
+        self.assertEqual(result['httpStatus'], 403)
+        self.assertNotEqual(result.get('kind'), 'filesystem')
+        self.assertNotIn('secret', result['message'])
+
+    def test_disk_failures_and_private_header_values_are_serialized_safely(self):
+        import errno
+        from collector_errors import error_payload, safe_error_text
+        error = PermissionError(errno.EACCES, 'Permission denied', 'fixture.mp4')
+        error.__cause__ = TimeoutError('previous network timeout')
+        result = error_payload(error)
+        self.assertEqual(result['kind'], 'filesystem')
+        detail = safe_error_text('https://user:password@cdn.invalid/secret?token=private\nAuthorization: Bearer private\nCookie: SESSDATA=private')
+        for value in ('password', 'secret', 'private'):
+            self.assertNotIn(value, detail)
+
+    def test_worker_failure_protocol_contains_structured_evidence(self):
+        result = subprocess.run([sys.executable, '-B', '-X', 'utf8', 'collector_worker.py'],
+                                input=json.dumps({'command': 'inspect', 'url': 'file:///private'}) + '\n',
+                                capture_output=True, text=True, encoding='utf-8', timeout=10)
+        self.assertEqual(result.returncode, 1)
+        event = json.loads(result.stdout)
+        self.assertEqual(event['type'], 'error')
+        self.assertIsInstance(event['data']['message'], str)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -13,6 +13,8 @@ const { SiteTabs, linkScript } = require('./site-tabs.cjs');
 const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-page.cjs');
 const { resolveDouyinContext } = require('./douyin-context.cjs');
 const { YouTubeProvider } = require('./youtube-provider.cjs');
+const { LoginState } = require('./login-state.cjs');
+const { classifyFailure, safeDetail } = require('./task-failure.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -68,18 +70,25 @@ class CollectorApp {
       autoParse: false, imageFormat: 'original', imageQuality: 95, panelWidth: 390, ...savedSettings, settingsVersion: 1 };
     // Disable the former default once on upgrade, then remember explicit user choices.
     if (!savedSettings.settingsVersion) this.settings.autoParse = false;
-    this.shared = { health: null, login: {}, loginRunning: null, importingCookies: false };
+    this.shared = { health: null, login: {}, loginExpired: {}, loginRunning: null, importingCookies: false };
+    this.loginState = new LoginState(readJson(path.join(profile, 'login-errors.json'), {}));
     this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
     this.tabs.rows.forEach(tab => this.initializeTab(tab));
     this.handles = new Set(); this.cache = new Map(); this.closing = false;
     this.youtubeProvider = new YouTubeProvider({ track: handle => this.track(handle) });
+    this.runTask = pythonTask;
     this.youtubeAuth = new YouTubeAuth(() => this.browserSession.cookies.get({}), () => this.verifyYouTube(), () => this.publish());
     this.queue = new DownloadQueue((spec, onEvent) => this.withCookies(spec, onEvent), () => this.publish());
     const history = readJson(path.join(profile, 'history.json'), []);
-    this.queue.tasks = (Array.isArray(history) ? history : []).filter(t => t && typeof t === 'object').slice(0, 60).map(t => ({
-      ...t, status: ['queued', 'running', 'cancelling'].includes(t.status) ? 'failed' : t.status,
-      error: ['queued', 'running', 'cancelling'].includes(t.status) ? '上次任务已中断，请重新解析后下载' : t.error,
-    }));
+    this.queue.tasks = (Array.isArray(history) ? history : []).filter(t => t && typeof t === 'object').slice(0, 60).map(t => {
+      const interrupted = ['queued', 'running', 'cancelling'].includes(t.status);
+      const task = { ...t, status: interrupted ? 'failed' : t.status };
+      if (task.status === 'failed') {
+        task.failure = classifyFailure(interrupted ? '上次任务已中断，请重新解析后下载' : t.failure || t.error, t.logs || []);
+        task.error = task.failure.message;
+      }
+      return task;
+    });
   }
   get state() { return this.tabs.active.state; }
   get browser() { return this.tabs.active.view; }
@@ -101,6 +110,7 @@ class CollectorApp {
     tabs: this.tabs.rows.map(tab => ({ id: tab.id, group: tab.group, title: tab.title,
       url: tab.url, loading: tab.state?.loading || false, parsing: tab.state?.parsing || false })),
     settings: this.settings, youtubeAuth: this.youtubeAuth.status,
+    loginExpired: { ...this.state.loginExpired, youtube: this.state.loginExpired.youtube || this.youtubeAuth.status === 'expired' },
     tasks: this.queue.list().map(t => ({ ...t, canRetry: !!this.queue.tasks.find(row => row.id === t.id)?.spec })) }; }
   publish() {
     if (!this.window?.isDestroyed() && this.window?.webContents && !this.window.webContents.isDestroyed())
@@ -111,6 +121,7 @@ class CollectorApp {
   persist() {
     writeJson(path.join(profile, 'settings.json'), this.settings);
     writeJson(path.join(profile, 'history.json'), this.queue.list());
+    writeJson(path.join(profile, 'login-errors.json'), this.loginState.invalid);
     writeJson(path.join(profile, 'tabs.json'), this.tabs.serialize());
   }
   track(handle) {
@@ -321,13 +332,35 @@ class CollectorApp {
   }
   async updateLogin() {
     const cookies = await this.browserSession.cookies.get({});
-    for (const site of Object.keys(SITES)) this.state.login[site] = hasAuth(cookies, site);
+    const login = this.loginState.observe(cookies);
+    this.state.login = login.detected; this.state.loginExpired = login.expired;
     this.youtubeAuth.observe(cookies);
     this.publish();
   }
-  async cookieSnapshot(site, verified = false) {
+  async rejectCredentials(site, key) {
+    await this.updateLogin();
+    if (!this.loginState.reject(site, key)) return;
+    this.state.loginExpired = this.loginState.state().expired;
+    if (site === 'youtube') { this.youtubeAuth.status = 'expired'; this.youtubeAuth.until = 0; }
+    this.publish();
+  }
+  async ensureYouTube(force = false) {
+    try {
+      await this.youtubeAuth.ensure(force);
+      const verifiedKey = this.youtubeAuth.key;
+      await this.updateLogin();
+      if (this.youtubeAuth.status !== 'verified' || this.youtubeAuth.key !== verifiedKey) throw authRequired('YouTube 登录状态已更新，请再试一次');
+      this.loginState.accept('youtube', verifiedKey);
+      this.state.loginExpired = this.loginState.state().expired; this.publish();
+    } catch (error) {
+      if (this.youtubeAuth.status === 'expired') await this.rejectCredentials('youtube', this.youtubeAuth.key);
+      throw error;
+    }
+  }
+  async cookieSnapshot(site, verified = false, snapshot = {}) {
     const cookies = await this.browserSession.cookies.get({});
     if (verified && (this.youtubeAuth.status !== 'verified' || fingerprint(cookies) !== this.youtubeAuth.key)) throw authRequired();
+    snapshot.key = fingerprint(cookies, site);
     const file = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
     fs.writeFileSync(file, cookieText(cookies, site), { mode: 0o600 });
     return file;
@@ -346,20 +379,28 @@ class CollectorApp {
     const controller = new AbortController();
     const handle = { cancel() { cancelled = true; controller.abort(); task?.cancel(); }, promise: null };
     handle.promise = (async () => {
+      const site = siteForUrl(spec.url), snapshot = {}, logs = [];
       const youtubeVerified = spec.command === 'download' && siteForUrl(spec.url) === 'youtube';
-      if (youtubeVerified) await this.youtubeAuth.ensure();
-      const cookieFile = await this.cookieSnapshot(siteForUrl(spec.url), youtubeVerified);
+      if (youtubeVerified) await this.ensureYouTube();
+      const cookieFile = await this.cookieSnapshot(site, youtubeVerified, snapshot);
       try {
         const [proxy, providerUrl] = await Promise.all([
           this.effectiveProxy(spec.url, spec.settings?.proxy),
           siteForUrl(spec.url) === 'youtube' ? this.youtubeProvider.ensure(onEvent, controller.signal) : undefined,
         ]);
         if (cancelled) { const error = new Error('操作已取消'); error.cancelled = true; throw error; }
-        task = this.track(pythonTask({ ...spec, ...(siteForUrl(spec.url) === 'youtube' ? { providerUrl } : {}), youtubeVerified, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, (type, data) => {
-          if (type === 'auth-invalid') { this.youtubeAuth.status = 'expired'; this.youtubeAuth.until = 0; this.publish(); }
+        task = this.track(this.runTask({ ...spec, ...(siteForUrl(spec.url) === 'youtube' ? { providerUrl } : {}), youtubeVerified, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, (type, data) => {
+          if (type === 'log') { logs.push(safeDetail(data)); if (logs.length > 35) logs.shift(); }
           onEvent?.(type, data);
         }));
         return await task.promise;
+      } catch (error) {
+        if (!cancelled && !error.cancelled && spec.command === 'download') {
+          const failure = classifyFailure(error, logs, { hadCredentials: !!snapshot.key });
+          error.failure = failure;
+          if (failure.code === 'AUTH_EXPIRED') await this.rejectCredentials(site, snapshot.key);
+        }
+        throw error;
       } finally { controller.abort(); fs.unlinkSync(cookieFile); }
     })();
     return this.track(handle);
@@ -485,7 +526,7 @@ class CollectorApp {
     if (!snapshot || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const item = snapshot.result.items[Number(data.itemIndex)];
     if (!item || !siteForUrl(item.url)) throw new Error('资源不存在，请重新解析');
-    if (siteForUrl(item.url) === 'youtube') await this.youtubeAuth.ensure();
+    if (siteForUrl(item.url) === 'youtube') await this.ensureYouTube();
     if (tab.closed || this.tabs.active !== tab || data.inspectionId !== tab.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const indices = Array.isArray(data.indices) ? data.indices.filter(i => item.images?.some(image => image.index === i)) : [];
     if (item.kind === 'images' && !indices.length) throw new Error('请至少选择一张图片');
@@ -507,7 +548,7 @@ class CollectorApp {
     }
     await this.browserSession.cookies.flushStore(); await this.updateLogin();
     if (!count) throw new Error('没有可导入的有效登录凭据，请重新登录');
-    if (site === 'youtube') await this.youtubeAuth.ensure(true);
+    if (site === 'youtube') await this.ensureYouTube(true);
     return count;
   }
   async chooseCookies(site) {
@@ -569,7 +610,7 @@ class CollectorApp {
     if (method === 'cancel-task') return this.queue.cancel(String(data.id));
     if (method === 'retry-task') {
       const task = this.queue.tasks.find(row => row.id === String(data.id));
-      if (siteForUrl(task?.spec?.url) === 'youtube') await this.youtubeAuth.ensure();
+      if (siteForUrl(task?.spec?.url) === 'youtube') await this.ensureYouTube();
       return this.queue.retry(String(data.id));
     }
     if (method === 'login') return this.login(data.site);
@@ -633,6 +674,9 @@ app.whenReady().then(async () => {
     assert.equal(collector.settings.autoParse, false);
     assert.equal(collector.settings.panelWidth, 450);
     assert.equal(collector.queue.tasks[0].status, 'completed');
+    assert.equal(collector.queue.tasks.find(task => task.title === '受控失败：网络超时').failure.code, 'NETWORK_TIMEOUT');
+    assert.equal(collector.state.loginExpired.bilibili, true);
+    console.log('Restart persistence: failure reasons and rejected credential state OK');
     console.log('Restart persistence: browser login, settings and task history OK');
     assert.ok(collector.tabs.rows.length >= 3);
     assert.equal(collector.tabs.active.group, 'xiaohongshu');

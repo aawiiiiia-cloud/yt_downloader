@@ -13,3 +13,5 @@
 .panel-heading{gap:12px}.panel-heading>div{min-width:0}.panel-title{display:flex;align-items:center;gap:8px;min-width:0}.panel-title h1,.panel-title .badge{white-space:nowrap}.panel-heading #parse{flex-shrink:0;height:36px;font-size:12px;white-space:nowrap}
 
 #settings-panel .auto-parse-help{margin:0 0 20px}
+
+.task-error>strong,.task-error>span{display:block}.task-error>strong{font-weight:600;margin-bottom:3px}

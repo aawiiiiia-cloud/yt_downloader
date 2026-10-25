@@ -258,6 +258,7 @@ class Collector:
         self.cancel = cancel or threading.Event()
         self.provider = None
         self.reported_formats = set()
+        self.last_error = None
 
     def check_cancel(self):
         if self.cancel.is_set():
@@ -316,7 +317,10 @@ class Collector:
 
     info = debug
     warning = debug
-    error = debug
+
+    def error(self, message):
+        self.last_error = str(message)
+        self.debug(message)
 
     def progress(self, data):
         self.check_cancel()
@@ -446,7 +450,7 @@ class Collector:
             else:
                 result = ydl.download([vimeo_player_url(url)])
             if result:
-                raise RuntimeError("下载未完成，请查看任务日志后重试")
+                raise RuntimeError(self.last_error or "下载未完成，请查看任务日志后重试")
         self.check_cancel()
         return {"folder": str(folder), "count": 1}
 

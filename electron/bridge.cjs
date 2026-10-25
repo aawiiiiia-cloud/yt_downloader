@@ -3,6 +3,7 @@ const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
+const { failureError } = require('./task-failure.cjs');
 
 function pythonExecutable() {
   const candidates = [process.env.YT_DOWNLOADER_PYTHON, 'D:\\python-envs\\yt-downloader\\Scripts\\python.exe'];
@@ -24,7 +25,7 @@ function pythonTask(request, onEvent = () => {}, options = {}) {
         const event = JSON.parse(line);
         if (event.type === 'result') terminal = event.data;
         else if (event.type === 'error' || event.type === 'cancelled') {
-          failure = new Error(String(event.data)); failure.cancelled = event.type === 'cancelled';
+          failure = failureError(event.data, { cancelled: event.type === 'cancelled', operation: request.command });
         } else onEvent(event.type, event.data);
       } catch { /* Ignore unstructured third-party diagnostics; never surface secrets. */ }
     });

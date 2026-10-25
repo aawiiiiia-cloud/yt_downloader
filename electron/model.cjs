@@ -1,5 +1,6 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
+const { classifyFailure, describeFailure, safeDetail } = require('./task-failure.cjs');
 
 const SITES = {
   youtube: { name: 'YouTube', home: 'https://www.youtube.com/', domains: ['youtube.com', 'google.com', 'youtu.be'], auth: ['SID', 'SAPISID', 'LOGIN_INFO', '__Secure-3PAPISID', '__Secure-1PSID'] },
@@ -109,15 +110,19 @@ class DownloadQueue {
     this.active = task; task.status = 'running'; this.changed();
     try {
       task.process = this.run(task.spec, (type, data) => {
-        if (type === 'log') task.logs = [...task.logs, String(data)].slice(-35);
+        if (type === 'log') task.logs = [...task.logs, safeDetail(data)].slice(-35);
         if (type === 'progress') { task.percent = Number(data.percent) || 0; task.detail = data.status; }
         this.changed();
       });
       task.result = await task.process.promise;
       task.status = task.status === 'cancelling' ? 'cancelled' : 'completed';
+      if (task.status === 'cancelled') task.error = describeFailure('CANCELLED').message;
       task.percent = task.status === 'completed' ? 100 : task.percent;
     } catch (error) {
-      task.status = task.status === 'cancelling' || error.cancelled ? 'cancelled' : 'failed'; task.error = error.message;
+      task.status = task.status === 'cancelling' || error.cancelled ? 'cancelled' : 'failed';
+      const failure = task.status === 'cancelled' ? describeFailure('CANCELLED') : classifyFailure(error, task.logs);
+      task.failure = failure; task.error = failure.message;
+      if (failure.detail && failure.detail !== failure.message) task.logs = [...task.logs, failure.detail].slice(-35);
     } finally {
       delete task.process; this.active = null; this.changed(); this.pump();
     }
@@ -125,7 +130,7 @@ class DownloadQueue {
   cancel(id) {
     const task = this.tasks.find(t => t.id === id);
     if (!task) return;
-    if (task.status === 'queued') task.status = 'cancelled';
+    if (task.status === 'queued') { task.status = 'cancelled'; task.error = describeFailure('CANCELLED').message; }
     else if (task.status === 'running') { task.status = 'cancelling'; task.process?.cancel(); }
     this.changed();
   }

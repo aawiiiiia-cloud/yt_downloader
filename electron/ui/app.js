@@ -145,7 +145,10 @@ function renderResources() {
 }
 function renderTasks() {
   const labels = { queued: '等待下载', running: '下载中', cancelling: '正在停止', cancelled: '已取消', completed: '已完成', failed: '下载失败' };
-  $('tasks').innerHTML = state.tasks.length ? state.tasks.map(task => `<article class="task-card"><div class="task-title">${escape(task.title)}</div><div class="task-meta"><span>${labels[task.status] || escape(task.status)}${task.detail === 'processing' ? ' · 正在合并或转码' : ''}</span><span>${Math.round(task.percent || 0)}%</span></div><progress max="100" value="${task.percent || 0}"></progress>${task.error ? `<p class="task-error">${escape(task.error)}</p>` : ''}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`).join('') : '<div class="empty"><strong>下载队列还是空的</strong><p>在资源页选择图片或视频，<br>加入队列后可以在这里查看进度。</p></div>';
+  $('tasks').innerHTML = state.tasks.length ? state.tasks.map(task => {
+    const error = task.status === 'failed' ? `<p class="task-error"><strong>失败原因：${escape(task.failure?.label || '原因未确定')}</strong><span>${escape(task.error || '请展开任务日志查看详情。')}</span></p>` : task.error ? `<p class="task-error">${escape(task.error)}</p>` : '';
+    return `<article class="task-card"><div class="task-title">${escape(task.title)}</div><div class="task-meta"><span>${labels[task.status] || escape(task.status)}${task.status === 'running' && task.detail === 'processing' ? ' · 正在合并或转码' : ''}</span><span>${Math.round(task.percent || 0)}%</span></div><progress max="100" value="${task.percent || 0}"></progress>${error}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
+  }).join('') : '<div class="empty"><strong>下载队列还是空的</strong><p>在资源页选择图片或视频，<br>加入队列后可以在这里查看进度。</p></div>';
 }
 function render(next) {
   const previousError = state?.error;
@@ -159,19 +162,11 @@ function render(next) {
   $('site-label').textContent = names[state.site] || '通用浏览';
   $('parse').textContent = state.parsing ? '停止解析' : '解析当前页面';
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
-  const youtubeLabels = { signed_out: '未登录（建议登录）', unverified: '登录待验证', checking: '正在验证登录…', verified: '已登录并验证', expired: '登录已失效（建议登录）' };
-  const youtubeHelp = {
-    signed_out: '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。',
-    expired: 'YouTube 登录已失效，请通过 Edge 登录或导入近期 Cookies。',
-    unverified: '已检测到登录凭据，下载前会向 YouTube 确认是否仍然有效。',
-    checking: '正在向 YouTube 确认登录状态。',
-    verified: 'YouTube 登录已通过验证，下载前仍会检查凭据。',
-  };
-  const youtubeAuth = state.youtubeAuth || (state.login.youtube ? 'unverified' : 'signed_out');
-  const needsLogin = selectedSite === 'youtube' ? ['signed_out', 'expired'].includes(youtubeAuth) : !state.login[selectedSite];
-  $('login-state').textContent = `${names[selectedSite]} · ${selectedSite === 'youtube' ? youtubeLabels[youtubeAuth] || '登录待验证' : needsLogin ? '未登录（建议登录）' : '已检测到登录凭据'}`;
+  const expired = state.loginExpired?.[selectedSite] || (selectedSite === 'youtube' && state.youtubeAuth === 'expired');
+  const needsLogin = expired || !state.login[selectedSite];
+  $('login-state').textContent = `${names[selectedSite]} · ${expired ? '登录凭证已失效/过期，请重新登录' : needsLogin ? '未登录（建议登录）' : '已登录'}`;
   $('login-state').classList.toggle('login-warning', needsLogin);
-  $('login-state').title = selectedSite === 'youtube' ? youtubeHelp[youtubeAuth] || youtubeHelp.unverified : (needsLogin ? '尚未检测到本站登录凭据，建议通过 Edge 登录或导入近期 Cookies。' : '已检测到登录凭据，是否仍然有效会在访问网站、解析或下载时由网站判断。');
+  $('login-state').title = expired ? '请重新登录或导入新的 Cookies，旧凭证不会因再次检测到而恢复。' : needsLogin ? (selectedSite === 'youtube' ? '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。' : '尚未检测到本站登录凭据，建议先登录。') : (selectedSite === 'youtube' ? '已读取登录凭证，下载前仍会自动确认是否有效。' : '已读取登录凭证，实际可用性由网站请求结果确认。');
   const loginBusy = !!state.loginRunning || !!state.importingCookies;
   const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
   $('web-login').hidden = externalLoginOnly;

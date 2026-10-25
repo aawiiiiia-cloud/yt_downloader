@@ -7,6 +7,7 @@ import sys
 import threading
 
 from collector_core import Cancelled, Collector, prepare_runtime, runtime_health
+from collector_errors import error_payload
 
 
 def run_provider(emit, cancel):
@@ -79,7 +80,8 @@ def main() -> int:
             emit("result", result)
         return 0
     except Exception as exc:
-        emit("cancelled" if cancel.is_set() or isinstance(exc, Cancelled) else "error", str(exc))
+        cancelled = cancel.is_set() or isinstance(exc, Cancelled)
+        emit('cancelled' if cancelled else 'error', str(exc) if cancelled else error_payload(exc))
         return 1
     finally:
         if service is not None:
