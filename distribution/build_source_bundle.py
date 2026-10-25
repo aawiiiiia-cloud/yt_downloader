@@ -38,7 +38,7 @@ def command_file(arguments: str = "") -> str:
         'if not exist "%media_python%" (',
         '    echo 缺少依赖工具，请完整复制整个 media-dl 文件夹。',
         '    pause', '    exit /b 1', ')',
-        f'"%media_python%" -B -X utf8 "%~dp0启动.py" {arguments}'.rstrip(),
+        f'"%media_python%" -B -X utf8 "%~dp0启动.py" {arguments} %*',
         'set "media_result=%errorlevel%"',
         'if not "%media_result%"=="0" pause' if arguments != '--check' else 'pause',
         'exit /b %media_result%', '',
@@ -145,7 +145,7 @@ def main() -> int:
         "三、复制与开发\n请整体复制或移动 media-dl 文件夹，保留上述三个子目录名称。\n"
         "无需依赖原来的 D 盘 Python、Node 和 FFmpeg，也无需安装系统级 Python/Node。\n"
         "适用于 Windows x64；Edge 登录功能需要本机安装 Microsoft Edge。\n"
-        "代码内保留原始启动脚本作为源码快照；此整理版请使用启动程序中的入口。\n"
+        "也可使用代码内的 start-collector.cmd / start.cmd，它们会自动转交启动程序内的入口。\n"
         "Git 历史保存在 代码\\版本历史.bundle；有 Git 时可用 git clone 恢复到另一个新目录。\n\n"
         "四、本机数据\n应用仍使用当前 Windows 用户的 .media-collector 保存设置、登录和下载历史。\n"
         "本包没有复制账号 Cookies、浏览器个人资料、已下载媒体、临时测试缓存、MissAV 或图片重命名器等独立项目。\n"

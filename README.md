@@ -44,7 +44,8 @@ Electron 与 Python 通过本机子进程通信，不开放 HTTP 服务端口。
 以本项目专用 Python 执行。产物分为“代码”“依赖工具”“启动程序”，保留 Git 历史备份与 SHA-256 清单；
 启动入口按相对路径使用包内 Python、Node/npm、Electron、FFmpeg 和 PO Token 工具。
 `YT_DOWNLOADER_TOOLS_DIR` 可指定工具根目录；不设置时沿用原有工具查找方式。
-整理包不包含账号、已下载文件、测试缓存或其他独立项目。需整体复制目录，通过“启动程序”内的入口启动。
+整理包不包含账号、已下载文件、测试缓存或其他独立项目。需整体复制目录，推荐通过“启动程序”内的入口启动；
+“代码”里的 `start-collector.cmd` 和 `start.cmd` 也会自动转交对应入口，使用相邻“依赖工具”中的环境。
 
 用户提供的 B站与小红书链接实测记录见 `.specs/ACCEPTANCE_2026-10-24.md`。
 封面、大小时长与 YouTube 强制登录的修改记录见 `.specs/PREVIEW_AUTH_2026-10-24.md`。

@@ -1,6 +1,8 @@
 @echo off
+chcp 65001 >nul
 setlocal
 set "PYTHONUTF8=1"
+if exist "%~dp0..\启动程序\启动旧版.cmd" goto bundled_launcher
 if not defined YT_DOWNLOADER_PYTHON set "YT_DOWNLOADER_PYTHON=D:\python-envs\yt-downloader\Scripts\python.exe"
 if not exist "%YT_DOWNLOADER_PYTHON%" (
     echo Python environment not found: %YT_DOWNLOADER_PYTHON%
@@ -19,4 +21,13 @@ exit /b %launch_result%
 
 :check_environment
 "%YT_DOWNLOADER_PYTHON%" -B -X utf8 -c "import sys, PIL, pillow_heif, dhash, tkinter; print('Python:', sys.executable); print('Pillow:', PIL.__version__); print('Pillow location:', PIL.__file__); print('HEIF:', pillow_heif.__version__); print('Tkinter:', tkinter.TkVersion)"
+exit /b %errorlevel%
+
+:bundled_launcher
+if /i "%~1"=="--check-env" goto bundled_check
+call "%~dp0..\启动程序\启动旧版.cmd" %*
+exit /b %errorlevel%
+
+:bundled_check
+call "%~dp0..\启动程序\启动旧版.cmd" --check
 exit /b %errorlevel%
