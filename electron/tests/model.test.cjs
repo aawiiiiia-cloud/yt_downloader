@@ -11,7 +11,7 @@ test('navigation rejects local files, executable schemes, and credentials', () =
 test('site routing cannot be spoofed by a hostname suffix', () => {
   assert.equal(siteForUrl('https://youtube.com.evil.invalid/watch?v=abc'), null);
   assert.equal(siteForUrl('https://m.bilibili.com/video/BV123'), 'bilibili');
-  assert.equal(siteForUrl('https://www.behance.net/'), null);
+  assert.equal(siteForUrl('https://www.artstation.com/'), null);
 });
 test('SPA identity tracks the actual video, part or note, not tracking parameters', () => {
   assert.equal(contentKey('https://youtube.com/watch?v=abc&list=RD123'), 'youtube:abc');

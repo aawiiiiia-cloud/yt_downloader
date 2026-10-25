@@ -14,6 +14,7 @@ const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-p
 const { resolveDouyinContext } = require('./douyin-context.cjs');
 const { YouTubeProvider } = require('./youtube-provider.cjs');
 const { LoginState } = require('./login-state.cjs');
+const { snapshotScript: behanceSnapshotScript } = require('./behance-page.cjs');
 const { classifyFailure, safeDetail } = require('./task-failure.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
@@ -129,7 +130,7 @@ class CollectorApp {
     handle.promise.then(() => this.handles.delete(handle), () => this.handles.delete(handle));
     return handle;
   }
-  log(text, tab = this.tabs.active) { tab.state.logs = [...tab.state.logs, String(text)].slice(-35); this.publish(); }
+  log(text, tab = this.tabs.active) { tab.state.logs = [...tab.state.logs, safeDetail(text)].slice(-35); this.publish(); }
   async create() {
     this.browserSession = session.fromPartition('persist:collector-web');
     this.assets = new Assets((url, options) => this.browserSession.fetch(url, { ...options,
@@ -435,13 +436,14 @@ class CollectorApp {
   }
   async inspect(tab = this.tabs.active) {
     const state = tab.state, url = tab.view.webContents.getURL();
-    if (!contentKey(url)) throw new Error('请先在左侧打开支持的视频或小红书笔记详情页（YouTube、B站、小红书、Vimeo、抖音）');
+    if (!contentKey(url)) throw new Error('请先在左侧打开视频、笔记或 Behance 作品详情页');
     if (siteForUrl(url) === 'bilibili' && tab.documentKey !== contentKey(url)) throw new Error('播放器正在切换内容，请稍后重新解析');
     this.invalidate(tab); const ticket = ++tab.sequence;
     Object.assign(state, { parsing: true, result: null, inspectionId: null, error: '', logs: [] }); this.publish();
     let context = null;
     try {
       if (siteForUrl(url) === 'xiaohongshu') context = await this.readPage(snapshotScript, tab);
+      if (siteForUrl(url) === 'behance') context = await this.readPage(behanceSnapshotScript, tab);
       if (siteForUrl(url) === 'bilibili') context = await this.readPage(biliSnapshotScript, tab, /\/video\/BV[0-9A-Za-z]+/.test(new URL(url).pathname));
       if (siteForUrl(url) === 'douyin') {
         context = await resolveDouyinContext({ url, signal: tab.assetsAbort.signal,
@@ -508,7 +510,7 @@ class CollectorApp {
   asset(data, mode) {
     const record = this.cache.get(data.inspectionId);
     if (!record || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析');
-    const item = record.result.items[Number(data.itemIndex)], site = siteForUrl(item?.url);
+    const item = record.result.items[Number(data.itemIndex)], site = record.result.site === 'behance' ? 'behance' : siteForUrl(item?.url);
     if (!item || !site) throw new Error('资源不存在');
     const image = item.images?.find(row => row.index === Number(data.imageIndex));
     if (item.kind === 'images' && !image) throw new Error('图片不存在');
@@ -516,7 +518,7 @@ class CollectorApp {
       if (!image) throw new Error('当前内容不是图片');
       return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal);
     }
-    const url = image ? image.fallback_urls?.at(-1) || image.url : item.thumbnail;
+    const url = image ? image.preview_url || image.fallback_urls?.at(-1) || image.url : item.thumbnail;
     if (!url) throw new Error('当前页面未提供视频封面');
     return this.assets.preview(url, site, this.tabs.active.assetsAbort.signal, !!data.refresh);
   }
@@ -526,6 +528,7 @@ class CollectorApp {
     if (!snapshot || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const item = snapshot.result.items[Number(data.itemIndex)];
     if (!item || !siteForUrl(item.url)) throw new Error('资源不存在，请重新解析');
+    if (!['images', 'video'].includes(item.kind)) throw new Error('请先在视频来源站点打开并解析此视频');
     if (siteForUrl(item.url) === 'youtube') await this.ensureYouTube();
     if (tab.closed || this.tabs.active !== tab || data.inspectionId !== tab.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const indices = Array.isArray(data.indices) ? data.indices.filter(i => item.images?.some(image => image.index === i)) : [];
@@ -534,6 +537,7 @@ class CollectorApp {
     if (formatId && !item.formats?.some(format => format.id === formatId)) throw new Error('该画质已失效，请重新解析');
     if (this.queue.tasks.filter(t => ['queued', 'running', 'cancelling'].includes(t.status)).length >= 50) throw new Error('队列已满，请等待已有任务完成');
     return this.queue.add({ command: 'download', url: item.url, kind: item.kind, context: snapshot.context,
+      mediaId: item.mediaId, referrer: snapshot.result.site === 'behance' ? snapshot.url : undefined,
       indices, formatId, formatHasAudio: !!item.formats?.find(format => format.id === formatId)?.audio,
       settings: { ...this.settings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } }, item.title);
   }
@@ -606,6 +610,13 @@ class CollectorApp {
     if (method === 'inspect') return this.inspect();
     if (method === 'cancel-inspect') { this.invalidate(); this.publish(); return; }
     if (method === 'download') return this.download(data);
+    if (method === 'open-source') {
+      const record = this.cache.get(data.inspectionId);
+      const item = record?.result.items[Number(data.itemIndex)];
+      if (data.inspectionId !== this.state.inspectionId || item?.kind !== 'external' || !['youtube', 'vimeo'].includes(siteForUrl(item.url)))
+        throw new Error('资源已变化，请重新解析');
+      this.openTab(item.url, { reuse: true }); return;
+    }
     if (method === 'preview' || method === 'image-size') return this.asset(data, method === 'preview' ? 'preview' : 'size');
     if (method === 'cancel-task') return this.queue.cancel(String(data.id));
     if (method === 'retry-task') {

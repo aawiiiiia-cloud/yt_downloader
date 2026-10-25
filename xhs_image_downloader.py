@@ -536,11 +536,7 @@ class XhsImageDownloader:
                             )
                             temp_path.unlink(missing_ok=True)
                             converted = True
-                        source_label = (
-                            "原始素材 CDN"
-                            if image.fallback_urls and candidate_index < len(candidates) - 1
-                            else "网页展示图兜底（可能带水印）"
-                        )
+                        source_label = self._source_label(image, candidate_index, len(candidates))
                         self.progress(
                             f"[图片] {image.index}/{len(post.images)} 已保存"
                             f"（{source_label}"
@@ -561,6 +557,10 @@ class XhsImageDownloader:
         raise XhsDownloadError(
             f"图片 {image.index} 的原图和展示图地址均下载失败：{last_error}"
         )
+
+    def _source_label(self, image, candidate_index, total):
+        return ("原始素材 CDN" if image.fallback_urls and candidate_index < total - 1
+                else "网页展示图兜底（可能带水印）")
 
     @staticmethod
     def _write_summary(post: XhsPost, folder: Path) -> None:

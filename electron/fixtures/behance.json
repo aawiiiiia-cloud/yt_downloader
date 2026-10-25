@@ -1,0 +1,55 @@
+{
+  "id": 123,
+  "name": "受控 Behance 作品",
+  "owners": [
+    {
+      "displayName": "测试作者"
+    }
+  ],
+  "publishedOn": 1700000000,
+  "matureAccess": "allowed",
+  "modules": [
+    {
+      "id": 11,
+      "__typename": "ImageModule",
+      "width": 1200,
+      "height": 800,
+      "imageSizes": {
+        "allAvailable": [
+          {
+            "url": "https://mir-s3-cdn-cf.behance.net/project_modules/source/photo.jpg",
+            "width": 1200,
+            "height": 800
+          },
+          {
+            "url": "https://mir-s3-cdn-cf.behance.net/project_modules/disp/photo.jpg",
+            "width": 600,
+            "height": 400
+          }
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "__typename": "MediaCollectionModule",
+      "components": [
+        {
+          "width": 800,
+          "height": 600,
+          "imageSizes": {
+            "fs": {
+              "url": "https://mir-s3-cdn-cf.behance.net/project_modules/fs/animation.gif",
+              "width": 800,
+              "height": 600
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "__typename": "EmbedModule",
+      "originalEmbed": "<iframe src=\"https://www.youtube.com/embed/SmQd5BgLmd0?tracking=discard\"></iframe>"
+    }
+  ]
+}

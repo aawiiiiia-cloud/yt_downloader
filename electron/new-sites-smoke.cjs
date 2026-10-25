@@ -1,7 +1,7 @@
 'use strict';
 async function run(collector, check, until, wait) {
   const ui=code=>collector.window.webContents.executeJavaScript(code), source=collector.tabs.active;
-  check('all five supported site groups appear in the UI', await ui("[...document.querySelectorAll('[data-site]')].map(button=>button.dataset.site).join(',')==='youtube,bilibili,xiaohongshu,vimeo,douyin'"));
+  check('all six supported site groups appear in the UI', await ui("[...document.querySelectorAll('[data-site]')].map(button=>button.dataset.site).join(',')==='youtube,bilibili,xiaohongshu,vimeo,douyin,behance'"));
   collector.openTab('https://www.douyin.com/video/1234567890123456789',{group:'douyin'});
   await until(()=>!collector.browser.webContents.isLoadingMainFrame()&&collector.state.url.includes('/video/1234567890123456789'),'Douyin fixture did not load');
   await collector.browser.webContents.mainFrame.executeJavaScript("(() => { const data=window.__INITIAL_STATE__; delete window.__INITIAL_STATE__; setTimeout(()=>window.__INITIAL_STATE__=data,700); })()");

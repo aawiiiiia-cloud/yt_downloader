@@ -22,7 +22,12 @@ def checked_url(value: str) -> str:
     value = str(value).strip()
     parsed = urlparse(value)
     if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password or not site_for_url(value):
-        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo 和抖音的内容链接")
+        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo、抖音和 Behance 的内容链接")
+    if site_for_url(value) == 'behance':
+        from behance_adapter import project_id
+        identifier = project_id(value)
+        slug = parsed.path.split('/', 3)
+        return f'https://www.behance.net/gallery/{identifier}' + ('/' + slug[3] if len(slug) > 3 else '')
     if site_for_url(value) == 'douyin':
         video_id = parse_qs(parsed.query).get('modal_id', [''])[0]
         if not video_id and (match := re.search(r'/(?:video|share/video)/(\d+)', parsed.path)):
@@ -67,7 +72,7 @@ def runtime_health() -> dict:
     prepare_runtime()
     from pot_provider import find_provider
     packages = {}
-    for name in ("yt-dlp", "yt-dlp-ejs", "Pillow", "pillow-heif", "dhash"):
+    for name in ("yt-dlp", "yt-dlp-ejs", "gallery-dl", "Pillow", "pillow-heif", "dhash"):
         try:
             packages[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -266,9 +271,8 @@ class Collector:
 
     def log(self, message):
         self.check_cancel()
-        # Logs must never become a cookie/header dump or retain signed URL tokens.
-        message = re.sub(r"(?i)(xsec_token|token|signature|sig|h|a_bogus|x-bogus|mstoken)=([^&\s]+)", r"\1=…", str(message))
-        self.emit("log", message[:1600])
+        from collector_errors import safe_error_text
+        self.emit("log", safe_error_text(message)[:1600])
 
     def options(self, url: str) -> dict:
         settings = self.request.get("settings") or {}
@@ -357,6 +361,9 @@ class Collector:
         from xhs_image_downloader import XhsVideoPost
         url = checked_url(self.request["url"])
         self.check_cancel()
+        if site_for_url(url) == 'behance':
+            from behance_adapter import inspect_project
+            return inspect_project(self, url)
         if site_for_url(url) == "xiaohongshu":
             try:
                 post = browser_post(url, self.request.get("context")) or self.xhs_downloader().inspect(url)
@@ -422,6 +429,9 @@ class Collector:
         folder = Path(settings["saveDir"]).expanduser().resolve()
         folder.mkdir(parents=True, exist_ok=True)
         self.check_cancel()
+        if site_for_url(url) == 'behance':
+            from behance_adapter import download_project
+            return download_project(self, url, folder)
         if site_for_url(url) == "xiaohongshu" and self.request.get("kind") == "images":
             try:
                 downloader = self.xhs_downloader()
@@ -435,6 +445,9 @@ class Collector:
             except XhsVideoPost as exc:
                 raise ValueError("笔记内容已变化，请重新解析") from exc
         options = self.options(url)
+        referrer = self.request.get('referrer')
+        if referrer and site_for_url(referrer) == 'behance' and site_for_url(url) == 'vimeo':
+            options.setdefault('http_headers', {})['Referer'] = checked_url(referrer)
         identifier = str(self.request.get("formatId") or "")
         if identifier and not settings.get("audioOnly"):
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", identifier):

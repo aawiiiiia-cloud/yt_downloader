@@ -4,6 +4,7 @@ const { webContents } = require('electron');
 async function run(collector, check, until, wait) {
   const tab = collector.tabs.active, web = tab.view.webContents;
   const original = web.getURL();
+  await until(() => web.mainFrame.executeJavaScript('!!window.__INITIAL_STATE__?.aweme?.detail'), 'delayed Douyin fixture state did not return');
   const initial = await web.mainFrame.executeJavaScript('window.__INITIAL_STATE__');
   const detail = initial.aweme.detail;
   const first = '2234567890123456789', second = '3234567890123456789';

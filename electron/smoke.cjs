@@ -48,12 +48,13 @@ async function run(collector, profile, snapshotScript) {
     await session.defaultSession.protocol.handle('https', () => new Response('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="140"><rect width="100" height="140" fill="#eaf4ef"/></svg>', { headers: { 'content-type': 'image/svg+xml' } }));
     await collector.browserSession.protocol.handle('https', request => {
       const resource = new URL(request.url);
-      if (resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
+      if (resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
         assetRequests.push({ url:request.url, method:request.method, referer:request.headers.get('referer') });
         if (resource.hostname.endsWith('.hdslb.com') && !coverFailed) { coverFailed = true; return new Response('unavailable', {status:503}); }
         return new Response(request.method === 'HEAD' ? null : imageBytes, { headers: { 'content-type':'image/png', 'content-length':request.method === 'HEAD' ? '340000' : String(imageBytes.length) } });
       }
       if (resource.hostname === 'www.youtube.com' && resource.pathname === '/') return new Response(`<script>ytcfg.set({"LOGGED_IN":${youtubeLoggedIn}})</script>`, {headers:{'content-type':'text/html'}});
+      if (resource.hostname === 'www.behance.net') return new Response(`<html><head><title>受控 Behance 作品</title></head><body><script id="beconfig-store_state" type="application/json">${JSON.stringify({project:{project:require('./fixtures/behance.json')}})}</script></body></html>`, {headers:{'content-type':'text/html; charset=utf-8'}});
       if (new URL(request.url).pathname === '/collector-slow-resource') return new Response(new ReadableStream({
         start(controller) { pendingStreams.push(controller); },
       }), { headers: { 'content-type': 'image/png' } });
@@ -174,6 +175,7 @@ async function run(collector, profile, snapshotScript) {
     youtubeLoggedIn = false;
     await require('./workspace-smoke.cjs').run(collector, check, until, wait, profile);
     await require('./new-sites-smoke.cjs').run(collector, check, until, wait);
+    await require('./behance-smoke.cjs').run(collector, check, until, wait);
     resolveDownload({ folder: profile, count: 1 }); await wait(100);
     check('background download queue completes', task.status === 'completed');
     await require('./task-failure-smoke.cjs').run(collector, check, until, wait, profile);

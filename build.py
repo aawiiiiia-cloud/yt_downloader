@@ -150,6 +150,7 @@ def _ensure_pyinstaller() -> None:
 _REQUIREMENT_IMPORT_NAMES = {
     "pyinstaller": "PyInstaller",
     "yt-dlp": "yt_dlp",
+    "gallery-dl": "gallery_dl",
     "yt-dlp-ejs": "yt_dlp_ejs",
     "bgutil-ytdlp-pot-provider": "yt_dlp_plugins",
     "websocket-client": "websocket",  # 内置登录(edge_login)依赖

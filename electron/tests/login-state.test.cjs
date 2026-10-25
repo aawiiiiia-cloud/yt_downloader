@@ -4,6 +4,7 @@ const { LoginState } = require('../login-state.cjs');
 const { SITES } = require('../model.cjs');
 test('all sites keep rejected credentials marked until actual authentication cookies change', () => {
   for (const [site, config] of Object.entries(SITES)) {
+    if (!config.auth.length) continue; // Behance uses Adobe storage; no cookie-only login claim.
     const cookie = { domain: '.' + config.domains[0], path: '/', name: config.auth[0], value: 'old-auth' };
     const state = new LoginState(); state.observe([cookie]);
     assert.ok(state.state().detected[site]); state.reject(site, state.keys[site]);

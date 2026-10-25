@@ -8,6 +8,8 @@ const SITES = {
   xiaohongshu: { name: '小红书', home: 'https://www.xiaohongshu.com/explore', domains: ['xiaohongshu.com', 'xhslink.com'], auth: ['web_session'] },
   vimeo: { name: 'Vimeo', home: 'https://vimeo.com/', domains: ['vimeo.com'], auth: ['vimeo'] },
   douyin: { name: '抖音', home: 'https://www.douyin.com/', domains: ['douyin.com', 'iesdouyin.com', 'amemv.com'], auth: ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt'] },
+  // Behance also uses Adobe browser storage; anonymous bcp cookies are not login proof.
+  behance: { name: 'Behance', home: 'https://www.behance.net/', domains: ['behance.net'], auth: [] },
 };
 function belongs(host, domain) { return host === domain || host.endsWith('.' + domain); }
 function navigationUrl(value) {
@@ -48,6 +50,10 @@ function contentKey(value) {
     if (site === 'vimeo') {
       const match = path.match(/^\/(?:video\/|channels\/[^/]+\/|groups\/[^/]+\/videos\/|ondemand\/[^/]+\/)?(\d+)(?:\/([\da-f]+))?\/?$/i);
       if (match) return `vimeo:${match[1]}:${match[2] || url.searchParams.get('h') || ''}`;
+    }
+    if (site === 'behance' && ['www.behance.net', 'behance.net'].includes(url.hostname)) {
+      const id = path.match(/^\/gallery\/(\d+)(?:\/|$)/)?.[1];
+      if (id) return `behance:${id}`;
     }
     if (site === 'douyin') {
       if (url.hostname === 'v.douyin.com' && /^\/[\w-]+\/?$/.test(path)) return `douyin:short:${path.replace(/\//g, '')}`;

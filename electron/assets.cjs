@@ -5,8 +5,9 @@ const DOMAINS = {
   xiaohongshu: ['xhscdn.com', 'xiaohongshu.com', 'xhsimg.com'],
   vimeo: ['vimeocdn.com', 'vimeo.com'],
   douyin: ['douyinpic.com', 'douyincdn.com', 'byteimg.com', 'ibytedtos.com', 'pstatp.com'],
+  behance: ['behance.net', 'vimeocdn.com', 'adobe.com', 'adobe.net'],
 };
-const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/' };
+const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/' };
 function assetUrl(value, site) {
   const url = new URL(String(value).startsWith('//') ? 'https:' + value : value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || ![null, '', '80', '443'].includes(url.port) ||

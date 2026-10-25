@@ -54,6 +54,10 @@ async function run(collector, profile) {
         result.pageSummary = await collector.readPage('document.body.innerText.slice(0, 180)');
         if (needsParse) {
           console.log('LIVE: extracting ' + site);
+          if (site === 'behance') {
+            const context = await collector.readPage(require('./behance-page.cjs').snapshotScript);
+            fs.writeFileSync(path.join(profile, '..', `behance-browser-context-${contentKey(url).split(':')[1]}.json`), JSON.stringify(context));
+          }
           if (site === 'bilibili') console.log('LIVE: player data', await collector.readPage('({video:!!window.__INITIAL_STATE__?.videoData,play:!!window.__playinfo__})'));
           await collector.inspect();
           result.parsed = !!collector.state.result?.items?.length;
@@ -63,6 +67,7 @@ async function run(collector, profile) {
           result.contentTitle = collector.state.result?.items?.[0]?.title;
           result.images = collector.state.result?.items?.[0]?.images?.length || 0;
           result.duration = collector.state.result?.items?.[0]?.duration;
+          if (site === 'behance') result.resourceSummary = collector.state.result?.items?.map(item => ({kind:item.kind, images:item.images?.length, formats:item.formats?.length, duration:item.duration, provider:item.provider}));
           visited.push({ tab: collector.tabs.active, receipt: collector.state.inspectionId, url: collector.state.url });
           if (collector.state.error) result.error = collector.state.error;
           if (!result.parsed && !result.error) result.error = '解析期间页面发生变化，请在当前内容加载稳定后重试';
@@ -93,7 +98,8 @@ async function run(collector, profile) {
               let screenshotTimer;
               const screenshot = await Promise.race([collector.window.webContents.capturePage(rect),
                 new Promise((_, reject) => { screenshotTimer = setTimeout(() => reject(new Error('截图超时')), 5000); })]).finally(() => clearTimeout(screenshotTimer));
-              fs.writeFileSync(path.join(profile, '..', `preview-${site}-panel.png`), screenshot.toPNG());
+              const name = site === 'behance' ? `preview-behance-${contentKey(url).split(':')[1]}-panel.png` : `preview-${site}-panel.png`;
+              fs.writeFileSync(path.join(profile, '..', name), screenshot.toPNG());
             } catch (error) { result.screenshotNote = error.message || String(error); }
           }
           if (process.env.YT_COLLECTOR_TEST_DOWNLOAD === '1' && result.parsed) {

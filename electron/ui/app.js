@@ -1,8 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/' };
-const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音' };
+const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/' };
+const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
 const openedLogs = new Set();
@@ -59,6 +59,8 @@ function updateMediaInfo() {
   }
   if ($('resource-size-note')) $('resource-size-note').textContent = item.kind === 'images' ?
     (state.settings.imageFormat === 'original' ? '预览使用网页展示图；大小按原始素材查询，下载优先原图。' : '图片显示源文件大小；格式转换后的大小以实际保存结果为准。') : '大小随画质更新，包含需要合并的音频；估算值以“约”标记。';
+  if ($('resource-size-note') && state.result.site === 'behance' && item.kind === 'images' && state.settings.imageFormat === 'original')
+    $('resource-size-note').textContent += ' GIF 优先使用静帧预览，保存保留动画。';
   const button = $('download');
   if (button) {
     button.disabled = pendingDownloads.has(state.inspectionId);
@@ -128,8 +130,12 @@ function renderResources() {
     $('resources').innerHTML = `<div class="empty"><div class="empty-icon">${state.parsing ? '◌' : '▧'}</div><strong>${state.parsing ? '正在识别当前内容…' : '等待值得收藏的内容'}</strong><p>${state.parsing ? '正在获取资源与实际可用画质，<br>你可以继续浏览或查看下载任务。' : '在左侧打开视频或笔记详情页，<br>或点击「解析当前页面」。'}</p></div>`;
     return;
   }
-  const parts = items.length > 1 ? `<select id="part-select" class="part-select" aria-label="视频条目">${items.map((row, index) => `<option value="${index}" ${index === selectedItem ? 'selected' : ''}>${index + 1}. ${escape(row.title)}</option>`).join('')}</select>` : '';
+  const parts = items.length > 1 ? `<select id="part-select" class="part-select" aria-label="资源条目">${items.map((row, index) => `<option value="${index}" ${index === selectedItem ? 'selected' : ''}>${index + 1}. ${row.kind === 'images' ? '图片集 · ' : ''}${escape(row.title)}${row.provider ? ' · ' + escape(row.provider) : ''}</option>`).join('')}</select>` : '';
   let html = parts + `<h2 class="content-title">${escape(item.title)}</h2><div class="author">${escape(item.author)}</div>`;
+  if (['external', 'unavailable'].includes(item.kind)) {
+    $('resources').innerHTML = html + `<p class="muted">${escape(item.message)}</p>` + (item.kind === 'external' ? `<button id="open-source" class="primary download-action">在 ${escape(item.provider)} 中打开视频 ↗</button>` : '');
+    return;
+  }
   if (item.parts?.length > 1) html += `<label class="muted">选择分P<select id="bili-part" class="part-select">${item.parts.map(p => `<option value="${p.index}" ${p.index === item.currentPart ? 'selected' : ''}>P${p.index} · ${escape(p.title)}</option>`).join('')}</select></label>`;
   if (item.kind === 'images') {
     html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<label class="image-card"><input type="checkbox" data-image="${image.index}" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}<span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '原图优先'}</span></span><span class="image-size" data-image-size>正在查询原图大小…</span></label>`).join('')}</div>`;
@@ -167,12 +173,19 @@ function render(next) {
   $('login-state').textContent = `${names[selectedSite]} · ${expired ? '登录凭证已失效/过期，请重新登录' : needsLogin ? '未登录（建议登录）' : '已登录'}`;
   $('login-state').classList.toggle('login-warning', needsLogin);
   $('login-state').title = expired ? '请重新登录或导入新的 Cookies，旧凭证不会因再次检测到而恢复。' : needsLogin ? (selectedSite === 'youtube' ? '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。' : '尚未检测到本站登录凭据，建议先登录。') : (selectedSite === 'youtube' ? '已读取登录凭证，下载前仍会自动确认是否有效。' : '已读取登录凭证，实际可用性由网站请求结果确认。');
+  if (selectedSite === 'behance') {
+    $('login-state').textContent = 'Behance · 公开作品可直接解析';
+    $('login-state').classList.remove('login-warning');
+    $('login-state').title = 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
+  }
   const loginBusy = !!state.loginRunning || !!state.importingCookies;
   const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
   $('web-login').hidden = externalLoginOnly;
-  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly);
+  $('edge-login').hidden = selectedSite === 'behance';
+  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly || selectedSite === 'behance');
   $('web-login').disabled = loginBusy;
   document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : externalLoginOnly ? '通过 Edge 登录。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入请选择本站点的 Netscape 格式 Cookies 文件（.txt）。';
+  if (selectedSite === 'behance') document.querySelector('.login-help').textContent = '需要登录的作品请先在左侧完成 Adobe 登录；也可导入 Behance Cookies。账号状态以网页为准。';
   $('edge-login').disabled = loginBusy; $('cancel-login').hidden = !state.loginRunning;
   $('import-login').disabled = loginBusy;
   $('import-login').textContent = state.importingCookies ? '正在导入…' : '导入Cookies';
@@ -192,7 +205,7 @@ function render(next) {
   if (!settingsDirty) fillSettings();
   const h = state.health;
   $('core-status').textContent = h ? (!h.ffmpeg ? '视频合并工具缺失，请查看设置' : '下载核心已连接 · 本地保存') : '正在连接下载核心…';
-  $('health-detail').textContent = h ? `视频合并：${h.ffmpeg ? '就绪' : '缺失'}；YouTube 解算：${h.node ? '就绪' : '缺少 Node'}；YouTube 增强：${h.provider ? '就绪' : '未就绪，部分画质可能不可用'}` : '正在检查运行环境…';
+  $('health-detail').textContent = h ? `视频合并：${h.ffmpeg ? '就绪' : '缺失'}；YouTube 解算：${h.node ? '就绪' : '缺少 Node'}；YouTube 增强：${h.provider ? '就绪' : '未就绪，部分画质可能不可用'}；Behance 解析：${h.packages?.['gallery-dl'] ? '就绪' : '缺少 gallery-dl'}` : '正在检查运行环境…';
 }
 function fillSettings() {
   if (!state) return;
@@ -228,7 +241,7 @@ $('import-login').addEventListener('click', async () => {
   if (count) notify(`${names[site]} Cookies 已导入（${count} 条），可重新解析当前页面。`);
 });
 $('cancel-login').addEventListener('click', () => call('cancel-login'));
-$('web-login').addEventListener('click', () => ['youtube', 'vimeo'].includes(selectedSite) ? call('login', { site: selectedSite }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : homes[selectedSite] }));
+$('web-login').addEventListener('click', () => ['youtube', 'vimeo'].includes(selectedSite) ? call('login', { site: selectedSite }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : selectedSite === 'behance' ? 'https://www.behance.net/login' : homes[selectedSite] }));
 $('required-login').addEventListener('click', () => call('login', { site: 'youtube' }));
 $('resources').addEventListener('change', event => {
   if (event.target.id === 'part-select') { saveDraft(); selectedItem = Number(event.target.value); renderResources(); }
@@ -240,6 +253,7 @@ $('resources').addEventListener('change', event => {
   updateMediaInfo();
 });
 $('resources').addEventListener('click', async event => {
+  if (event.target.id === 'open-source') call('open-source', { inspectionId: state.inspectionId, itemIndex: selectedItem });
   if (event.target.dataset.retryPreview) { event.preventDefault(); loadPreview(event.target.closest('[data-preview]'), true); }
   if (event.target.id === 'select-all') { const inputs = [...document.querySelectorAll('[data-image]')], all = inputs.every(i => i.checked); inputs.forEach(i => { i.checked = !all; }); }
   if (event.target.id === 'download') {

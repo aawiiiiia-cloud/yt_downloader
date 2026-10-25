@@ -50,6 +50,7 @@ GITHUB_PROXIES = [
 Progress = Callable[[str], None]
 
 PYTHON_REQUIREMENTS = {
+    "gallery-dl": "1.32.17",
     "yt-dlp": "2026.8.19",
     "yt-dlp-ejs": "0.8.0",
     "bgutil-ytdlp-pot-provider": "1.3.2",
