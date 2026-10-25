@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
-const { SITES, navigationUrl, siteForUrl, contentKey, cookieText, readCookies, hasAuth, DownloadQueue } = require('./model.cjs');
+const { SITES, navigationUrl, siteForUrl, contentKey, cookieText, readCookies, hasAuth, concurrencySettings, DownloadQueue } = require('./model.cjs');
 const { pythonTask } = require('./bridge.cjs');
 const { Assets, readBody } = require('./assets.cjs');
 const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
@@ -71,7 +71,8 @@ class CollectorApp {
     const legacy = smoke || liveCheck || persistenceCheck ? {} : readJson(path.join(os.homedir(), '.yt_dlp_gui.json'), {});
     const savedSettings = readJson(path.join(profile, 'settings.json'), {}) || {};
     this.settings = { saveDir: legacy.save_dir || path.join(os.homedir(), 'Downloads'), proxy: legacy.proxy || '',
-      autoParse: false, imageFormat: 'original', imageQuality: 95, panelWidth: 390, ...savedSettings, settingsVersion: 1 };
+      autoParse: false, imageFormat: 'original', imageQuality: 95, panelWidth: 390, ...savedSettings,
+      ...concurrencySettings(savedSettings), settingsVersion: 1 };
     // Disable the former default once on upgrade, then remember explicit user choices.
     if (!savedSettings.settingsVersion) this.settings.autoParse = false;
     this.shared = { health: null, login: {}, loginExpired: {}, loginRunning: null, importingCookies: false };
@@ -83,7 +84,7 @@ class CollectorApp {
     this.runTask = pythonTask;
     this.externalTasks = new WeakMap();
     this.youtubeAuth = new YouTubeAuth(() => this.browserSession.cookies.get({}), () => this.verifyYouTube(), () => this.publish());
-    this.queue = new DownloadQueue((spec, onEvent) => this.withCookies(spec, onEvent), () => this.publish());
+    this.queue = new DownloadQueue((spec, onEvent) => this.withCookies(spec, onEvent), () => this.publish(), this.settings);
     const history = readJson(path.join(profile, 'history.json'), []);
     this.queue.tasks = (Array.isArray(history) ? history : []).filter(t => t && typeof t === 'object').slice(0, 60).map(t => {
       const interrupted = ['queued', 'running', 'cancelling'].includes(t.status);
@@ -801,9 +802,15 @@ class CollectorApp {
         if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('请使用不含账号密码的 HTTP 或 SOCKS5 代理地址');
       }
       if (!['original', 'jpg', 'png', 'webp'].includes(data.imageFormat)) throw new Error('图片格式无效');
+      const limits = concurrencySettings({
+        globalConcurrency: data.globalConcurrency ?? this.settings.globalConcurrency,
+        siteConcurrency: data.siteConcurrency ?? this.settings.siteConcurrency,
+      }, true);
       const wasAutomatic = this.settings.autoParse;
-      this.settings = { ...this.settings, proxy, imageFormat: data.imageFormat, autoParse: !!data.autoParse };
-      await this.applyProxy(); this.persist(); this.publish();
+      const previousSettings = this.settings;
+      this.settings = { ...this.settings, proxy, imageFormat: data.imageFormat, autoParse: !!data.autoParse, ...limits };
+      try { await this.applyProxy(); } catch (error) { this.settings = previousSettings; throw error; }
+      this.queue.setLimits(limits); this.persist(); this.publish();
       if (!this.settings.autoParse) this.tabs.rows.forEach(tab => clearTimeout(tab.parseTimer));
       else if (!wasAutomatic) this.pageReady(this.tabs.active);
       return;
@@ -840,6 +847,9 @@ app.whenReady().then(async () => {
     assert.equal(collector.state.login.xiaohongshu, true);
     assert.equal(collector.settings.autoParse, false);
     assert.equal(collector.settings.panelWidth, 450);
+    assert.equal(collector.settings.globalConcurrency, 4);
+    assert.equal(collector.settings.siteConcurrency, 2);
+    assert.deepEqual(collector.queue.limits, { globalConcurrency: 4, siteConcurrency: 2 });
     assert.equal(collector.queue.tasks[0].status, 'completed');
     assert.equal(collector.queue.tasks.find(task => task.title === '受控失败：网络超时').failure.code, 'NETWORK_TIMEOUT');
     assert.equal(collector.state.loginExpired.bilibili, true);

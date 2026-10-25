@@ -258,6 +258,8 @@ function fillSettings() {
   if (!state) return;
   $('save-dir').value = state.settings.saveDir; $('proxy').value = state.settings.proxy;
   $('image-format').value = state.settings.imageFormat; $('auto-parse').checked = state.settings.autoParse;
+  $('global-concurrency').value = state.settings.globalConcurrency;
+  $('site-concurrency').value = state.settings.siteConcurrency;
 }
 $('address-form').addEventListener('submit', event => { event.preventDefault(); notify(''); call('navigate', { url: $('address').value }); });
 for (const action of ['back', 'forward', 'reload']) $(action).addEventListener('click', () => call(action));
@@ -276,7 +278,11 @@ $('choose-folder').addEventListener('click', async () => { await call('choose-fo
 $('open-folder').addEventListener('click', () => call('open-folder'));
 $('save-settings').addEventListener('click', async () => {
   try {
-    await window.collector.call('settings', { proxy: $('proxy').value, imageFormat: $('image-format').value, autoParse: $('auto-parse').checked });
+    for (const id of ['global-concurrency', 'site-concurrency']) {
+      if (!$(id).checkValidity()) { $('advanced-options').open = true; $(id).reportValidity(); return; }
+    }
+    await window.collector.call('settings', { proxy: $('proxy').value, imageFormat: $('image-format').value, autoParse: $('auto-parse').checked,
+      globalConcurrency: $('global-concurrency').valueAsNumber, siteConcurrency: $('site-concurrency').valueAsNumber });
     settingsDirty = false; notify('设置已保存。');
   } catch (error) { notify(error.message); }
 });

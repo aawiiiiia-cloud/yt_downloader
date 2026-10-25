@@ -187,6 +187,7 @@ async function run(collector, profile, snapshotScript) {
     resolveDownload({ folder: profile, count: 1 }); await wait(100);
     check('background download queue completes', task.status === 'completed');
     await require('./task-failure-smoke.cjs').run(collector, check, until, wait, profile);
+    await require('./concurrency-smoke.cjs').run(collector, check, until, wait, profile);
     collector.persist();
     const saved = fs.readFileSync(path.join(profile, 'history.json'), 'utf8');
     check('history does not store cookie snapshots', !saved.includes('fixture-secret') && !saved.includes('cookieFile'));

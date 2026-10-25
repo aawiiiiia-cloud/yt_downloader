@@ -1,5 +1,6 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
+const path = require('node:path');
 const { classifyFailure, describeFailure, safeDetail } = require('./task-failure.cjs');
 
 const SITES = {
@@ -107,18 +108,67 @@ function readCookies(text, site) {
   }
   return result;
 }
+const DEFAULT_CONCURRENCY = { globalConcurrency: 5, siteConcurrency: 1 };
+function concurrencySettings(values = {}, strict = false) {
+  return Object.fromEntries(Object.entries(DEFAULT_CONCURRENCY).map(([key, fallback]) => {
+    const value = values[key];
+    if (Number.isInteger(value) && value >= 1 && value <= 20) return [key, value];
+    if (strict) throw new Error(`${key === 'globalConcurrency' ? '全局并发' : '单站并发'}请填写 1–20 之间的整数`);
+    return [key, fallback];
+  }));
+}
+function downloadTargetKey(spec) {
+  let key = contentKey(spec?.url);
+  if (!key) return null;
+  // Alternate parts/access hashes can still write the same video filename.
+  if (key.startsWith('bilibili:') || key.startsWith('vimeo:')) key = key.split(':').slice(0, 2).join(':');
+  // A product's image categories have separate folders and separate manifests.
+  if (key.startsWith('taobao:') && spec.mediaId) key += ':' + spec.mediaId;
+  let directory = path.resolve(spec.settings?.saveDir || '.');
+  if (process.platform === 'win32') directory = directory.toLowerCase();
+  return JSON.stringify([directory, key]);
+}
+const pendingStatus = status => ['queued', 'running', 'cancelling'].includes(status);
 class DownloadQueue {
-  constructor(run, changed) { this.run = run; this.changed = changed; this.tasks = []; this.active = null; this.closing = false; }
+  constructor(run, changed, settings = {}) {
+    this.run = run; this.changed = changed; this.tasks = []; this.active = new Set(); this.closing = false;
+    this.limits = concurrencySettings(settings);
+  }
+  setLimits(settings) {
+    this.limits = concurrencySettings(settings, true); this.changed(); this.pump();
+  }
   add(spec, title) {
     const task = { id: randomUUID(), title, status: 'queued', percent: 0, logs: [], createdAt: Date.now(), spec };
     this.tasks.unshift(task); this.changed(); this.pump(); return task.id;
   }
-  list() { return this.tasks.slice(0, 60).map(({ spec, process, ...task }) => task); }
-  async pump() {
-    if (this.active || this.closing) return;
-    const task = [...this.tasks].reverse().find(t => t.status === 'queued');
-    if (!task) return;
-    this.active = task; task.status = 'running'; this.changed();
+  list() {
+    // A long-running task must remain visible while other sites finish newer jobs.
+    const pending = this.tasks.filter(task => pendingStatus(task.status));
+    const recent = this.tasks.filter(task => !pendingStatus(task.status)).slice(0, Math.max(0, 60 - pending.length));
+    const visible = new Set([...pending, ...recent]);
+    return this.tasks.filter(task => visible.has(task)).map(({ spec, process, ...task }) => task);
+  }
+  canStart(task) {
+    const site = siteForUrl(task.spec?.url), target = downloadTargetKey(task.spec);
+    let count = 0;
+    for (const running of this.active) {
+      if (siteForUrl(running.spec?.url) === site) count++;
+      if (target && target === downloadTargetKey(running.spec)) return false;
+    }
+    return count < this.limits.siteConcurrency;
+  }
+  pump() {
+    if (this.closing || this.pumping) return;
+    this.pumping = true;
+    try {
+      while (!this.closing && this.active.size < this.limits.globalConcurrency) {
+        const task = [...this.tasks].reverse().find(row => row.status === 'queued' && this.canStart(row));
+        if (!task) break;
+        this.active.add(task); task.status = 'running'; this.changed(); this.start(task);
+      }
+    } finally { this.pumping = false; }
+  }
+  async start(task) {
     try {
       task.process = this.run(task.spec, (type, data) => {
         if (type === 'log') task.logs = [...task.logs, safeDetail(data)].slice(-35);
@@ -135,7 +185,7 @@ class DownloadQueue {
       task.failure = failure; task.error = failure.message;
       if (failure.detail && failure.detail !== failure.message) task.logs = [...task.logs, failure.detail].slice(-35);
     } finally {
-      delete task.process; this.active = null; this.changed(); this.pump();
+      delete task.process; this.active.delete(task); this.changed(); this.pump();
     }
   }
   cancel(id) {
@@ -152,4 +202,4 @@ class DownloadQueue {
   }
   close() { this.closing = true; this.tasks.forEach(t => this.cancel(t.id)); }
 }
-module.exports = { SITES, belongs, navigationUrl, siteForUrl, contentKey, cookieAllowed, cookieText, readCookies, hasAuth, DownloadQueue };
+module.exports = { SITES, belongs, navigationUrl, siteForUrl, contentKey, cookieAllowed, cookieText, readCookies, hasAuth, concurrencySettings, downloadTargetKey, DownloadQueue };

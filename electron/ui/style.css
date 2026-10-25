@@ -14,6 +14,8 @@
 
 #settings-panel .auto-parse-help{margin:0 0 20px}
 
+.advanced-options{border:1px solid var(--line);border-radius:8px;padding:12px;margin:0 0 18px}.advanced-options summary{cursor:pointer;font-size:12px;color:var(--ink)}.concurrency-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}#settings-panel .concurrency-fields label{margin:0}#concurrency-help{margin:10px 0 0}
+
 .task-error>strong,.task-error>span{display:block}.task-error>strong{font-weight:600;margin-bottom:3px}
 
 .image-select{display:block;cursor:pointer}.image-select>input{z-index:2}.image-download{display:block;width:100%;border:0;border-top:1px solid var(--line);border-radius:0;background:#fff;color:var(--accent);padding:7px 8px;font-size:11px}
