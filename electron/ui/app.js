@@ -84,10 +84,10 @@ function updateMediaInfo() {
     setLoading(button, pendingDownloads.get(state.inspectionId) === Number(button.dataset.downloadImage));
   });
   if (button) {
+    const checkingYouTube = state.result.site === 'youtube' && state.youtubeAuth === 'checking';
     button.disabled = pendingDownloads.has(state.inspectionId);
-    button.textContent = button.disabled ? '正在处理…' : state.result.site === 'youtube' && state.youtubeAuth !== 'verified' ?
-      (state.youtubeAuth === 'checking' ? '正在验证登录…' : state.login.youtube ? '验证登录并下载 ↓' : '通过 Edge 登录并下载 ↓') : '加入下载队列 ↓';
-    setLoading(button, button.disabled || (state.result.site === 'youtube' && state.youtubeAuth === 'checking'));
+    button.textContent = button.disabled ? '正在处理…' : checkingYouTube ? '正在验证登录…' : '下载所选';
+    setLoading(button, button.disabled || checkingYouTube);
   }
 }
 function showPanel(name) {
@@ -176,7 +176,7 @@ function renderResources() {
   } else {
     html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
-  $('resources').innerHTML = html + '<button id="download" class="primary download-action">加入下载队列 ↓</button><p class="muted" id="resource-size-note"></p>';
+  $('resources').innerHTML = html + '<button id="download" class="primary download-action">下载所选</button><p class="muted" id="resource-size-note"></p>';
   restoreDraft(); updateMediaInfo(); restoreResourceScroll();
   previewObserver = new IntersectionObserver(entries => entries.forEach(entry => {
     if (entry.isIntersecting) { previewObserver.unobserve(entry.target); loadPreview(entry.target); }

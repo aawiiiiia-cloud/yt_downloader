@@ -144,7 +144,7 @@ class CollectorApp {
     this.browserSession.setPermissionCheckHandler((_contents, permission) => permission === 'fullscreen');
     await this.applyProxy();
     this.window = new BrowserWindow({ width: 1440, height: 920, minWidth: 1060, minHeight: 700,
-      show: !smoke && !liveCheck && !persistenceCheck, backgroundColor: '#f5f6f8', title: 'media-dl', autoHideMenuBar: true,
+      show: !smoke && !liveCheck && !persistenceCheck, backgroundColor: '#f4f4f4', title: 'media-dl', autoHideMenuBar: true,
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     this.browserBounds = { x: 17, y: 138, width: 1006, height: 730 };
