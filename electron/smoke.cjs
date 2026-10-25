@@ -24,6 +24,7 @@ async function run(collector, profile, snapshotScript) {
     check('Python worker connected', collector.state.health.packages.Pillow);
     check('browser and downloader use an ASCII user agent', /^[\x20-\x7e]+$/.test(collector.userAgent));
     check('local UI preload is available', await collector.window.webContents.executeJavaScript('typeof window.collector.call === "function"'));
+    await require('./media-network-smoke.cjs').run(check);
     collector.window.show();
     await wait(750);
     check('native browser bounds follow the layout', collector.browser.getBounds().height > 400);

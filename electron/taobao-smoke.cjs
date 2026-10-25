@@ -31,7 +31,8 @@ async function run(collector, check, until, wait, assetRequests) {
       check('product snapshot excludes recommendations, reviews, account fields and videos: '+host,
         !/recommend.jpg|review.jpg|unrelated.jpg|fixture-taobao-account-secret|do-not-collect.mp4/.test(JSON.stringify(collector.publicState())));
       await until(()=>ui("document.querySelectorAll('[data-image-category]').length===3 && document.querySelector('[data-preview-image]')?.naturalWidth>0"),'product categories or previews did not render');
-      check('thumbnail dimensions do not masquerade as original dimensions: '+host,await ui("document.querySelector('.image-meta').textContent.includes('尺寸未知')"));
+      await until(()=>ui("document.querySelector('.image-meta')?.textContent.includes('4 × 3')"),'original image header dimensions did not render');
+      check('source header dimensions replace unknown values without using thumbnail dimensions: '+host,await ui("!document.querySelector('.image-meta').textContent.includes('800 × 800')"));
       await ui("document.querySelector('[data-image=\"1\"]').checked=false;document.querySelector('[data-image-category=\"1\"]').click()");
       await until(()=>ui("document.querySelector('[data-image-name]')?.textContent.includes('颜色：红色')"),'SKU names did not render');
       check('small SKU images are retained with their actual labels: '+host,collector.state.result.items[1].images.length===2&&await ui("document.querySelectorAll('[data-download-image]').length===2"));

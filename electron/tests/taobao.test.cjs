@@ -39,10 +39,11 @@ test('Taobao CDN previews are allowlisted and upgraded without dropping signed p
   for (const url of ['https://alicdn.com.evil.invalid/a.jpg','https://127.0.0.1/a.jpg','file:///C:/private.png','https://user:pass@img.alicdn.com/a.jpg']) assert.throws(()=>assetUrl(url,'taobao'));
 });
 
-test('Tmall source-size requests retain their product referrer', async () => {
+test('Tmall source-size requests send the permitted origin without product tracking', async () => {
   const referrer='https://chaoshi.detail.tmall.com/item.htm?id=123&skuId=7';
   const assets=new Assets(async(_url,options)=>{
-    assert.equal(options.headers.Referer,referrer);
+    assert.equal(options.headers.Referer,'https://chaoshi.detail.tmall.com/');
+    assert.equal(options.referrerPolicy,undefined);
     return new Response(null,{headers:{'content-type':'image/jpeg','content-length':'340000'}});
   });
   assert.equal((await assets.sourceSize(['https://img.alicdn.com/a.jpg'],'taobao',undefined,referrer)).size,340000);

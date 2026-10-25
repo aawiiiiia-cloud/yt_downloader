@@ -44,7 +44,11 @@ function loadPreview(frame, refresh = false) {
   }
   if (imageIndex === 'cover') return;
   const label = frame.closest('.image-card').querySelector('[data-image-size]');
-  const showSize = value => { if (current()) label.textContent = `${value.displayFallback ? '网页图' : '原图'} ${mediaInfo.size(value.size)}`; };
+  const showSize = value => {
+    if (!current()) return;
+    label.textContent = `${value.displayFallback ? '网页图' : '原图'} ${mediaInfo.size(value.size)}`;
+    if (value.width && value.height) frame.closest('.image-card').querySelector('.image-meta span:last-child').textContent = `${value.width} × ${value.height}`;
+  };
   if (previews.get(key)?.sizeLoaded) showSize(previews.get(key));
   else window.collector.call('image-size', args).then(value => {
     rememberPreview(key, { ...value, sizeLoaded: true }); showSize(value);
