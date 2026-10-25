@@ -3,6 +3,10 @@ dist/
 build/
 build_cache/
 provider_cache/
+repair-cache/
+.runtime-setup.lock
+.node_modules.stage-*/
+.node_modules.backup-*/
 __pycache__/
 *.pyc
 *.pyo

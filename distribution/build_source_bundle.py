@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import zipfile
 
 
 SOURCE = Path(__file__).resolve().parent.parent
@@ -30,28 +31,42 @@ def copy_tree(source: Path, destination: Path, *, python: bool = False) -> None:
 
 
 def command_file(arguments: str = "") -> str:
+    entry = 'start.cmd' if arguments == '--legacy' else 'start-collector.cmd'
+    forwarded = '--check' if arguments == '--check' else ''
     return '\r\n'.join([
         '@echo off', 'chcp 65001 >nul', 'setlocal', 'title media-dl',
-        'set "PYTHONHOME="', 'set "PYTHONPATH="', 'set "PYTHONNOUSERSITE=1"',
-        'set "PYTHONUTF8=1"',
-        'set "media_python=%~dp0..\\依赖工具\\python\\python.exe"',
-        'if not exist "%media_python%" (',
-        '    echo 缺少依赖工具，请完整复制整个 media-dl 文件夹。',
-        '    pause', '    exit /b 1', ')',
-        f'"%media_python%" -B -X utf8 "%~dp0启动.py" {arguments} %*',
+        f'call "%~dp0..\\代码\\{entry}" {forwarded} %*',
         'set "media_result=%errorlevel%"',
-        'if not "%media_result%"=="0" pause' if arguments != '--check' else 'pause',
+        'pause' if arguments == '--check' else 'rem Errors are shown by the source launcher.',
         'exit /b %media_result%', '',
     ])
+
+
+def python_repair_cache(tools: Path) -> None:
+    """Keep a compact, verified local recovery source for the Python bootstrap itself."""
+    cache = tools / 'repair-cache'
+    cache.mkdir(parents=True, exist_ok=True)
+    archive = cache / 'python.zip'
+    with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=1) as target:
+        for file in sorted((tools / 'python').rglob('*')):
+            if file.is_file() and '__pycache__' not in file.parts and file.suffix != '.pyc':
+                target.write(file, file.relative_to(tools / 'python').as_posix())
+    with archive.open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    (cache / 'python.json').write_text(json.dumps({'version':'3.13.11','sha256':digest}, indent=2)+'\n',encoding='utf-8')
 
 
 def manifest(root: Path, commit: str, source_files: list[str]) -> dict:
     entries = []
     for file in sorted(root.rglob("*")):
-        if not file.is_file() or file.name in {"整理清单.json", "正在整理.txt"}:
+        if not file.is_file() or file.name in {"整理清单.json", "正在整理.txt", ".runtime-setup.lock"}:
             continue
         relative = file.relative_to(root).as_posix()
         if relative.startswith("代码/electron-artifacts/") or relative.startswith("依赖工具/验证结果/"):
+            continue
+        if relative.startswith('依赖工具/provider_cache/'):
+            continue
+        if relative.startswith('依赖工具/repair-cache/') and relative not in {'依赖工具/repair-cache/python.zip','依赖工具/repair-cache/python.json'}:
             continue
         digest = hashlib.sha256()
         with file.open("rb") as stream:
@@ -114,6 +129,8 @@ def main() -> int:
     if existing_site.exists():
         raise RuntimeError("基础标准库不应包含第三方包，请检查复制过滤规则")
     copy_tree(site_packages, existing_site, python=True)
+    print("生成 Python 本地修复缓存…", flush=True)
+    python_repair_cache(tools)
     print("复制 Node/npm、FFmpeg 与 PO Token 工具…", flush=True)
     node_dir = tools / "node"
     node_dir.mkdir()
@@ -145,7 +162,9 @@ def main() -> int:
         "三、复制与开发\n请整体复制或移动 media-dl 文件夹，保留上述三个子目录名称。\n"
         "无需依赖原来的 D 盘 Python、Node 和 FFmpeg，也无需安装系统级 Python/Node。\n"
         "适用于 Windows x64；Edge 登录功能需要本机安装 Microsoft Edge。\n"
-        "也可使用代码内的 start-collector.cmd / start.cmd，它们会自动转交启动程序内的入口。\n"
+        "也可使用代码内的 start-collector.cmd / start.cmd；各入口共用同一套检测与补全流程。\n"
+        "启动时检查依赖，缺失或无法使用时先复用工具/缓存，再按固定版本下载补齐；已有可用依赖不自动升级。\n"
+        "Python 修复缓存随包保存；缓存不可用时联网取得校验过的便携 Python，不写系统 PATH。\n"
         "Git 历史保存在 代码\\版本历史.bundle；有 Git 时可用 git clone 恢复到另一个新目录。\n\n"
         "四、本机数据\n应用仍使用当前 Windows 用户的 .media-collector 保存设置、登录和下载历史。\n"
         "本包没有复制账号 Cookies、浏览器个人资料、已下载媒体、临时测试缓存、MissAV 或图片重命名器等独立项目。\n"

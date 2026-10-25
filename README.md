@@ -29,7 +29,12 @@
 - 登录信息、设置、标签网址和任务历史默认位于 `~/.media-collector/`，与旧版配置隔离。
   应用更名为 media-dl 后继续使用这个目录，无需迁移。可通过 `YT_COLLECTOR_HOME` 指定其他位置。登录凭据仅用于本机，请勿分享配置目录。
 
-开发运行要求 Node.js 22.12+、项目 Python 环境和 ffmpeg。首次在新电脑准备：
+Windows 下可直接双击 `start-collector.cmd`：启动前检查依赖，优先复用可用工具和缓存，缺失时补齐 Python 3.13、
+项目 Python 库、Node/npm、FFmpeg/FFprobe、锁定版本的 Electron 和 YouTube 辅助服务。源码目录的新增工具默认放在
+`~/.yt_dlp_tools/`；整理包使用相邻“依赖工具”。补全不写系统 PATH，不升级已有可用依赖，下载失败可重试。
+旧版 `start.cmd` 共用检测流程，只检查旧版需要的依赖。`--check`（旧版亦支持 `--check-env`）检测并补全后退出。
+完整整理包附带校验过的 Python 恢复缓存；缓存不可用时按固定 URL 和 SHA-256 下载便携 Python。
+手动开发仍可使用：
 
 ```powershell
 npm.cmd install
@@ -45,7 +50,7 @@ Electron 与 Python 通过本机子进程通信，不开放 HTTP 服务端口。
 启动入口按相对路径使用包内 Python、Node/npm、Electron、FFmpeg 和 PO Token 工具。
 `YT_DOWNLOADER_TOOLS_DIR` 可指定工具根目录；不设置时沿用原有工具查找方式。
 整理包不包含账号、已下载文件、测试缓存或其他独立项目。需整体复制目录，推荐通过“启动程序”内的入口启动；
-“代码”里的 `start-collector.cmd` 和 `start.cmd` 也会自动转交对应入口，使用相邻“依赖工具”中的环境。
+“代码”里的 `start-collector.cmd` 和 `start.cmd` 与“启动程序”共用检测/补全流程，使用相邻“依赖工具”中的环境。
 
 用户提供的 B站与小红书链接实测记录见 `.specs/ACCEPTANCE_2026-10-24.md`。
 封面、大小时长与 YouTube 强制登录的修改记录见 `.specs/PREVIEW_AUTH_2026-10-24.md`。

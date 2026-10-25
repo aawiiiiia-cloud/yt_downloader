@@ -25,12 +25,14 @@ def environment(tools: Path) -> dict[str, str]:
         "YT_DOWNLOADER_TOOLS_DIR": str(tools),
         "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8", "NODE_PATH": str(tools / "node_modules"),
-        "TCL_LIBRARY": str(python / "tcl" / "tcl8.6"),
-        "TK_LIBRARY": str(python / "tcl" / "tk8.6"),
         "PATH": os.pathsep.join(map(str, [python, tools / "node", tools / "ffmpeg",
             windows / "System32", windows, windows / "System32" / "Wbem",
             windows / "System32" / "WindowsPowerShell" / "v1.0"])),
     })
+    for key, leaf in (("TCL_LIBRARY", "tcl8.6"), ("TK_LIBRARY", "tk8.6")):
+        env.pop(key, None)
+        for directory in (python / 'tcl' / leaf, python / 'Lib' / leaf):
+            if directory.is_dir(): env[key] = str(directory); break
     return env
 
 
@@ -87,6 +89,18 @@ def main() -> int:
     parser.add_argument("--test-electron", action="store_true")
     args = parser.parse_args()
     _root, code, tools = layout()
+    expected_python = tools / 'python' / 'python.exe'
+    if not expected_python.is_file() or Path(sys.executable).resolve() != expected_python.resolve():
+        windows = Path(os.environ.get('SystemRoot', r'C:\Windows'))
+        command = [str(windows / 'System32/WindowsPowerShell/v1.0/powershell.exe'), '-NoProfile',
+            '-ExecutionPolicy', 'Bypass', '-File', str(code / 'distribution/ensure-runtime.ps1'),
+            '-Mode', 'legacy' if args.legacy else 'collector']
+        if args.check: command.append('-CheckOnly')
+        if args.test_electron: command.append('-DesktopTest')
+        return subprocess.call(command)
+    sys.path.insert(0, str(code))
+    from distribution.runtime_setup import prepare
+    prepare(code, tools, bundled=True, need_electron=not args.legacy)
     env = environment(tools)
     required = [code / "collector_worker.py", Path(env["YT_DOWNLOADER_PYTHON"]),
         tools / "node" / "node.exe", tools / "node_modules" / "electron" / "dist" / "electron.exe",
