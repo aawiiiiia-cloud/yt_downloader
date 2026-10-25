@@ -28,7 +28,7 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
-TOOLS_DIR = Path.home() / ".yt_dlp_tools"
+TOOLS_DIR = Path(os.environ.get("YT_DOWNLOADER_TOOLS_DIR") or Path.home() / ".yt_dlp_tools")
 NODE_DIR = TOOLS_DIR / "node"
 FFMPEG_DIR = TOOLS_DIR / "ffmpeg"
 PROJECT_DIR = Path(__file__).resolve().parent

@@ -195,6 +195,9 @@ def provider_bundle_runtime_valid(root: Path) -> bool:
 
 def provider_candidates() -> list[Path]:
     """Return provider roots in preference order for bundled/source modes."""
+    configured = os.environ.get("YT_DOWNLOADER_TOOLS_DIR")
+    if configured:
+        return [Path(configured) / "bgutil-provider"]
     app = _application_dir()
     candidates = [app / "tools" / "bgutil-provider"]
     if not getattr(sys, "frozen", False):
