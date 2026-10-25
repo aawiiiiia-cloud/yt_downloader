@@ -1,6 +1,7 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
 const { SITES, navigationUrl, siteForUrl, contentKey } = require('./model.cjs');
+const { isTaobaoLoginUrl } = require('./browser-popups.cjs');
 const MAX_TABS = 36;
 
 // Only navigation metadata is saved. Views, parsed resources and task handles live in memory.
@@ -8,7 +9,7 @@ class SiteTabs {
   constructor(saved) {
     this.rows = []; this.activeId = null; this.lastActive = {};
     for (const row of (Array.isArray(saved?.tabs) ? saved.tabs : []).slice(0, MAX_TABS)) {
-      if (!SITES[row?.group]) continue;
+      if (!SITES[row?.group] || isTaobaoLoginUrl(row.url)) continue;
       try {
         const tab = this.add(row.group, row.url ? navigationUrl(row.url) : '');
         if (typeof row.id === 'string' && !this.rows.some(other => other !== tab && other.id === row.id)) tab.id = row.id;
@@ -53,8 +54,12 @@ class SiteTabs {
     return tab;
   }
   serialize() {
-    return { tabs: this.rows.map(({ id, group, url, title }) => ({ id, group, url, title })),
-      activeId: this.activeId, lastActive: { ...this.lastActive } };
+    const tabs = this.rows.filter(tab => !isTaobaoLoginUrl(tab.url));
+    const lastActive = Object.fromEntries(Object.keys(SITES).map(group => [group,
+      tabs.find(tab => tab.group === group && tab.id === this.lastActive[group])?.id || tabs.find(tab => tab.group === group)?.id]));
+    return { tabs: tabs.map(({ id, group, url, title }) => ({ id, group, url, title })),
+      activeId: tabs.find(tab => tab.id === this.activeId)?.id || lastActive[this.active.group] || tabs[0]?.id,
+      lastActive };
   }
 }
 

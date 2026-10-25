@@ -42,3 +42,17 @@ test('tab limit bounds resource use without preventing closing the last tab', ()
   tabs.remove(biliId); assert.equal(tabs.rows.length, MAX_TABS); assert.equal(tabs.active.group, 'bilibili');
   new Function(linkScript);
 });
+
+test('restart discards old Taobao login relay tabs without discarding product tabs', () => {
+  const relay = 'https://detail.tmall.com/wow/home/_____tmd_____/page/login_jump?rand=expired-secret';
+  const saved = {tabs:[{id:'relay',group:'taobao',url:relay},{id:'product',group:'taobao',url:'https://detail.tmall.com/item.htm?id=123'}],activeId:'relay'};
+  const restored = new SiteTabs(saved);
+  assert.equal(restored.rows.length,1); assert.equal(restored.active.id,'product');
+  assert.doesNotMatch(JSON.stringify(restored.serialize()),/expired-secret|login_jump/);
+  const tabs = new SiteTabs(); const product = tabs.add('taobao','https://item.taobao.com/item.htm?id=456');
+  tabs.select(tabs.add('taobao',relay).id);
+  const metadata = tabs.serialize();
+  assert.equal(metadata.activeId,product.id); assert.equal(metadata.lastActive.taobao,product.id);
+  assert.doesNotMatch(JSON.stringify(metadata),/expired-secret|login_jump/);
+  assert.equal(new SiteTabs(metadata).active.id,product.id);
+});

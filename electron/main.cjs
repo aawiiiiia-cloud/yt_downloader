@@ -9,7 +9,8 @@ const { SITES, navigationUrl, siteForUrl, contentKey, cookieText, readCookies, h
 const { pythonTask } = require('./bridge.cjs');
 const { Assets, readBody } = require('./assets.cjs');
 const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
-const { SiteTabs, linkScript } = require('./site-tabs.cjs');
+const { SiteTabs, linkScript, MAX_TABS } = require('./site-tabs.cjs');
+const { taobaoPopupKind } = require('./browser-popups.cjs');
 const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-page.cjs');
 const { resolveDouyinContext } = require('./douyin-context.cjs');
 const { YouTubeProvider } = require('./youtube-provider.cjs');
@@ -77,7 +78,7 @@ class CollectorApp {
     this.loginState = new LoginState(readJson(path.join(profile, 'login-errors.json'), {}));
     this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
     this.tabs.rows.forEach(tab => this.initializeTab(tab));
-    this.handles = new Set(); this.cache = new Map(); this.closing = false;
+    this.handles = new Set(); this.cache = new Map(); this.popups = new Map(); this.closing = false;
     this.youtubeProvider = new YouTubeProvider({ track: handle => this.track(handle) });
     this.runTask = pythonTask;
     this.externalTasks = new WeakMap();
@@ -165,10 +166,10 @@ class CollectorApp {
     this.healthTask.promise.then(health => { this.state.health = health; this.publish(); }, error => { this.state.error = error.message; this.publish(); });
     return this;
   }
-  ensureView(tab) {
+  ensureView(tab, nativeContents) {
     this.initializeTab(tab);
     if (tab.view) return;
-    const view = tab.view = new WebContentsView({ webPreferences: { session: this.browserSession,
+    const view = tab.view = new WebContentsView({ ...(nativeContents ? { webContents: nativeContents } : {}), webPreferences: { session: this.browserSession,
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
     this.window.contentView.addChildView(view); view.setVisible(false); view.setBounds(this.browserBounds);
     const web = view.webContents;
@@ -189,14 +190,10 @@ class CollectorApp {
     web.on('before-input-event', (event, input) => {
       if (this.paneResizing && input.key === 'Escape') { event.preventDefault(); this.endPaneResize(true); }
     });
-    web.setWindowOpenHandler(({ url }) => {
-      try { const next = navigationUrl(url); setImmediate(() => {
-        if (this.closing || tab.closed) return;
-        try { this.openTab(next, { group: siteForUrl(next) || tab.group, reuse: true }); }
-        catch (error) { this.state.error = error.message; this.publish(); }
-      }); } catch {}
-      return { action: 'deny' };
-    });
+    web.setWindowOpenHandler(details => this.handleWindowOpen(tab, web, details));
+    web.once('destroyed', () => setImmediate(() => {
+      if (!tab.closed && !this.closing) this.closeTab(tab.id);
+    }));
     web.on('will-navigate', (event, details) => {
       try {
         const next = navigationUrl(typeof details === 'string' ? details : details.url), group = siteForUrl(next);
@@ -248,13 +245,72 @@ class CollectorApp {
       if (!tab.closed && !this.closing) { this.invalidate(tab); tab.state.loading = false;
         tab.state.error = '此标签页面已停止运行，点击刷新即可重新加载'; this.publish(); }
     });
-    const load = tab.url ? web.loadURL(tab.url) : web.loadFile(path.join(__dirname, 'ui', 'welcome.html'));
-    load.catch(() => {});
+    // Chromium already owns this child's first navigation, POST data and opener.
+    if (!nativeContents) {
+      const load = tab.url ? web.loadURL(tab.url) : web.loadFile(path.join(__dirname, 'ui', 'welcome.html'));
+      load.catch(() => {});
+    }
+  }
+  handleWindowOpen(tab, source, details) {
+    if (this.closing || tab.closed) return { action: 'deny' };
+    const { url, postBody } = details;
+    const kind = taobaoPopupKind(source.getURL() === 'about:blank' ? tab.state.url : source.getURL(), url);
+    let next;
+    try { next = kind === 'login' && url === 'about:blank' ? url : navigationUrl(url); }
+    catch { return { action: 'deny' }; }
+    const existing = kind !== 'login' && !postBody && this.tabs.find(next, siteForUrl(next) || tab.group);
+    if (kind && !existing) {
+      if ((kind === 'tab' && this.tabs.rows.length >= MAX_TABS) || (kind === 'login' && this.popups.size >= 4)) {
+        tab.state.error = kind === 'tab' ? '已打开 36 个标签，请先关闭暂时不用的页面' : '请先完成或关闭已有的登录 / 验证窗口';
+        this.publish(); return { action: 'deny' };
+      }
+      return { action: 'allow', outlivesOpener: kind === 'tab',
+        overrideBrowserWindowOptions: { show: false, webPreferences: { session: this.browserSession,
+          contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } },
+        createWindow: options => {
+          if (kind === 'login') return this.createLoginPopup(tab, options);
+          const child = this.initializeTab(this.tabs.add('taobao', next));
+          this.ensureView(child, options.webContents); this.activateTab(child.id);
+          return child.view.webContents;
+        } };
+    }
+    setImmediate(() => {
+      if (this.closing || tab.closed) return;
+      try { this.openTab(next, { group: siteForUrl(next) || tab.group, reuse: true }); }
+      catch (error) { tab.state.error = error.message; this.publish(); }
+    });
+    return { action: 'deny' };
+  }
+  createLoginPopup(tab, options) {
+    const popup = new BrowserWindow({ ...options, parent: this.window, show: false,
+      width: 960, height: 740, minWidth: 600, minHeight: 480, frame: true, resizable: true,
+      fullscreen: false, fullscreenable: false, alwaysOnTop: false, skipTaskbar: false,
+      title: '淘宝 · 登录 / 验证', autoHideMenuBar: true });
+    const web = popup.webContents;
+    this.popups.set(popup, tab.id); web.setUserAgent(this.userAgent);
+    web.setWindowOpenHandler(details => this.handleWindowOpen(tab, web, details));
+    const restrict = (event, details) => {
+      const url = typeof details === 'string' ? details : details.url;
+      try { if (url !== 'about:blank') navigationUrl(url); } catch { event.preventDefault(); }
+    };
+    web.on('will-navigate', restrict); web.on('will-redirect', restrict);
+    const show = () => { if (!popup.isDestroyed() && !this.closing && !tab.closed && !smoke && !liveCheck && !persistenceCheck) popup.show(); };
+    // Quick relay windows usually close themselves before this timer fires.
+    // Slow pages and real verification windows remain visible and user controlled.
+    const timer = setTimeout(show, 350);
+    web.on('page-title-updated', event => {
+      event.preventDefault();
+      let host = ''; try { host = new URL(web.getURL()).hostname; } catch {}
+      popup.setTitle('淘宝 · 登录 / 验证' + (host ? ' · ' + host : ''));
+    });
+    popup.once('closed', () => { clearTimeout(timer); this.popups.delete(popup); this.updateLogin().catch(() => {}); });
+    return web;
   }
   pauseTab(tab) {
-    if (!tab.view || tab.view.webContents.isDestroyed()) return;
-    tab.view.webContents.setAudioMuted(true);
-    tab.view.webContents.mainFrame.executeJavaScript("document.querySelectorAll('video,audio').forEach(media => media.pause())").catch(() => {});
+    const web = tab.view?.webContents;
+    if (!web || web.isDestroyed()) return;
+    web.setAudioMuted(true);
+    web.mainFrame.executeJavaScript("document.querySelectorAll('video,audio').forEach(media => media.pause())").catch(() => {});
   }
   activateTab(id) {
     const previous = this.tabs.active;
@@ -283,9 +339,15 @@ class CollectorApp {
     this.disposeTab(tab); this.tabs.remove(id); this.activateTab(this.tabs.activeId);
   }
   disposeTab(tab) {
+    if (tab.closed) return;
     tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort(); tab.douyinPage?.dispose();
-    if (tab.view && !tab.view.webContents.isDestroyed()) {
-      this.window.contentView.removeChildView(tab.view); tab.view.webContents.close({ waitForBeforeUnload: false });
+    for (const [popup, owner] of this.popups) if (owner === tab.id && !popup.isDestroyed()) popup.destroy();
+    // A script-closed WebContentsView has already detached its native view and
+    // no longer returns webContents. Do not access it as a still-live page.
+    const web = tab.view?.webContents;
+    if (web && !web.isDestroyed()) {
+      this.window.contentView.removeChildView(tab.view);
+      web.close({ waitForBeforeUnload: false });
     }
   }
   destroyViews() { this.tabs.rows.forEach(tab => this.disposeTab(tab)); }
