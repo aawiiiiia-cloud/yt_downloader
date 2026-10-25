@@ -1,5 +1,6 @@
 @echo off
 setlocal
+title media-dl
 set "PYTHONUTF8=1"
 pushd "%~dp0"
 if errorlevel 1 exit /b 1

@@ -25,10 +25,10 @@ const liveCheck = process.argv.includes('--collector-live-check');
 const persistenceCheck = process.argv.includes('--collector-persistence-check');
 const profile = smoke || liveCheck ? path.join(__dirname, '..', 'electron-artifacts', `${smoke ? 'smoke' : 'live'}-${Date.now()}`) :
   process.env.YT_COLLECTOR_HOME || path.join(os.homedir(), '.media-collector');
-app.setName('拾集 · 媒体采集');
+app.setName('media-dl');
 app.setPath('userData', profile);
 if (liveCheck) {
-  require('electron').crashReporter.start({ productName: 'MediaCollectorTest', uploadToServer: false });
+  require('electron').crashReporter.start({ productName: 'media-dl', uploadToServer: false });
   process.on('uncaughtException', error => { console.error('MAIN JS:', error); app.exit(1); });
   process.on('unhandledRejection', error => { console.error('MAIN PROMISE:', error); });
   app.on('child-process-gone', (_event, details) => console.error('CHILD EXIT:', details));
@@ -143,7 +143,7 @@ class CollectorApp {
     this.browserSession.setPermissionCheckHandler((_contents, permission) => permission === 'fullscreen');
     await this.applyProxy();
     this.window = new BrowserWindow({ width: 1440, height: 920, minWidth: 1060, minHeight: 700,
-      show: !smoke && !liveCheck && !persistenceCheck, backgroundColor: '#f5f6f8', title: '拾集 · 媒体采集', autoHideMenuBar: true,
+      show: !smoke && !liveCheck && !persistenceCheck, backgroundColor: '#f5f6f8', title: 'media-dl', autoHideMenuBar: true,
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     this.browserBounds = { x: 17, y: 138, width: 1006, height: 730 };

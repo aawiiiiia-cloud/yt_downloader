@@ -1,5 +1,5 @@
 {
-  "name": "media-collector",
+  "name": "media-dl",
   "version": "0.1.0",
   "private": true,
   "description": "YouTube、B站、小红书、Vimeo、抖音、Behance 与淘宝桌面采集工具",

@@ -6,10 +6,21 @@ const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', 
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
 const openedLogs = new Set();
-const previews = new Map(), pendingDownloads = new Set();
+const previews = new Map(), pendingDownloads = new Map();
 const drafts = new Map();
 let tabsSignature = '';
 let previewObserver;
+function setLoading(element, loading) {
+  element.classList.toggle('is-loading', !!loading);
+  element.setAttribute('aria-busy', String(!!loading));
+  if (!loading) element.style.removeProperty('--spinner-phase');
+  else alignLoadingAnimation(element);
+}
+function alignLoadingAnimation(element) {
+  // Keep the same rotation phase when progress updates replace a task's markup.
+  if (!element.style.getPropertyValue('--spinner-phase'))
+    element.style.setProperty('--spinner-phase', `${-(performance.now() % 800)}ms`);
+}
 async function call(method, data) {
   try { return await window.collector.call(method, data); }
   catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
@@ -20,39 +31,41 @@ function rememberPreview(key, value) {
   while (previews.size > 48 || [...previews.values()].reduce((sum, row) => sum + (row.dataUrl?.length || 0), 0) > 24000000) previews.delete(previews.keys().next().value);
 }
 function previewFrame(index, title) {
-  return `<div class="preview-frame ${index === 'cover' ? 'cover-frame' : ''}" data-preview="${index}"><img data-preview-image alt="${escape(title)}" hidden><span class="preview-message">正在加载预览…</span><button type="button" class="preview-retry" data-retry-preview="${index}" hidden>重试</button></div>`;
+  return `<div class="preview-frame ${index === 'cover' ? 'cover-frame' : ''}" data-preview="${index}"><img data-preview-image alt="${escape(title)}" hidden><span class="preview-message is-loading" aria-busy="true">正在加载预览…</span><button type="button" class="preview-retry" data-retry-preview="${index}" hidden>重试</button></div>`;
 }
 function loadPreview(frame, refresh = false) {
   const receipt = state.inspectionId, itemIndex = selectedItem, imageIndex = frame.dataset.preview;
   const key = `${receipt}:${itemIndex}:${imageIndex}`;
   const current = () => frame.isConnected && state.inspectionId === receipt && selectedItem === itemIndex;
   const img = frame.querySelector('img'), message = frame.querySelector('.preview-message'), retry = frame.querySelector('button');
+  img.hidden = true; message.hidden = false; message.textContent = '正在加载预览…'; retry.hidden = true;
+  setLoading(message, true);
   const display = result => {
     if (!current()) return;
-    img.onload = () => { if (current()) { img.hidden = false; message.hidden = true; retry.hidden = true; } };
-    img.onerror = () => { if (current()) { img.hidden = true; message.hidden = false; message.textContent = '预览加载失败'; retry.hidden = false; } };
+    img.onload = () => { if (current()) { img.hidden = false; message.hidden = true; setLoading(message, false); retry.hidden = true; } };
+    img.onerror = () => { if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = '预览加载失败'; retry.hidden = false; } };
     img.src = result.dataUrl;
     if (img.complete && img.naturalWidth > 0) img.onload();
   };
   const args = { inspectionId: receipt, itemIndex, imageIndex: imageIndex === 'cover' ? null : Number(imageIndex), refresh };
   if (previews.get(key)?.dataUrl && !refresh) display(previews.get(key));
   else {
-    message.hidden = false; message.textContent = '正在加载预览…'; retry.hidden = true;
     window.collector.call('preview', args).then(result => { rememberPreview(key, result); display(result); }, error => {
-      if (current()) { img.hidden = true; message.hidden = false; message.textContent = error.message; retry.hidden = false; }
+      if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = error.message; retry.hidden = false; }
     });
   }
   if (imageIndex === 'cover') return;
   const label = frame.closest('.image-card').querySelector('[data-image-size]');
   const showSize = value => {
     if (!current()) return;
+    setLoading(label, false);
     label.textContent = `${value.displayFallback ? '网页图' : '原图'} ${mediaInfo.size(value.size)}`;
     if (value.width && value.height) frame.closest('.image-card').querySelector('.image-meta span:last-child').textContent = `${value.width} × ${value.height}`;
   };
   if (previews.get(key)?.sizeLoaded) showSize(previews.get(key));
   else window.collector.call('image-size', args).then(value => {
     rememberPreview(key, { ...value, sizeLoaded: true }); showSize(value);
-  }, () => { if (current()) label.textContent = '原图大小未知'; });
+  }, () => { if (current()) { setLoading(label, false); label.textContent = '原图大小未知'; } });
 }
 function updateMediaInfo() {
   const item = state?.result?.items?.[selectedItem];
@@ -68,11 +81,13 @@ function updateMediaInfo() {
   const button = $('download');
   document.querySelectorAll('[data-download-image]').forEach(button => {
     button.disabled = pendingDownloads.has(state.inspectionId);
+    setLoading(button, pendingDownloads.get(state.inspectionId) === Number(button.dataset.downloadImage));
   });
   if (button) {
     button.disabled = pendingDownloads.has(state.inspectionId);
     button.textContent = button.disabled ? '正在处理…' : state.result.site === 'youtube' && state.youtubeAuth !== 'verified' ?
       (state.youtubeAuth === 'checking' ? '正在验证登录…' : state.login.youtube ? '验证登录并下载 ↓' : '通过 Edge 登录并下载 ↓') : '加入下载队列 ↓';
+    setLoading(button, button.disabled || (state.result.site === 'youtube' && state.youtubeAuth === 'checking'));
   }
 }
 function showPanel(name) {
@@ -124,7 +139,7 @@ function renderBrowserTabs() {
   $('browser-tabs').innerHTML = state.tabs.filter(tab => tab.group === state.activeGroup).map(tab => {
     const home = !tab.url || tab.url.replace(/\/$/, '') === homes[tab.group].replace(/\/$/, '');
     const title = home ? '首页' : tab.title || '新标签页';
-    return `<div class="browser-tab ${tab.id === state.activeTabId ? 'active' : ''}"><button role="tab" data-tab="${escape(tab.id)}" aria-selected="${tab.id === state.activeTabId}" title="${escape(title)}">${tab.loading ? '◌ ' : ''}${escape(title)}</button><button class="close-tab" data-close-tab="${escape(tab.id)}" title="关闭 ${escape(title)}" aria-label="关闭 ${escape(title)}">×</button></div>`;
+    return `<div class="browser-tab ${tab.id === state.activeTabId ? 'active' : ''}"><button role="tab" data-tab="${escape(tab.id)}" class="${tab.loading ? 'is-loading' : ''}" aria-busy="${!!tab.loading}" aria-selected="${tab.id === state.activeTabId}" title="${escape(title)}">${escape(title)}</button><button class="close-tab" data-close-tab="${escape(tab.id)}" title="关闭 ${escape(title)}" aria-label="关闭 ${escape(title)}">×</button></div>`;
   }).join('');
   if (activeChanged) $('browser-tabs').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   document.querySelectorAll('[data-site-count]').forEach(label => { label.textContent = state.tabs.filter(tab => tab.group === label.dataset.siteCount).length; });
@@ -135,13 +150,13 @@ function renderResources() {
   const items = state.result?.items || [], item = items[selectedItem];
   const skipped = state.result?.site === 'behance' ? state.result.skippedExternal || 0 : 0;
   const externalTools=state.result?.site==='behance'&&(skipped||state.result.externalParsed)?
-    `<div class="section-row" id="external-controls"><span class="muted" id="skipped-external">${state.result.externalParsed?`已识别 ${state.result.externalCount} 个外部视频。${skipped?`另有 ${skipped} 个外部视频未解析。`:''}`:`已跳过 ${skipped} 个外部托管视频。`}</span><button id="inspect-external" class="text-button" ${state.parsing||!state.resultMatchesPage?'disabled':''}>${state.parsing?'正在解析…':state.result.externalParsed?'重新解析外部视频':'解析外部视频'}</button></div>`:'';
+    `<div class="section-row" id="external-controls"><span class="muted" id="skipped-external">${state.result.externalParsed?`已识别 ${state.result.externalCount} 个外部视频。${skipped?`另有 ${skipped} 个外部视频未解析。`:''}`:`已跳过 ${skipped} 个外部托管视频。`}</span><button id="inspect-external" class="text-button ${state.parsing?'is-loading':''}" aria-busy="${!!state.parsing}" ${state.parsing||!state.resultMatchesPage?'disabled':''}>${state.parsing?'正在解析…':state.result.externalParsed?'重新解析外部视频':'解析外部视频'}</button></div>`:'';
   if (!item) {
     if (skipped) {
       $('resources').innerHTML = externalTools+`<div class="empty"><strong>当前作品没有本站可下载素材</strong><p>可手动解析 YouTube、Vimeo 托管的视频。</p></div>`;
       return;
     }
-    $('resources').innerHTML = `<div class="empty"><div class="empty-icon">${state.parsing ? '◌' : '▧'}</div><strong>${state.parsing ? '正在识别当前内容…' : '等待值得收藏的内容'}</strong><p>${state.parsing ? '正在获取资源与实际可用画质，<br>你可以继续浏览或查看下载任务。' : '在左侧打开视频、笔记、作品或商品详情页，<br>或点击「解析当前页面」。'}</p></div>`;
+    $('resources').innerHTML = `<div class="empty" aria-busy="${!!state.parsing}"><div class="empty-icon ${state.parsing ? 'is-loading' : ''}" aria-hidden="true">${state.parsing ? '' : '▧'}</div><strong>${state.parsing ? '正在识别当前内容…' : '等待值得收藏的内容'}</strong><p>${state.parsing ? '正在获取资源与实际可用画质，<br>你可以继续浏览或查看下载任务。' : '在左侧打开视频、笔记、作品或商品详情页，<br>或点击「解析当前页面」。'}</p></div>`;
     return;
   }
   const commerce = state.result.site === 'taobao';
@@ -157,7 +172,7 @@ function renderResources() {
   }
   if (item.parts?.length > 1) html += `<label class="muted">选择分P<select id="bili-part" class="part-select">${item.parts.map(p => `<option value="${p.index}" ${p.index === item.currentPart ? 'selected' : ''}>P${p.index} · ${escape(p.title)}</option>`).join('')}</select></label>`;
   if (item.kind === 'images') {
-    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<div class="image-card"><label class="image-select"><input type="checkbox" data-image="${image.index}" aria-label="选择第 ${image.index} 张图片" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}<span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '尺寸未知'}</span></span><span class="image-size" data-image-size>正在查询原图大小…</span>${image.names?.length ? `<span class="image-name" data-image-name="${image.index}"></span>` : ""}</label><button type="button" class="image-download" data-download-image="${image.index}" aria-label="下载第 ${image.index} 张图片">下载 ↓</button></div>`).join('')}</div>`;
+    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<div class="image-card"><label class="image-select"><input type="checkbox" data-image="${image.index}" aria-label="选择第 ${image.index} 张图片" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}<span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '尺寸未知'}</span></span><span class="image-size is-loading" data-image-size aria-busy="true">正在查询原图大小…</span>${image.names?.length ? `<span class="image-name" data-image-name="${image.index}"></span>` : ""}</label><button type="button" class="image-download" data-download-image="${image.index}" aria-label="下载第 ${image.index} 张图片">下载 ↓</button></div>`).join('')}</div>`;
   } else {
     html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
@@ -176,7 +191,7 @@ function renderTasks() {
   const labels = { queued: '等待下载', running: '下载中', cancelling: '正在停止', cancelled: '已取消', completed: '已完成', failed: '下载失败' };
   $('tasks').innerHTML = state.tasks.length ? state.tasks.map(task => {
     const error = task.status === 'failed' ? `<p class="task-error"><strong>失败原因：${escape(task.failure?.label || '原因未确定')}</strong><span>${escape(task.error || '请展开任务日志查看详情。')}</span></p>` : task.error ? `<p class="task-error">${escape(task.error)}</p>` : '';
-    return `<article class="task-card"><div class="task-title">${escape(task.title)}</div><div class="task-meta"><span>${labels[task.status] || escape(task.status)}${task.status === 'running' && task.detail === 'processing' ? ' · 正在合并或转码' : ''}</span><span>${Math.round(task.percent || 0)}%</span></div><progress max="100" value="${task.percent || 0}"></progress>${error}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
+    return `<article class="task-card"><div class="task-title">${escape(task.title)}</div><div class="task-meta"><span class="${['running','cancelling'].includes(task.status)?'is-loading':''}" aria-busy="${['running','cancelling'].includes(task.status)}">${labels[task.status] || escape(task.status)}${task.status === 'running' && task.detail === 'processing' ? ' · 正在合并或转码' : ''}</span><span>${Math.round(task.percent || 0)}%</span></div><progress max="100" value="${task.percent || 0}"></progress>${error}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
   }).join('') : '<div class="empty"><strong>下载队列还是空的</strong><p>在资源页选择图片或视频，<br>加入队列后可以在这里查看进度。</p></div>';
 }
 function render(next) {
@@ -188,8 +203,10 @@ function render(next) {
   renderBrowserTabs();
   if (document.activeElement !== $('address')) $('address').value = /^https?:/.test(state.url) ? state.url : '';
   $('page-status').textContent = state.loading ? '网页加载中…' : state.title || '开始浏览';
+  setLoading($('page-status'), state.loading);
   $('site-label').textContent = names[state.site] || '通用浏览';
   $('parse').textContent = state.parsing ? '停止解析' : '解析当前页面';
+  setLoading($('parse'), state.parsing);
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
   const expired = state.loginExpired?.[selectedSite] || (selectedSite === 'youtube' && state.youtubeAuth === 'expired');
   const needsLogin = expired || !state.login[selectedSite];
@@ -212,6 +229,9 @@ function render(next) {
   $('edge-login').disabled = loginBusy; $('cancel-login').hidden = !state.loginRunning;
   $('import-login').disabled = loginBusy;
   $('import-login').textContent = state.importingCookies ? '正在导入…' : '导入Cookies';
+  setLoading($('import-login'), state.importingCookies);
+  $('edge-login').textContent = state.loginRunning === selectedSite ? '等待登录…' : 'Edge登录';
+  setLoading($('edge-login'), state.loginRunning === selectedSite);
   $('parse-log').textContent = state.logs.join('\n');
   const id = `${state.activeTabId}:${state.inspectionId}:${state.parsing}`;
   if (id !== renderedId) {
@@ -228,7 +248,11 @@ function render(next) {
   if (!settingsDirty) fillSettings();
   const h = state.health;
   $('core-status').textContent = h ? (!h.ffmpeg ? '视频合并工具缺失，请查看设置' : '下载核心已连接 · 本地保存') : '正在连接下载核心…';
+  setLoading($('core-status'), !h);
+  document.querySelector('.status-dot').hidden = !h;
   $('health-detail').textContent = h ? `视频合并：${h.ffmpeg ? '就绪' : '缺失'}；YouTube 解算：${h.node ? '就绪' : '缺少 Node'}；YouTube 增强：${h.provider ? '就绪' : '未就绪，部分画质可能不可用'}；Behance 解析：${h.packages?.['gallery-dl'] ? '就绪' : '缺少 gallery-dl'}` : '正在检查运行环境…';
+  setLoading($('health-detail'), !h);
+  document.querySelectorAll('.is-loading').forEach(alignLoadingAnimation);
 }
 function fillSettings() {
   if (!state) return;
@@ -288,7 +312,7 @@ $('resources').addEventListener('click', async event => {
       indices: imageButton ? [Number(imageButton.dataset.downloadImage)] : [...document.querySelectorAll('[data-image]:checked')].map(i => Number(i.dataset.image)),
       formatId: $('format-select')?.value || '', audioOnly: $('audio-only')?.checked, subtitles: $('subtitles')?.checked };
     if (pendingDownloads.has(args.inspectionId)) return;
-    pendingDownloads.add(args.inspectionId); updateMediaInfo();
+    pendingDownloads.set(args.inspectionId, imageButton ? Number(imageButton.dataset.downloadImage) : null); updateMediaInfo();
     try {
       let id;
       try { id = await window.collector.call('download', args); }
