@@ -3,8 +3,8 @@ const { createHash } = require('node:crypto');
 const { hasAuth, SITES } = require('./model.cjs');
 function fingerprint(cookies, site = 'youtube') {
   if (!SITES[site] || !hasAuth(cookies, site)) return '';
-  const domain = SITES[site].domains[0];
-  const values = cookies.filter(cookie => (cookie.domain.replace(/^\./, '') === domain || cookie.domain.endsWith('.' + domain)) && SITES[site].auth.includes(cookie.name))
+  const domains = SITES[site].authDomains || [SITES[site].domains[0]];
+  const values = cookies.filter(cookie => domains.some(domain => cookie.domain.replace(/^\./, '') === domain || cookie.domain.endsWith('.' + domain)) && SITES[site].auth.includes(cookie.name))
     .map(cookie => [cookie.domain, cookie.path, cookie.name, cookie.value]).sort();
   return createHash('sha256').update(JSON.stringify(values)).digest('hex');
 }

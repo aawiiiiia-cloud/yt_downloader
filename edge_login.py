@@ -110,6 +110,13 @@ SITE_CONFIGS = {
         "auth_domain": "douyin.com", "cookie_domains": ("douyin.com",),
         "default_file": ".yt_dlp_gui_douyin_cookies.txt", "verify_url": None,
     },
+    "taobao": {
+        "name": "淘宝 / 天猫", "login_url": "https://login.taobao.com/member/login.jhtml",
+        "home_url": "https://www.taobao.com/", "capture_url": "https://www.taobao.com/",
+        "auth_names": {"cookie17", "sgcookie"}, "auth_domain": "taobao.com",
+        "cookie_domains": ("taobao.com", "tmall.com"),
+        "default_file": ".yt_dlp_gui_taobao_cookies.txt", "verify_url": None,
+    },
 }
 
 # 兼容旧代码/测试所用的常量。

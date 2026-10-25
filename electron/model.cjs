@@ -10,6 +10,7 @@ const SITES = {
   douyin: { name: '抖音', home: 'https://www.douyin.com/', domains: ['douyin.com', 'iesdouyin.com', 'amemv.com'], auth: ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt'] },
   // Behance also uses Adobe browser storage; anonymous bcp cookies are not login proof.
   behance: { name: 'Behance', home: 'https://www.behance.net/', domains: ['behance.net'], auth: [] },
+  taobao: { name: '淘宝', home: 'https://www.taobao.com/', domains: ['taobao.com', 'tmall.com'], authDomains: ['taobao.com', 'tmall.com'], auth: ['cookie17', 'sgcookie'] },
 };
 function belongs(host, domain) { return host === domain || host.endsWith('.' + domain); }
 function navigationUrl(value) {
@@ -55,6 +56,10 @@ function contentKey(value) {
       const id = path.match(/^\/gallery\/(\d+)(?:\/|$)/)?.[1];
       if (id) return `behance:${id}`;
     }
+    if (site === 'taobao' && ['item.taobao.com', 'detail.tmall.com', 'chaoshi.detail.tmall.com'].includes(url.hostname) && path === '/item.htm') {
+      const id = url.searchParams.get('id');
+      if (/^\d{1,30}$/.test(id || '')) return `taobao:${id}`;
+    }
     if (site === 'douyin') {
       if (url.hostname === 'v.douyin.com' && /^\/[\w-]+\/?$/.test(path)) return `douyin:short:${path.replace(/\//g, '')}`;
       const id = url.searchParams.get('modal_id') || path.match(/^\/(?:video|share\/video)\/(\d+)/)?.[1];
@@ -70,7 +75,7 @@ function cookieAllowed(cookie, site) {
 function hasAuth(cookies, site) {
   return cookies.some(c => cookieAllowed(c, site) && SITES[site].auth.includes(c.name) && c.value &&
     (!c.expirationDate || c.expirationDate > Date.now() / 1000) &&
-    belongs(String(c.domain).replace(/^\./, ''), SITES[site].domains[0]));
+    (SITES[site].authDomains || [SITES[site].domains[0]]).some(domain => belongs(String(c.domain).replace(/^\./, ''), domain)));
 }
 function cookieText(cookies, site) {
   const lines = ['# Netscape HTTP Cookie File', '# Local task snapshot; never share this file.'];

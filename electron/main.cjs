@@ -16,6 +16,7 @@ const { YouTubeProvider } = require('./youtube-provider.cjs');
 const { LoginState } = require('./login-state.cjs');
 const { snapshotScript: behanceSnapshotScript } = require('./behance-page.cjs');
 const { externalEntries, collectVimeo } = require('./external-media.cjs');
+const { snapshotScript: taobaoSnapshotScript } = require('./taobao-page.cjs');
 const { classifyFailure, safeDetail } = require('./task-failure.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
@@ -449,7 +450,7 @@ class CollectorApp {
   }
   async inspect(tab = this.tabs.active) {
     const state = tab.state, url = tab.view.webContents.getURL();
-    if (!contentKey(url)) throw new Error('请先在左侧打开视频、笔记或 Behance 作品详情页');
+    if (!contentKey(url)) throw new Error('请先在左侧打开视频、笔记、作品或商品详情页');
     if (siteForUrl(url) === 'bilibili' && tab.documentKey !== contentKey(url)) throw new Error('播放器正在切换内容，请稍后重新解析');
     this.invalidate(tab); const ticket = ++tab.sequence;
     Object.assign(state, { parsing: true, result: null, inspectionId: null, error: '', logs: [] }); this.publish();
@@ -457,6 +458,15 @@ class CollectorApp {
     try {
       if (siteForUrl(url) === 'xiaohongshu') context = await this.readPage(snapshotScript, tab);
       if (siteForUrl(url) === 'behance') context = await this.readPage(behanceSnapshotScript, tab);
+      if (siteForUrl(url) === 'taobao') {
+        const deadline = Date.now() + 4500;
+        do {
+          if (ticket !== tab.sequence || tab.closed || this.closing) return;
+          context = await this.readPage(taobaoSnapshotScript, tab, false, tab.assetsAbort.signal);
+          if (context && !context.mismatch && Object.values(context.groups || {}).some(rows => rows.length)) break;
+          await new Promise(resolve => setTimeout(resolve, 200));
+        } while (Date.now() < deadline);
+      }
       if (siteForUrl(url) === 'bilibili') context = await this.readPage(biliSnapshotScript, tab, /\/video\/BV[0-9A-Za-z]+/.test(new URL(url).pathname));
       if (siteForUrl(url) === 'douyin') {
         context = await resolveDouyinContext({ url, signal: tab.assetsAbort.signal,
@@ -600,11 +610,11 @@ class CollectorApp {
     if (item.kind === 'images' && !image) throw new Error('图片不存在');
     if (mode === 'size') {
       if (!image) throw new Error('当前内容不是图片');
-      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal);
+      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal, site === 'taobao' ? item.url : undefined);
     }
     const url = image ? image.preview_url || image.fallback_urls?.at(-1) || image.url : item.thumbnail;
     if (!url) throw new Error('当前页面未提供视频封面');
-    return this.assets.preview(url, site, this.tabs.active.assetsAbort.signal, !!data.refresh);
+    return this.assets.preview(url, site, this.tabs.active.assetsAbort.signal, !!data.refresh, site === 'taobao' ? item.url : undefined);
   }
   async download(data) {
     const tab = this.tabs.active;
@@ -627,7 +637,8 @@ class CollectorApp {
       indices, formatId, formatHasAudio: !!item.formats?.find(format => format.id === formatId)?.audio,
       settings: { ...this.settings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } };
     if(external)this.externalTasks.set(spec,{...external.entry,tabId:tab.id,sourceUrl:snapshot.url});
-    const title = item.kind === 'images' && indices.length === 1 ? `${item.title} · 图片 ${String(indices[0]).padStart(2, '0')}` : item.title;
+    const baseTitle = item.categoryLabel ? `${item.title} · ${item.categoryLabel}` : item.title;
+    const title = item.kind === 'images' && indices.length === 1 ? `${baseTitle} · 图片 ${String(indices[0]).padStart(2, '0')}` : baseTitle;
     return this.queue.add(spec,title);
   }
   async importCookies(file, site) {

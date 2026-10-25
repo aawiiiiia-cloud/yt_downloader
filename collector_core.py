@@ -22,7 +22,10 @@ def checked_url(value: str) -> str:
     value = str(value).strip()
     parsed = urlparse(value)
     if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password or not site_for_url(value):
-        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo、抖音和 Behance 的内容链接")
+        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo、抖音、Behance 和淘宝的内容链接")
+    if site_for_url(value) == 'taobao':
+        from taobao_adapter import product_url
+        return product_url(value)
     if site_for_url(value) == 'behance':
         from behance_adapter import project_id
         identifier = project_id(value)
@@ -361,6 +364,9 @@ class Collector:
         from xhs_image_downloader import XhsVideoPost
         url = checked_url(self.request["url"])
         self.check_cancel()
+        if site_for_url(url) == 'taobao':
+            from taobao_adapter import inspect_product
+            return inspect_product(self, url)
         if site_for_url(self.request.get('referrer') or '') == 'behance' and site_for_url(url) != 'behance':
             from external_media import validate_external
             validate_external(url, self.request['referrer'], self.request.get('context'))
@@ -441,6 +447,9 @@ class Collector:
         folder = Path(settings["saveDir"]).expanduser().resolve()
         folder.mkdir(parents=True, exist_ok=True)
         self.check_cancel()
+        if site_for_url(url) == 'taobao':
+            from taobao_adapter import download_product
+            return download_product(self, url, folder)
         if site_for_url(url) == 'behance':
             from behance_adapter import download_project
             return download_project(self, url, folder)

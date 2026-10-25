@@ -460,9 +460,7 @@ class XhsImageDownloader:
     def download_post(self, post: XhsPost, output_dir: Path) -> tuple[XhsPost, tuple[Path, ...]]:
         """Download an inspected browser note, preserving its original image indices."""
         self._check_cancelled()
-        folder = output_dir.resolve() / _safe_name(
-            f"{post.title} [{post.note_id}]", f"小红书图文 [{post.note_id}]",
-        )
+        folder = self._post_folder(post, output_dir)
         folder.mkdir(parents=True, exist_ok=True)
         completed: list[Path] = []
         with yt_dlp.YoutubeDL(self._ydl_options()) as ydl:
@@ -472,6 +470,11 @@ class XhsImageDownloader:
         self._write_summary(post, folder)
         self.progress(f"[完成] 已保存 {len(completed)} 张图片 → {folder}")
         return post, tuple(completed)
+
+    def _post_folder(self, post: XhsPost, output_dir: Path) -> Path:
+        return output_dir.resolve() / _safe_name(
+            f"{post.title} [{post.note_id}]", f"小红书图文 [{post.note_id}]",
+        )
 
     def _download_one(
         self, ydl: yt_dlp.YoutubeDL, post: XhsPost, image: XhsImage, folder: Path,
