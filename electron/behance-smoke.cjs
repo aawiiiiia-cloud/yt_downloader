@@ -11,12 +11,37 @@ async function run(collector, check, until, wait) {
   await until(()=>ui("document.querySelector('[data-preview-image]')?.naturalWidth>0 && document.querySelector('[data-image-size]')?.textContent.includes('0.34 MB')"),'Behance preview or source size did not render');
   check('Behance previews and original source sizes reach the right panel',true);
   check('Behance avoids claiming Adobe login from anonymous cookies',await ui("document.getElementById('login-state').textContent.includes('公开作品') && document.getElementById('edge-login').hidden && !document.getElementById('web-login').hidden"));
-  const add = collector.queue.add; let spec;
-  collector.queue.add = value=>{spec=value;return 'controlled-behance-task'};
+  const add = collector.queue.add; let spec, taskTitle;
+  collector.queue.add = (value,title)=>{spec=value;taskTitle=title;return 'controlled-behance-task'};
   try { await collector.download({inspectionId:collector.state.inspectionId,itemIndex:0,indices:[2]}); }
   finally { collector.queue.add=add; }
   check('Behance queued selection retains its frozen project and original indices',spec.url==='https://www.behance.net/gallery/123/Test' || spec.url.includes('/gallery/123/Test'));
   check('Behance task context remains private to the local queue',spec.indices.join(',')==='2'&&spec.context.projectId==='123'&&!JSON.stringify(collector.publicState()).includes('beconfig-store_state'));
+  check('every image has an independent download button outside its selection label',await ui("[...document.querySelectorAll('[data-download-image]')].length===2 && [...document.querySelectorAll('[data-download-image]')].every(button=>!button.closest('label'))"));
+  let finishDownload, submitted=0;
+  collector.queue.add=(value,title)=>{spec=value;taskTitle=title;submitted++;return new Promise(resolve=>{finishDownload=resolve;});};
+  try {
+    await ui("document.querySelector('[data-image=\"1\"]').checked=false;document.querySelector('[data-image=\"2\"]').checked=true;document.querySelector('[data-download-image=\"1\"]').click()");
+    await until(()=>!!finishDownload,'single-image button did not submit a download');
+    check('single-image download submits exactly the clicked original index regardless of checkboxes',spec.indices.join(',')==='1'&&spec.context.projectId==='123'&&taskTitle.endsWith('图片 01'));
+    await ui("document.querySelector('[data-download-image=\"1\"]').click()");await wait(80);
+    check('pending single-image submissions cannot be duplicated',submitted===1&&await ui("document.querySelector('[data-download-image=\"1\"]').disabled && document.getElementById('download').disabled"));
+    finishDownload('controlled-single-image');
+    await until(()=>ui("!document.querySelector('[data-download-image=\"1\"]').disabled && document.getElementById('notice').textContent.includes('第 1 张图片已加入')"),'single-image submission did not finish');
+    check('single-image download keeps the resources visible and does not change selections',await ui("!document.getElementById('resources-panel').hidden && !document.querySelector('[data-image=\"1\"]').checked && document.querySelector('[data-image=\"2\"]').checked"));
+    collector.queue.add=()=>{throw new Error('受控单张入队失败');};
+    await ui("document.querySelector('[data-download-image=\"2\"]').click()");
+    await until(()=>ui("document.getElementById('notice').textContent==='受控单张入队失败' && !document.querySelector('[data-download-image=\"2\"]').disabled"),'single-image failure did not restore its controls');
+    check('a failed single-image submission exposes its error and allows another attempt',await ui("!document.getElementById('resources-panel').hidden && document.querySelector('[data-image=\"2\"]').checked"));
+    collector.queue.add=(value,title)=>{spec=value;taskTitle=title;return 'controlled-image-batch';};
+    await ui("document.getElementById('select-all').click();document.getElementById('download').click()");
+    await until(()=>ui("!document.getElementById('tasks-panel').hidden"),'batch download no longer opened the tasks panel');
+    check('batch download still submits all checked images after using single-image buttons',spec.indices.join(',')==='1,2'&&!taskTitle.endsWith('图片 01'));
+    await ui("document.getElementById('resources-tab').click()");
+    await ui("document.querySelector('.image-grid').scrollIntoView({block:'center'})");await wait(150);
+    const shot=await collector.window.webContents.capturePage();
+    require('node:fs').writeFileSync(require('node:path').join(require('electron').app.getPath('userData'),'..','single-image-download.png'),shot.toPNG());
+  } finally { finishDownload?.('controlled-single-image'); collector.queue.add=add; }
   check('external videos are excluded from selectable resources and summarized once',collector.state.result.items.length===1&&collector.state.result.skippedExternal===1&&await ui("document.getElementById('skipped-external').textContent.includes('1') && !document.getElementById('open-source') && !document.getElementById('part-select')"));
   const receipt=collector.state.inspectionId;
   for (const url of ['https://www.youtube.com/watch?v=SmQd5BgLmd0','https://player.vimeo.com/video/123']) {

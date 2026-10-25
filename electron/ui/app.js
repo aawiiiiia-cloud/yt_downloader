@@ -62,6 +62,9 @@ function updateMediaInfo() {
   if ($('resource-size-note') && state.result.site === 'behance' && item.kind === 'images' && state.settings.imageFormat === 'original')
     $('resource-size-note').textContent += ' GIF 优先使用静帧预览，保存保留动画。';
   const button = $('download');
+  document.querySelectorAll('[data-download-image]').forEach(button => {
+    button.disabled = pendingDownloads.has(state.inspectionId);
+  });
   if (button) {
     button.disabled = pendingDownloads.has(state.inspectionId);
     button.textContent = button.disabled ? '正在处理…' : state.result.site === 'youtube' && state.youtubeAuth !== 'verified' ?
@@ -145,7 +148,7 @@ function renderResources() {
   }
   if (item.parts?.length > 1) html += `<label class="muted">选择分P<select id="bili-part" class="part-select">${item.parts.map(p => `<option value="${p.index}" ${p.index === item.currentPart ? 'selected' : ''}>P${p.index} · ${escape(p.title)}</option>`).join('')}</select></label>`;
   if (item.kind === 'images') {
-    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<label class="image-card"><input type="checkbox" data-image="${image.index}" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}<span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '原图优先'}</span></span><span class="image-size" data-image-size>正在查询原图大小…</span></label>`).join('')}</div>`;
+    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<div class="image-card"><label class="image-select"><input type="checkbox" data-image="${image.index}" aria-label="选择第 ${image.index} 张图片" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}<span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '尺寸未知'}</span></span><span class="image-size" data-image-size>正在查询原图大小…</span></label><button type="button" class="image-download" data-download-image="${image.index}" aria-label="下载第 ${image.index} 张图片">下载 ↓</button></div>`).join('')}</div>`;
   } else {
     html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
@@ -263,9 +266,11 @@ $('resources').addEventListener('click', async event => {
   if(event.target.id==='inspect-external')return call('inspect-external',{inspectionId:state.inspectionId});
   if (event.target.dataset.retryPreview) { event.preventDefault(); loadPreview(event.target.closest('[data-preview]'), true); }
   if (event.target.id === 'select-all') { const inputs = [...document.querySelectorAll('[data-image]')], all = inputs.every(i => i.checked); inputs.forEach(i => { i.checked = !all; }); }
-  if (event.target.id === 'download') {
+  const imageButton = event.target.closest('[data-download-image]');
+  if (event.target.id === 'download' || imageButton) {
+    event.preventDefault();
     const args = { inspectionId: state.inspectionId, itemIndex: selectedItem,
-      indices: [...document.querySelectorAll('[data-image]:checked')].map(i => Number(i.dataset.image)),
+      indices: imageButton ? [Number(imageButton.dataset.downloadImage)] : [...document.querySelectorAll('[data-image]:checked')].map(i => Number(i.dataset.image)),
       formatId: $('format-select')?.value || '', audioOnly: $('audio-only')?.checked, subtitles: $('subtitles')?.checked };
     if (pendingDownloads.has(args.inspectionId)) return;
     pendingDownloads.add(args.inspectionId); updateMediaInfo();
@@ -278,7 +283,10 @@ $('resources').addEventListener('click', async event => {
         await window.collector.call('login', { site: 'youtube' });
         id = await window.collector.call('download', args);
       }
-      if (id && state.inspectionId === args.inspectionId) { notify(''); showPanel('tasks'); }
+      if (id && state.inspectionId === args.inspectionId) {
+        if (imageButton) notify(`第 ${args.indices[0]} 张图片已加入下载队列。`);
+        else { notify(''); showPanel('tasks'); }
+      }
     } catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
     finally { pendingDownloads.delete(args.inspectionId); updateMediaInfo(); }
   }

@@ -125,6 +125,7 @@ async function run(collector, profile, snapshotScript) {
     check('image order preserved', collector.state.result.items[0].images.map(i => i.index).join(',') === '1,2');
     await wait(150);
     check('resources reach the rendered right panel', await collector.window.webContents.executeJavaScript('document.querySelectorAll("[data-image]").length === 2'));
+    check('XHS images also offer a separate download button for each image', await collector.window.webContents.executeJavaScript('document.querySelectorAll("[data-download-image]").length === 2'));
     await until(() => collector.window.webContents.executeJavaScript('[...document.querySelectorAll("[data-image-size]")].some(row => row.textContent.includes("0.34 MB"))'), 'original image sizes were not displayed');
     check('image size comes from the original rather than the smaller preview', true);
     const domReady = new Promise(resolve => collector.browser.webContents.once('dom-ready', resolve));

@@ -627,7 +627,8 @@ class CollectorApp {
       indices, formatId, formatHasAudio: !!item.formats?.find(format => format.id === formatId)?.audio,
       settings: { ...this.settings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } };
     if(external)this.externalTasks.set(spec,{...external.entry,tabId:tab.id,sourceUrl:snapshot.url});
-    return this.queue.add(spec,item.title);
+    const title = item.kind === 'images' && indices.length === 1 ? `${item.title} · 图片 ${String(indices[0]).padStart(2, '0')}` : item.title;
+    return this.queue.add(spec,title);
   }
   async importCookies(file, site) {
     const info = fs.statSync(file);
