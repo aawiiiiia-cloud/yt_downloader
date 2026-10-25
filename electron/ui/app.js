@@ -159,13 +159,25 @@ function render(next) {
   $('site-label').textContent = names[state.site] || '通用浏览';
   $('parse').textContent = state.parsing ? '停止解析' : '解析当前页面';
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
-  const youtubeLabels = { signed_out: '未登录，下载前请通过 Edge 登录', unverified: '登录待验证', checking: '正在验证登录…', verified: '已登录并验证', expired: '登录已失效，请通过 Edge 更新' };
-  $('login-state').textContent = selectedSite === 'youtube' ? `YouTube · ${youtubeLabels[state.youtubeAuth] || '登录待验证'}` : state.login[selectedSite] ? `${names[selectedSite]} · 已检测到登录凭据` : `${names[selectedSite]} · 尚未检测到登录凭据`;
+  const youtubeLabels = { signed_out: '未登录（建议登录）', unverified: '登录待验证', checking: '正在验证登录…', verified: '已登录并验证', expired: '登录已失效（建议登录）' };
+  const youtubeHelp = {
+    signed_out: '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。',
+    expired: 'YouTube 登录已失效，请通过 Edge 登录或导入近期 Cookies。',
+    unverified: '已检测到登录凭据，下载前会向 YouTube 确认是否仍然有效。',
+    checking: '正在向 YouTube 确认登录状态。',
+    verified: 'YouTube 登录已通过验证，下载前仍会检查凭据。',
+  };
+  const youtubeAuth = state.youtubeAuth || (state.login.youtube ? 'unverified' : 'signed_out');
+  const needsLogin = selectedSite === 'youtube' ? ['signed_out', 'expired'].includes(youtubeAuth) : !state.login[selectedSite];
+  $('login-state').textContent = `${names[selectedSite]} · ${selectedSite === 'youtube' ? youtubeLabels[youtubeAuth] || '登录待验证' : needsLogin ? '未登录（建议登录）' : '已检测到登录凭据'}`;
+  $('login-state').classList.toggle('login-warning', needsLogin);
+  $('login-state').title = selectedSite === 'youtube' ? youtubeHelp[youtubeAuth] || youtubeHelp.unverified : (needsLogin ? '尚未检测到本站登录凭据，建议通过 Edge 登录或导入近期 Cookies。' : '已检测到登录凭据，是否仍然有效会在访问网站、解析或下载时由网站判断。');
   const loginBusy = !!state.loginRunning || !!state.importingCookies;
-  $('web-login').hidden = selectedSite === 'youtube';
-  document.querySelector('.login-tools').classList.toggle('youtube', selectedSite === 'youtube');
+  const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
+  $('web-login').hidden = externalLoginOnly;
+  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly);
   $('web-login').disabled = loginBusy;
-  document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入请选择本站点的 Netscape 格式 Cookies 文件（.txt）。';
+  document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : externalLoginOnly ? '通过 Edge 登录。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入请选择本站点的 Netscape 格式 Cookies 文件（.txt）。';
   $('edge-login').disabled = loginBusy; $('cancel-login').hidden = !state.loginRunning;
   $('import-login').disabled = loginBusy;
   $('import-login').textContent = state.importingCookies ? '正在导入…' : '导入Cookies';
@@ -221,7 +233,7 @@ $('import-login').addEventListener('click', async () => {
   if (count) notify(`${names[site]} Cookies 已导入（${count} 条），可重新解析当前页面。`);
 });
 $('cancel-login').addEventListener('click', () => call('cancel-login'));
-$('web-login').addEventListener('click', () => selectedSite === 'youtube' ? call('login', { site: 'youtube' }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : selectedSite === 'vimeo' ? 'https://vimeo.com/log_in' : homes[selectedSite] }));
+$('web-login').addEventListener('click', () => ['youtube', 'vimeo'].includes(selectedSite) ? call('login', { site: selectedSite }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : homes[selectedSite] }));
 $('required-login').addEventListener('click', () => call('login', { site: 'youtube' }));
 $('resources').addEventListener('change', event => {
   if (event.target.id === 'part-select') { saveDraft(); selectedItem = Number(event.target.value); renderResources(); }

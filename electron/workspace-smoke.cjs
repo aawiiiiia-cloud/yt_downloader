@@ -11,7 +11,10 @@ async function run(collector, check, until, wait, profile) {
     await until(() => collector.tabs.active.group === name, 'group did not switch');
   };
   await site('youtube');
-  check('YouTube exposes only Edge login and cookie import', await ui("document.getElementById('web-login').hidden && [...document.querySelectorAll('.login-tools button')].filter(b=>!b.hidden).map(b=>b.id).join(',')==='edge-login,import-login'"));
+  const externalActions = "document.getElementById('web-login').hidden && [...document.querySelectorAll('.login-tools button')].filter(b=>!b.hidden).map(b=>b.id).join(',')==='edge-login,import-login' && document.getElementById('login-state').parentElement===document.querySelector('.login-heading')";
+  const youtubeActions = await ui(externalActions);
+  await site('vimeo');
+  check('YouTube and Vimeo expose only Edge login and cookie import beside a login heading with status', youtubeActions && await ui(externalActions));
   await site('bilibili');
   check('other supported sites keep all three login actions', await ui("[...document.querySelectorAll('.login-tools button')].filter(b=>!b.hidden).length===3"));
   await site('xiaohongshu');
