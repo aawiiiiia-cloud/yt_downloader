@@ -55,6 +55,7 @@ async function run(collector, profile, snapshotScript) {
       }
       if (resource.hostname === 'www.youtube.com' && resource.pathname === '/') return new Response(`<script>ytcfg.set({"LOGGED_IN":${youtubeLoggedIn}})</script>`, {headers:{'content-type':'text/html'}});
       if (resource.hostname === 'www.behance.net') return new Response(`<html><head><title>受控 Behance 作品</title></head><body><script id="beconfig-store_state" type="application/json">${JSON.stringify({project:{project:require('./fixtures/behance.json')}})}</script></body></html>`, {headers:{'content-type':'text/html; charset=utf-8'}});
+      if (resource.hostname === 'player.vimeo.com') return new Response(`<html><body><script>var playerConfig=${JSON.stringify({video:{id:123456,title:'受控外部视频',duration:6,thumbs:{240:'https://i.vimeocdn.com/video/external.png'}},request:{files:{progressive:[{quality:'240p',width:426,height:240,url:'https://vod-test.vimeocdn.com/external.mp4?token=privateVimeoStream'}]}}})}</script></body></html>`,{headers:{'content-type':'text/html; charset=utf-8'}});
       if (new URL(request.url).pathname === '/collector-slow-resource') return new Response(new ReadableStream({
         start(controller) { pendingStreams.push(controller); },
       }), { headers: { 'content-type': 'image/png' } });

@@ -32,8 +32,9 @@ async function run(collector, check, until, wait) {
   check('skipping external players preserves the Behance receipt and image selection',collector.state.inspectionId===receipt&&await ui("!document.querySelector('[data-image=\"1\"]').checked && document.querySelector('[data-image=\"2\"]').checked"));
   await tab.view.webContents.mainFrame.executeJavaScript("(() => { const node=document.getElementById('beconfig-store_state');const data=JSON.parse(node.textContent);data.project.project.modules=data.project.project.modules.filter(module=>module.__typename==='EmbedModule');node.textContent=JSON.stringify(data); })()");
   await collector.inspect();
-  await until(()=>ui("document.querySelector('#resources .empty')?.textContent.includes('已跳过 1')"),'external-only summary did not render');
+  await until(()=>ui("document.querySelector('#skipped-external')?.textContent.includes('已跳过 1')"),'external-only summary did not render');
   check('an external-only work displays a skip summary without a download action or parse error',!collector.state.error&&collector.state.result.items.length===0&&await ui("!document.getElementById('download')"));
+  await require('./external-media-smoke.cjs').run(collector,check,until,wait);
   collector.activateTab(source.id);
 }
 module.exports={run};

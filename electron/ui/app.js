@@ -127,17 +127,18 @@ function renderResources() {
   previewObserver?.disconnect();
   const items = state.result?.items || [], item = items[selectedItem];
   const skipped = state.result?.site === 'behance' ? state.result.skippedExternal || 0 : 0;
+  const externalTools=state.result?.site==='behance'&&(skipped||state.result.externalParsed)?
+    `<div class="section-row" id="external-controls"><span class="muted" id="skipped-external">${state.result.externalParsed?`已识别 ${state.result.externalCount} 个外部视频。${skipped?`另有 ${skipped} 个外部视频未解析。`:''}`:`已跳过 ${skipped} 个外部托管视频。`}</span><button id="inspect-external" class="text-button" ${state.parsing||!state.resultMatchesPage?'disabled':''}>${state.parsing?'正在解析…':state.result.externalParsed?'重新解析外部视频':'解析外部视频'}</button></div>`:'';
   if (!item) {
     if (skipped) {
-      $('resources').innerHTML = `<div class="empty"><strong>当前作品没有本站可下载素材</strong><p>已跳过 ${skipped} 个外部托管视频。</p></div>`;
+      $('resources').innerHTML = externalTools+`<div class="empty"><strong>当前作品没有本站可下载素材</strong><p>可手动解析 YouTube、Vimeo 托管的视频。</p></div>`;
       return;
     }
     $('resources').innerHTML = `<div class="empty"><div class="empty-icon">${state.parsing ? '◌' : '▧'}</div><strong>${state.parsing ? '正在识别当前内容…' : '等待值得收藏的内容'}</strong><p>${state.parsing ? '正在获取资源与实际可用画质，<br>你可以继续浏览或查看下载任务。' : '在左侧打开视频或笔记详情页，<br>或点击「解析当前页面」。'}</p></div>`;
     return;
   }
   const parts = items.length > 1 ? `<select id="part-select" class="part-select" aria-label="资源条目">${items.map((row, index) => `<option value="${index}" ${index === selectedItem ? 'selected' : ''}>${index + 1}. ${row.kind === 'images' ? '图片集 · ' : ''}${escape(row.title)}${row.provider ? ' · ' + escape(row.provider) : ''}</option>`).join('')}</select>` : '';
-  let html = parts + `<h2 class="content-title">${escape(item.title)}</h2><div class="author">${escape(item.author)}</div>`;
-  if (skipped) html += `<p class="muted" id="skipped-external">已跳过 ${skipped} 个外部托管视频。</p>`;
+  let html = externalTools+parts + `<h2 class="content-title">${escape(item.title)}</h2><div class="author">${item.externalId?escape(item.provider)+' · 外部托管 · ':''}${escape(item.author)}</div>`;
   if (['external', 'unavailable'].includes(item.kind)) {
     $('resources').innerHTML = html + `<p class="muted">${escape(item.kind === 'external' ? '外部平台托管的视频默认不下载。' : item.message)}</p>`;
     return;
@@ -259,6 +260,7 @@ $('resources').addEventListener('change', event => {
   updateMediaInfo();
 });
 $('resources').addEventListener('click', async event => {
+  if(event.target.id==='inspect-external')return call('inspect-external',{inspectionId:state.inspectionId});
   if (event.target.dataset.retryPreview) { event.preventDefault(); loadPreview(event.target.closest('[data-preview]'), true); }
   if (event.target.id === 'select-all') { const inputs = [...document.querySelectorAll('[data-image]')], all = inputs.every(i => i.checked); inputs.forEach(i => { i.checked = !all; }); }
   if (event.target.id === 'download') {

@@ -60,21 +60,40 @@ async function run(collector, profile) {
           }
           if (site === 'bilibili') console.log('LIVE: player data', await collector.readPage('({video:!!window.__INITIAL_STATE__?.videoData,play:!!window.__playinfo__})'));
           await collector.inspect();
+          const externalCheck=site==='behance'&&process.env.YT_COLLECTOR_TEST_EXTERNAL==='1';
+          if(externalCheck)await collector.inspectExternal({inspectionId:collector.state.inspectionId});
+          if(externalCheck){
+            result.externalDiagnostics=collector.state.result?.items.filter(item=>item.externalId).map(item=>({kind:item.kind,provider:item.provider,title:item.title}));
+            result.externalLogs=collector.state.logs.slice(-12);
+            result.externalFrames=collector.browser.webContents.mainFrame.framesInSubtree.map(frame=>{
+              try{const url=new URL(frame.url);return url.hostname==='player.vimeo.com'?url.origin+url.pathname:null;}catch{return null;}
+            }).filter(Boolean);
+            result.externalFrameStates=await Promise.all(collector.browser.webContents.mainFrame.framesInSubtree.filter(frame=>frame.url.startsWith('https://player.vimeo.com/')).map(async frame=>{
+              try{return await Promise.race([frame.executeJavaScript(`({title:document.title,text:document.body.innerText.slice(0,220),configType:typeof config,playerConfigType:typeof playerConfig})`),wait(2500).then(()=>({timeout:true}))]);}catch{return {unavailable:true};}
+            }));
+          }
+          const itemIndex=externalCheck?collector.state.result?.items.findIndex(item=>item.provider==='Vimeo'&&item.kind==='video'):0;
+          if(externalCheck&&!(itemIndex>=0))throw new Error('本轮未有外部 Vimeo 播放器稳定返回画质');
+          if(externalCheck){
+            result.externalReady=collector.state.result.items.filter(item=>item.externalId&&item.kind==='video').length;
+            result.externalUnavailable=collector.state.result.items.filter(item=>item.externalId&&item.kind==='unavailable').length;
+            await collector.window.webContents.mainFrame.executeJavaScript(`document.getElementById('part-select').value='${itemIndex}';document.getElementById('part-select').dispatchEvent(new Event('change',{bubbles:true}))`);
+          }
           result.parsed = !!collector.state.result?.items?.length;
           result.items = collector.state.result?.items?.length || 0;
-          result.formats = collector.state.result?.items?.[0]?.formats?.length || 0;
-          result.kind = collector.state.result?.items?.[0]?.kind;
-          result.contentTitle = collector.state.result?.items?.[0]?.title;
-          result.images = collector.state.result?.items?.[0]?.images?.length || 0;
-          result.duration = collector.state.result?.items?.[0]?.duration;
+          result.formats = collector.state.result?.items?.[itemIndex]?.formats?.length || 0;
+          result.kind = collector.state.result?.items?.[itemIndex]?.kind;
+          result.contentTitle = collector.state.result?.items?.[itemIndex]?.title;
+          result.images = collector.state.result?.items?.[itemIndex]?.images?.length || 0;
+          result.duration = collector.state.result?.items?.[itemIndex]?.duration;
           if (site === 'behance') result.resourceSummary = collector.state.result?.items?.map(item => ({kind:item.kind, images:item.images?.length, formats:item.formats?.length, duration:item.duration, provider:item.provider}));
           if (site === 'behance') result.skippedExternal = collector.state.result?.skippedExternal || 0;
           visited.push({ tab: collector.tabs.active, receipt: collector.state.inspectionId, url: collector.state.url });
           if (collector.state.error) result.error = collector.state.error;
           if (!result.parsed && !result.error) result.error = '解析期间页面发生变化，请在当前内容加载稳定后重试';
           if (process.env.YT_COLLECTOR_TEST_PREVIEW === '1' && result.parsed) {
-            const item = collector.state.result.items[0];
-            const args = { inspectionId: collector.state.inspectionId, itemIndex: 0, imageIndex: item.images?.[0]?.index };
+            const item = collector.state.result.items[itemIndex];
+            const args = { inspectionId: collector.state.inspectionId, itemIndex, imageIndex: item.images?.[0]?.index };
             const preview = await collector.asset(args, 'preview');
             result.previewLoaded = preview.dataUrl.startsWith('data:image/');
             if (item.kind === 'images') result.originalSize = (await collector.asset(args, 'size')).size;
@@ -104,7 +123,7 @@ async function run(collector, profile) {
             } catch (error) { result.screenshotNote = error.message || String(error); }
           }
           if (process.env.YT_COLLECTOR_TEST_DOWNLOAD === '1' && result.parsed) {
-            const item = collector.state.result.items[0];
+            const item = collector.state.result.items[itemIndex];
             const formats = (item.formats || []).filter(f => f.video && f.height && f.height <= maxHeight).sort((a,b) => a.height-b.height);
             const format = formats.find(f => f.audio) || formats[0];
             if (item.kind !== 'images' && !format) throw new Error(`没有 ${maxHeight}p 或以下的小样本画质，不执行下载`);
@@ -112,7 +131,7 @@ async function run(collector, profile) {
             if (expectedSize > 64000000) throw new Error('该验收画质预计超过 64 MB，不执行样本下载');
             const indices = item.kind === 'images' ? (process.env.YT_COLLECTOR_TEST_ALL_IMAGES === '1' ? item.images.map(image => image.index) : [item.images[0].index]) : [];
             collector.settings.saveDir = path.join(profile, 'downloads', site);
-            const id = await collector.download({ inspectionId: collector.state.inspectionId, itemIndex: 0,
+            const id = await collector.download({ inspectionId: collector.state.inspectionId, itemIndex,
               formatId: format?.id, indices });
             const task = collector.queue.tasks.find(t => t.id === id);
             const deadline = Date.now() + 180000;

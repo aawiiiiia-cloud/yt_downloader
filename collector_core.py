@@ -361,6 +361,9 @@ class Collector:
         from xhs_image_downloader import XhsVideoPost
         url = checked_url(self.request["url"])
         self.check_cancel()
+        if site_for_url(self.request.get('referrer') or '') == 'behance' and site_for_url(url) != 'behance':
+            from external_media import validate_external
+            validate_external(url, self.request['referrer'], self.request.get('context'))
         if site_for_url(url) == 'behance':
             from behance_adapter import inspect_project
             return inspect_project(self, url)
@@ -378,6 +381,12 @@ class Collector:
         options.update(retries=2, socket_timeout=20)
         with yt_dlp.YoutubeDL(options) as ydl:
             self.configure_extractors(ydl, url)
+            if site_for_url(url) == 'vimeo':
+                from external_media import browser_vimeo
+                loaded = browser_vimeo(url, self.request.get('context'), ydl, self.check_cancel)
+                if loaded:
+                    loaded = ydl.process_ie_result(loaded, download=False)
+                    return {'site': 'vimeo', 'url': url, 'items': [normalise_video(loaded, url)]}
             if site_for_url(url) == "bilibili":
                 loaded = browser_bilibili(url, self.request.get("context"), ydl)
                 if loaded:
@@ -414,6 +423,9 @@ class Collector:
         from xhs_image_downloader import XhsVideoPost
         url = checked_url(self.request["url"])
         settings = self.request.get("settings") or {}
+        if site_for_url(self.request.get('referrer') or '') == 'behance' and site_for_url(url) != 'behance':
+            from external_media import validate_external
+            validate_external(url, self.request['referrer'], self.request.get('context'))
         if site_for_url(url) == 'youtube':
             jar = http.cookiejar.MozillaCookieJar()
             try:
@@ -457,6 +469,9 @@ class Collector:
             self.configure_extractors(ydl, url)
             loaded = browser_bilibili(url, self.request.get("context"), ydl) if site_for_url(url) == 'bilibili' else (
                 browser_douyin(url, self.request.get('context'), ydl) if site_for_url(url) == 'douyin' else None)
+            if site_for_url(url) == 'vimeo':
+                from external_media import browser_vimeo
+                loaded = browser_vimeo(url, self.request.get('context'), ydl, self.check_cancel)
             if loaded:
                 ydl.process_ie_result(loaded, download=True)
                 result = 0

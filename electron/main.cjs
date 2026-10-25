@@ -15,6 +15,7 @@ const { resolveDouyinContext } = require('./douyin-context.cjs');
 const { YouTubeProvider } = require('./youtube-provider.cjs');
 const { LoginState } = require('./login-state.cjs');
 const { snapshotScript: behanceSnapshotScript } = require('./behance-page.cjs');
+const { externalEntries, collectVimeo } = require('./external-media.cjs');
 const { classifyFailure, safeDetail } = require('./task-failure.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
@@ -78,6 +79,7 @@ class CollectorApp {
     this.handles = new Set(); this.cache = new Map(); this.closing = false;
     this.youtubeProvider = new YouTubeProvider({ track: handle => this.track(handle) });
     this.runTask = pythonTask;
+    this.externalTasks = new WeakMap();
     this.youtubeAuth = new YouTubeAuth(() => this.browserSession.cookies.get({}), () => this.verifyYouTube(), () => this.publish());
     this.queue = new DownloadQueue((spec, onEvent) => this.withCookies(spec, onEvent), () => this.publish());
     const history = readJson(path.join(profile, 'history.json'), []);
@@ -381,7 +383,7 @@ class CollectorApp {
     const handle = { cancel() { cancelled = true; controller.abort(); task?.cancel(); }, promise: null };
     handle.promise = (async () => {
       const site = siteForUrl(spec.url), snapshot = {}, logs = [];
-      if (spec.command === 'download' && siteForUrl(spec.referrer) === 'behance' && site !== 'behance')
+      if (siteForUrl(spec.referrer) === 'behance' && site !== 'behance' && !this.externalTasks.has(spec))
         throw new Error('外部平台托管的视频默认不下载');
       const youtubeVerified = spec.command === 'download' && siteForUrl(spec.url) === 'youtube';
       if (youtubeVerified) await this.ensureYouTube();
@@ -392,11 +394,20 @@ class CollectorApp {
           siteForUrl(spec.url) === 'youtube' ? this.youtubeProvider.ensure(onEvent, controller.signal) : undefined,
         ]);
         if (cancelled) { const error = new Error('操作已取消'); error.cancelled = true; throw error; }
-        task = this.track(this.runTask({ ...spec, ...(siteForUrl(spec.url) === 'youtube' ? { providerUrl } : {}), youtubeVerified, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, (type, data) => {
-          if (type === 'log') { logs.push(safeDetail(data)); if (logs.length > 35) logs.shift(); }
-          onEvent?.(type, data);
-        }));
-        return await task.promise;
+        for (let attempt=0;attempt<2;attempt++) {
+          const context=spec.command==='download'&&site==='vimeo'&&this.externalTasks.has(spec) ?
+            await this.externalDownloadContext(spec,controller.signal,attempt>0) : spec.context;
+          if(cancelled)throw Object.assign(new Error('操作已取消'),{cancelled:true});
+          task = this.track(this.runTask({ ...spec, context, ...(siteForUrl(spec.url) === 'youtube' ? { providerUrl } : {}), youtubeVerified, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, (type, data) => {
+            if (type === 'log') { logs.push(safeDetail(data)); if (logs.length > 35) logs.shift(); }
+            onEvent?.(type, data);
+          }));
+          try {return await task.promise;} catch(error) {
+            if(attempt || cancelled || spec.command!=='download' || site!=='vimeo' || !this.externalTasks.has(spec) || !spec.context?.vimeo ||
+                ![401,403].includes(error.failure?.httpStatus || error.httpStatus) && !/HTTP (?:Error )?(?:401|403)/i.test(error.message+' '+(error.failure?.detail||''))) throw error;
+            onEvent?.('log','视频地址暂不可用，正在从原播放器重新获取一次…');
+          }
+        }
       } catch (error) {
         if (!cancelled && !error.cancelled && spec.command === 'download') {
           const failure = classifyFailure(error, logs, { hadCredentials: !!snapshot.key });
@@ -467,6 +478,77 @@ class CollectorApp {
       if (ticket === tab.sequence && !error.cancelled) state.error = error.message.replace(/\u001b\[[0-9;]*m/g, '');
     } finally { if (ticket === tab.sequence && !tab.closed) { state.parsing = false; this.publish(); } }
   }
+  async inspectExternal(data) {
+    const tab=this.tabs.active, record=this.cache.get(data.inspectionId);
+    if(!record || data.inspectionId!==tab.state.inspectionId || record.result.site!=='behance' || !this.resultMatchesPage(tab))
+      throw new Error('请回到原作品页面后，再手动解析外部视频');
+    if(tab.state.parsing)throw new Error('正在解析，请稍候或取消当前解析');
+    const context=record.context || await this.readPage(behanceSnapshotScript,tab);
+    if(tab.closed || data.inspectionId!==tab.state.inspectionId || !this.resultMatchesPage(tab))throw new Error('页面已切换，请重新解析');
+    const entries=externalEntries(context).slice(0,24);
+    if(!entries.length)throw new Error('此作品的外部视频暂不支持，目前支持 YouTube 和 Vimeo');
+    this.invalidate(tab,{preserveResult:true});const ticket=++tab.sequence, controller=new AbortController(),running=new Set();
+    const current=()=>ticket===tab.sequence&&!tab.closed&&!this.closing&&!controller.signal.aborted;
+    const handle={cancel(){controller.abort();for(const task of running)task.cancel();},promise:null};
+    tab.parseTask=handle;tab.state.parsing=true;tab.state.error='';this.publish();
+    handle.promise=(async()=>{
+      try {
+        this.log('正在读取左侧外部播放器；首次加载可能需要完成网页验证…',tab);
+        const configs=await collectVimeo(tab.view.webContents,record.url,entries,{signal:controller.signal,retryUnready:true,
+          onProgress:(ready,total,present)=>{if(current())this.log(`已读取 ${ready}/${total} 个 Vimeo 播放器${!present?'；页面尚在加载视频模块':'，正在等待其他视频就绪'}…`,tab);}});
+        const outputs=new Array(entries.length), external=new Map();let next=0;
+        const work=async()=>{
+          while(next<entries.length&&current()){
+            const index=next++,entry=entries[index],provider=entry.provider==='youtube'?'YouTube':'Vimeo';
+            const mediaContext={...context,externalSource:{key:entry.key},...(configs.has(entry.key)?{vimeo:configs.get(entry.key)}:{})};
+            try {
+              if(entry.provider==='youtube')await this.ensureYouTube();
+              if(!current())return;
+              const spec={command:'inspect',url:entry.url,referrer:record.url,context:mediaContext,settings:{...this.settings}};
+              this.externalTasks.set(spec,{...entry,tabId:tab.id,sourceUrl:record.url});
+              const task=this.withCookies(spec,(type,text)=>{if(current()&&type==='log')this.log(text,tab);});
+              running.add(task);let parsed;
+              try{parsed=await task.promise;}finally{running.delete(task);}
+              if(!current())return;
+              const item=parsed.items?.find(row=>row.kind==='video'&&row.formats?.length);
+              if(!item || contentKey(item.url)!==contentKey(entry.url))throw new Error('尚未取得可下载画质');
+              outputs[index]={...item,externalId:entry.key,provider};
+              external.set(entry.key,{entry,context:mediaContext});
+            }catch(error){
+              if(!current()||error.cancelled)return;
+              outputs[index]={kind:'unavailable',url:entry.url,externalId:entry.key,provider,title:`未就绪 · 外部视频 ${index+1}`,author:'',
+                message:entry.provider==='youtube'?(error.code==='YOUTUBE_AUTH_REQUIRED'||this.youtubeAuth.status!=='verified'?
+                '请先在 YouTube 分组通过 Edge 登录或导入 Cookies，再重新解析外部视频。':'此 YouTube 视频暂未取得画质，请检查网络或访问权限后重新解析外部视频。'):
+                '播放器尚未就绪或未返回画质。请在左侧滚动到该视频，完成必要的验证或点击播放后，再重新解析外部视频。'};
+              this.log(`${provider} 外部视频暂未就绪：${safeDetail(error.message)}`,tab);
+            }
+          }
+        };
+        await Promise.all(Array.from({length:Math.min(3,entries.length)},work));
+        if(!current())return;
+        record.context=context;record.external=external;
+        const base=record.result.items.filter(item=>!item.externalId);
+        record.result={...record.result,items:[...base,...outputs.filter(Boolean)],externalParsed:true,externalCount:entries.length,
+          skippedExternal:record.result.externalParsed?record.result.skippedExternal:Math.max(0,(record.result.skippedExternal||0)-entries.length)};
+        tab.state.result=record.result;
+        this.log(`外部视频解析完成：${external.size}/${entries.length} 个已取得画质；下载时请单独选择。`,tab);
+      }catch(error){if(current()&&!error.cancelled)tab.state.error=error.message;}
+      finally{if(current()){tab.state.parsing=false;this.publish();}}
+    })();
+    return this.track(handle).promise;
+  }
+  async externalDownloadContext(spec,signal,force=false) {
+    const source=this.externalTasks.get(spec), context=spec.context;
+    if(!source || !context?.vimeo)return context;
+    if(!force&&Date.now()-context.vimeo.capturedAt<180000)return context;
+    const tab=this.tabs.rows.find(row=>row.id===source.tabId&&!row.closed);
+    if(!tab?.view || contentKey(tab.view.webContents.getURL())!==contentKey(source.sourceUrl))
+      throw new Error('外部视频地址已过期，请回到原作品页面重新解析外部视频');
+    const configs=await collectVimeo(tab.view.webContents,source.sourceUrl,[source],{signal,timeout:15000,refresh:true});
+    const vimeo=configs.get(source.key);
+    if(!vimeo)throw new Error('播放器暂未返回新的媒体地址，请稍后重新解析外部视频');
+    spec.context={...context,vimeo};return spec.context;
+  }
   async fetchDouyinContext(url, signal) {
     const id = contentKey(url)?.match(/^douyin:(\d+)$/)?.[1];
     if (!id) return null;
@@ -512,7 +594,7 @@ class CollectorApp {
   asset(data, mode) {
     const record = this.cache.get(data.inspectionId);
     if (!record || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析');
-    const item = record.result.items[Number(data.itemIndex)], site = record.result.site === 'behance' ? 'behance' : siteForUrl(item?.url);
+    const item = record.result.items[Number(data.itemIndex)], site = record.result.site === 'behance' && !item?.externalId ? 'behance' : siteForUrl(item?.url);
     if (!item || !site) throw new Error('资源不存在');
     const image = item.images?.find(row => row.index === Number(data.imageIndex));
     if (item.kind === 'images' && !image) throw new Error('图片不存在');
@@ -530,7 +612,8 @@ class CollectorApp {
     if (!snapshot || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const item = snapshot.result.items[Number(data.itemIndex)];
     if (!item || !siteForUrl(item.url)) throw new Error('资源不存在，请重新解析');
-    if (snapshot.result.site === 'behance' && siteForUrl(item.url) !== 'behance') throw new Error('外部平台托管的视频默认不下载');
+    const external=snapshot.external?.get(item.externalId);
+    if (snapshot.result.site === 'behance' && siteForUrl(item.url) !== 'behance' && (!external || external.entry.url!==item.url)) throw new Error('外部平台托管的视频默认不下载');
     if (!['images', 'video'].includes(item.kind)) throw new Error('请先在视频来源站点打开并解析此视频');
     if (siteForUrl(item.url) === 'youtube') await this.ensureYouTube();
     if (tab.closed || this.tabs.active !== tab || data.inspectionId !== tab.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
@@ -539,10 +622,12 @@ class CollectorApp {
     const formatId = String(data.formatId || '');
     if (formatId && !item.formats?.some(format => format.id === formatId)) throw new Error('该画质已失效，请重新解析');
     if (this.queue.tasks.filter(t => ['queued', 'running', 'cancelling'].includes(t.status)).length >= 50) throw new Error('队列已满，请等待已有任务完成');
-    return this.queue.add({ command: 'download', url: item.url, kind: item.kind, context: snapshot.context,
+    const spec={ command: 'download', url: item.url, kind: item.kind, context: external?.context || snapshot.context,
       mediaId: item.mediaId, referrer: snapshot.result.site === 'behance' ? snapshot.url : undefined,
       indices, formatId, formatHasAudio: !!item.formats?.find(format => format.id === formatId)?.audio,
-      settings: { ...this.settings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } }, item.title);
+      settings: { ...this.settings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } };
+    if(external)this.externalTasks.set(spec,{...external.entry,tabId:tab.id,sourceUrl:snapshot.url});
+    return this.queue.add(spec,item.title);
   }
   async importCookies(file, site) {
     const info = fs.statSync(file);
@@ -611,7 +696,8 @@ class CollectorApp {
     if (method === 'forward') { if (this.browser.webContents.navigationHistory.canGoForward()) this.browser.webContents.navigationHistory.goForward(); return; }
     if (method === 'reload') { this.browser.webContents.reload(); return; }
     if (method === 'inspect') return this.inspect();
-    if (method === 'cancel-inspect') { this.invalidate(); this.publish(); return; }
+    if (method === 'inspect-external') return this.inspectExternal(data);
+    if (method === 'cancel-inspect') { this.invalidate(this.tabs.active,{preserveResult:true}); this.publish(); return; }
     if (method === 'download') return this.download(data);
     if (method === 'preview' || method === 'image-size') return this.asset(data, method === 'preview' ? 'preview' : 'size');
     if (method === 'cancel-task') return this.queue.cancel(String(data.id));
