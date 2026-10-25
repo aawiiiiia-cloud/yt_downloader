@@ -381,6 +381,8 @@ class CollectorApp {
     const handle = { cancel() { cancelled = true; controller.abort(); task?.cancel(); }, promise: null };
     handle.promise = (async () => {
       const site = siteForUrl(spec.url), snapshot = {}, logs = [];
+      if (spec.command === 'download' && siteForUrl(spec.referrer) === 'behance' && site !== 'behance')
+        throw new Error('外部平台托管的视频默认不下载');
       const youtubeVerified = spec.command === 'download' && siteForUrl(spec.url) === 'youtube';
       if (youtubeVerified) await this.ensureYouTube();
       const cookieFile = await this.cookieSnapshot(site, youtubeVerified, snapshot);
@@ -528,6 +530,7 @@ class CollectorApp {
     if (!snapshot || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
     const item = snapshot.result.items[Number(data.itemIndex)];
     if (!item || !siteForUrl(item.url)) throw new Error('资源不存在，请重新解析');
+    if (snapshot.result.site === 'behance' && siteForUrl(item.url) !== 'behance') throw new Error('外部平台托管的视频默认不下载');
     if (!['images', 'video'].includes(item.kind)) throw new Error('请先在视频来源站点打开并解析此视频');
     if (siteForUrl(item.url) === 'youtube') await this.ensureYouTube();
     if (tab.closed || this.tabs.active !== tab || data.inspectionId !== tab.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
@@ -610,13 +613,6 @@ class CollectorApp {
     if (method === 'inspect') return this.inspect();
     if (method === 'cancel-inspect') { this.invalidate(); this.publish(); return; }
     if (method === 'download') return this.download(data);
-    if (method === 'open-source') {
-      const record = this.cache.get(data.inspectionId);
-      const item = record?.result.items[Number(data.itemIndex)];
-      if (data.inspectionId !== this.state.inspectionId || item?.kind !== 'external' || !['youtube', 'vimeo'].includes(siteForUrl(item.url)))
-        throw new Error('资源已变化，请重新解析');
-      this.openTab(item.url, { reuse: true }); return;
-    }
     if (method === 'preview' || method === 'image-size') return this.asset(data, method === 'preview' ? 'preview' : 'size');
     if (method === 'cancel-task') return this.queue.cancel(String(data.id));
     if (method === 'retry-task') {

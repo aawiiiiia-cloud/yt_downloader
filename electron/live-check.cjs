@@ -68,6 +68,7 @@ async function run(collector, profile) {
           result.images = collector.state.result?.items?.[0]?.images?.length || 0;
           result.duration = collector.state.result?.items?.[0]?.duration;
           if (site === 'behance') result.resourceSummary = collector.state.result?.items?.map(item => ({kind:item.kind, images:item.images?.length, formats:item.formats?.length, duration:item.duration, provider:item.provider}));
+          if (site === 'behance') result.skippedExternal = collector.state.result?.skippedExternal || 0;
           visited.push({ tab: collector.tabs.active, receipt: collector.state.inspectionId, url: collector.state.url });
           if (collector.state.error) result.error = collector.state.error;
           if (!result.parsed && !result.error) result.error = '解析期间页面发生变化，请在当前内容加载稳定后重试';

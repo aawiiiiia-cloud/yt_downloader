@@ -9,7 +9,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse
 
 from xhs_image_downloader import XhsImage, XhsPost, XhsImageDownloader
 
@@ -36,26 +36,6 @@ def project_id(url):
     if not match:
         raise ValueError('请先打开 Behance 作品详情页，暂不批量解析主页或收藏夹')
     return match[1]
-
-
-def embed_url(value):
-    """Only known video providers become navigable resources, never arbitrary iframe URLs."""
-    parsed = urlparse(str(value))
-    if parsed.scheme not in {'https', 'http'} or parsed.username or parsed.password or parsed.port not in {None, 80, 443}:
-        return None
-    host = (parsed.hostname or '').lower()
-    if host in {'www.youtube.com', 'youtube.com', 'www.youtube-nocookie.com', 'youtube-nocookie.com', 'youtu.be'}:
-        identifier = parsed.path.strip('/') if host == 'youtu.be' else (
-            parse_qs(parsed.query).get('v', [''])[0] or re.search(r'^/(?:embed|shorts)/([\w-]+)', parsed.path))
-        if isinstance(identifier, re.Match):
-            identifier = identifier[1]
-        if re.fullmatch(r'[\w-]{11}', identifier or ''):
-            return 'https://www.youtube.com/watch?v=' + identifier
-    if host in {'player.vimeo.com', 'vimeo.com', 'www.vimeo.com'}:
-        if match := re.fullmatch(r'/(?:video/)?(\d+)(?:/([\da-f]+))?/?', parsed.path, re.I):
-            access = match[2] or parse_qs(parsed.query).get('h', [''])[0]
-            return f'https://player.vimeo.com/video/{match[1]}' + ('?' + urlencode({'h': access}) if access else '')
-    return None
 
 
 class BehanceImages(XhsImageDownloader):
@@ -85,7 +65,8 @@ class BehanceProject:
         self.player_metadata = {}
         options = {'timeout': 20, 'retries': 1, 'sleep-429': 0, 'proxy-env': False,
                    'proxy': str((collector.request.get('settings') or {}).get('proxy') or ''),
-                   'cookies': None, 'write-pages': False}
+                   'cookies': None, 'write-pages': False,
+                   'modules': ['image', 'video', 'mediacollection']}
 
         class Extractor(BehanceGalleryExtractor):
             def config(self, key, default=None):
@@ -155,7 +136,21 @@ class BehanceProject:
         # Browser JSON orders allAvailable before named size objects. gallery-dl
         # 1.32.17 iterates collection sizes as objects; normalize that ordering
         # while retaining the actual variants for previews and fallback downloads.
+        modules = []
+        self.skipped_external = 0
         for module in data.get('modules') or []:
+            if module.get('__typename') == 'EmbedModule':
+                self.skipped_external += 1
+                continue
+            if module.get('__typename') == 'VideoModule':
+                iframe = re.search(r'\bsrc=["\']([^"\']+)', str(module.get('embed') or ''))
+                if iframe:
+                    try:
+                        trusted_url(html.unescape(iframe[1]))
+                    except ValueError:
+                        self.skipped_external += 1
+                        continue
+            modules.append(module)
             if module.get('__typename') == 'MediaCollectionModule':
                 for component in module.get('components') or []:
                     sizes = component.get('imageSizes') or {}
@@ -164,6 +159,7 @@ class BehanceProject:
                     if not named:
                         named = {f'available{index}': value for index, value in enumerate(variants) if isinstance(value, dict) and value.get('url')}
                     component['imageSizes'] = {**named, **({'allAvailable': variants} if named and variants else {})}
+        data['modules'] = modules
         try:
             rows = self.extractor.get_images(data)
         except self.extractor.exc.AuthorizationError as exc:
@@ -174,7 +170,18 @@ class BehanceProject:
         self.collector.check_cancel()
         if len(rows) > 500:
             raise ValueError('作品包含过多素材，请使用较小的作品页')
-        self.data, self.rows = data, rows
+        self.rows = []
+        for value, module in rows:
+            if module.get('__typename') == 'VideoModule':
+                try:
+                    trusted_url(value.removeprefix('ytdl:'))
+                except ValueError:
+                    self.skipped_external += 1
+                    continue
+            self.rows.append((value, module))
+        self.data = data
+        if self.skipped_external:
+            self.collector.log(f'已跳过 {self.skipped_external} 个外部托管视频')
         return self
 
     def image_post(self):
@@ -220,7 +227,7 @@ class BehanceProject:
 
     def videos(self):
         for ordinal, (value, module) in enumerate(self.rows):
-            if module.get('__typename') in {'VideoModule', 'EmbedModule'} and value:
+            if module.get('__typename') == 'VideoModule' and value:
                 yield f'{module.get("id", ordinal)}-{ordinal}', value.removeprefix('ytdl:'), module
 
 
@@ -237,12 +244,7 @@ def inspect_project(collector, url):
         def video_item(entry):
             index, (key, target, module) = entry
             collector.check_cancel()
-            external = embed_url(target)
-            provider = 'YouTube' if external and 'youtube.com/' in external else 'Vimeo'
             title = f'{post.title} · 视频 {index}'
-            if external and provider == 'YouTube':
-                return {'id': key, 'kind': 'external', 'url': external, 'title': title, 'author': post.author,
-                        'provider': provider, 'message': '此作品嵌入了 YouTube 视频，请在 YouTube 分组中登录并解析。'}
             try:
                 info = resolve_video(collector, url, target, key, title)
                 meta = project.player_metadata.get(urlparse(target).path.strip('/').split('/')[0], {})
@@ -250,23 +252,16 @@ def inspect_project(collector, url):
                     info['thumbnail'] = meta.get('thumbnail')
                 if not info.get('duration'):
                     info['duration'] = meta.get('duration')
-                item = normalise_video(info, external or url)
-                item['mediaId'] = key if not external else None
+                item = normalise_video(info, url)
+                item['mediaId'] = key
                 item['author'] = item['author'] or post.author
                 return item
             except Exception as exc:
                 collector.check_cancel()
-                if external:
-                    collector.log(f'{provider} 视频 {index} 暂未取得画质，可在对应分组重试')
-                    return {'id': key, 'kind': 'external', 'url': external, 'title': title, 'author': post.author,
-                            'provider': provider, 'message': f'暂未取得此视频画质，请在 {provider} 分组中打开后重新解析。'}
-                else:
-                    # Keep a failed video selectable with an explicit explanation;
-                    # other images/videos in the project remain usable.
-                    from collector_errors import safe_error_text
-                    collector.log('Behance 视频解析失败：' + safe_error_text(exc))
-                    return {'id': key, 'kind': 'unavailable', 'url': url, 'title': title, 'author': post.author,
-                            'message': '此视频暂未取得可下载画质，请稍后重新解析。'}
+                from collector_errors import safe_error_text
+                collector.log('Behance 视频解析失败：' + safe_error_text(exc))
+                return {'id': key, 'kind': 'unavailable', 'url': url, 'title': title, 'author': post.author,
+                        'message': '此视频暂未取得可下载画质，请稍后重新解析。'}
         # Independent players may respond slowly. Bound concurrency and preserve
         # the work's original ordering instead of waiting for each in series.
         # yt-dlp's first plugin load is global and not thread safe.
@@ -276,17 +271,17 @@ def inspect_project(collector, url):
                 pass
         with ThreadPoolExecutor(max_workers=3) as workers:
             items.extend(workers.map(video_item, enumerate(project.videos(), 1)))
-        if not items:
+        if not items and not project.skipped_external:
             raise ValueError('当前作品没有可下载的图片或视频，请在左侧检查访问权限或登录后重试')
-    return {'site': 'behance', 'url': url, 'items': items}
+    return {'site': 'behance', 'url': url, 'items': items, 'skippedExternal': project.skipped_external}
 
 
 def resolve_video(collector, source_url, target, key, title, download=False):
     import yt_dlp
-    external = embed_url(target)
-    if external and 'youtube.com/' in external:
-        raise ValueError('请在 YouTube 分组中登录并解析此视频')
-    target = external or trusted_url(target)
+    try:
+        target = trusted_url(target)
+    except ValueError as exc:
+        raise ValueError('外部平台托管的视频默认不下载') from exc
     options = collector.options(target)
     options.setdefault('http_headers', {})['Referer'] = source_url
     options.update(retries=1, socket_timeout=20)
@@ -308,8 +303,7 @@ def resolve_video(collector, source_url, target, key, title, download=False):
         collector.check_cancel()
         if not info or info.get('_type') in {'playlist', 'multi_video'} or not info.get('formats'):
             raise ValueError('尚未取得此视频的可下载画质')
-        if not external:
-            info.update(id=f'{project_id(source_url)}_{key}', title=title)
+        info.update(id=f'{project_id(source_url)}_{key}', title=title)
         if download:
             ydl.process_ie_result(info, download=True)
         return info

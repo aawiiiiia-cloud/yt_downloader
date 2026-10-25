@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from behance_adapter import BehanceProject, trusted_url, embed_url, resolve_video
+from behance_adapter import BehanceProject, trusted_url, resolve_video
 from collector_core import Collector, Cancelled, checked_url
 from test_xhs_image_downloader import _Response
 
@@ -30,16 +30,17 @@ class BehanceTests(unittest.TestCase):
         for url in ('https://www.behance.net/artist', 'https://www.behance.net/collection/123', 'https://user:pass@www.behance.net/gallery/123', 'https://behance.net.evil.invalid/gallery/123'):
             with self.assertRaises(ValueError): checked_url(url)
 
-    def test_real_gallerydl_parser_uses_loaded_images_collections_and_external_youtube(self):
+    def test_real_gallerydl_parser_keeps_images_and_skips_external_video(self):
         with mock.patch('requests.Session.send', side_effect=AssertionError('network not allowed')):
             result = service().inspect()
-        images, video = result['items']
+        self.assertEqual(len(result['items']),1)
+        images = result['items'][0]
         self.assertEqual([row['index'] for row in images['images']], [1, 2])
         self.assertIn('/source/photo.jpg', images['images'][0]['url'])
         self.assertIn('/disp/photo.jpg', images['images'][0]['preview_url'])
         self.assertIn('/source/animation.gif', images['images'][1]['url'])
-        self.assertEqual(video['kind'], 'external')
-        self.assertEqual(video['url'], 'https://www.youtube.com/watch?v=SmQd5BgLmd0')
+        self.assertEqual(result['skippedExternal'],1)
+        self.assertNotIn('SmQd5BgLmd0',str(result))
 
     def test_stale_context_falls_back_to_the_requested_project(self):
         worker = service(); worker.request['context']['projectId'] = '456'
@@ -83,11 +84,30 @@ class BehanceTests(unittest.TestCase):
                     with self.assertRaises(ValueError): parser.extractor.session.send(requests.Request('GET', url).prepare())
             send.assert_not_called()
 
-    def test_only_known_embed_players_are_navigable(self):
-        self.assertEqual(embed_url('https://player.vimeo.com/video/123?h=abc&autoplay=1'),'https://player.vimeo.com/video/123?h=abc')
-        self.assertEqual(embed_url('https://www.youtube-nocookie.com/embed/SmQd5BgLmd0'),'https://www.youtube.com/watch?v=SmQd5BgLmd0')
-        for url in ('javascript:alert(1)', 'https://www.youtube.com.evil.invalid/embed/SmQd5BgLmd0', 'https://127.0.0.1/a'):
-            self.assertIsNone(embed_url(url))
+    def test_external_embeds_never_start_player_or_format_requests(self):
+        data=project()
+        for index,url in enumerate(('https://player.vimeo.com/video/123','https://player.example.invalid/video/123')):
+            data['modules'].append({'id':30+index,'__typename':'EmbedModule','originalEmbed':f'<iframe src="{url}"></iframe>'})
+        with mock.patch('requests.Session.send',side_effect=AssertionError('unexpected request')), mock.patch('behance_adapter.resolve_video') as resolve:
+            result=service(data).inspect()
+        self.assertEqual(result['skippedExternal'],3);self.assertEqual(len(result['items']),1)
+        resolve.assert_not_called()
+
+    def test_external_only_work_returns_a_skip_summary_instead_of_a_failure(self):
+        data=project();data['modules']=data['modules'][-1:]
+        with mock.patch('requests.Session.send',side_effect=AssertionError('unexpected request')):
+            result=service(data).inspect()
+        self.assertEqual(result['items'],[]);self.assertEqual(result['skippedExternal'],1)
+
+    def test_video_modules_with_external_players_or_renditions_are_also_skipped(self):
+        for module in (
+            {'id':14,'__typename':'VideoModule','embed':'<iframe src="https://player.vimeo.com/video/123"></iframe>'},
+            {'id':14,'__typename':'VideoModule','videoData':{'renditions':[{'url':'https://external.invalid/a.mp4'}]}},
+        ):
+            data=project();data['modules']=[module]
+            with mock.patch('requests.Session.send',side_effect=AssertionError('unexpected request')):
+                result=service(data).inspect()
+            self.assertEqual(result['items'],[]);self.assertEqual(result['skippedExternal'],1)
 
     def test_native_video_metadata_omits_signed_streams_and_uses_stable_module_identity(self):
         data=project();data['modules']=[native_video()]
@@ -138,9 +158,10 @@ class BehanceTests(unittest.TestCase):
             worker.request['mediaId']='arbitrary-url'
             with self.assertRaisesRegex(ValueError,'已变化'):worker.download()
 
-    def test_youtube_cannot_be_downloaded_through_the_behance_video_adapter(self):
-        with self.assertRaisesRegex(ValueError,'YouTube 分组'):
-            resolve_video(service(),URL,'https://www.youtube.com/watch?v=SmQd5BgLmd0','id','title',download=True)
+    def test_external_platforms_cannot_be_downloaded_through_the_behance_video_adapter(self):
+        for target in ('https://www.youtube.com/watch?v=SmQd5BgLmd0','https://player.vimeo.com/video/123','https://external.invalid/a.mp4'):
+            with self.assertRaisesRegex(ValueError,'默认不下载'):
+                resolve_video(service(),URL,target,'id','title',download=True)
 
     def test_adobe_signed_manifest_urls_are_not_exposed_in_progress_logs(self):
         events=[];worker=service();worker.emit=lambda k,v:events.append((k,v))

@@ -17,19 +17,23 @@ async function run(collector, check, until, wait) {
   finally { collector.queue.add=add; }
   check('Behance queued selection retains its frozen project and original indices',spec.url==='https://www.behance.net/gallery/123/Test' || spec.url.includes('/gallery/123/Test'));
   check('Behance task context remains private to the local queue',spec.indices.join(',')==='2'&&spec.context.projectId==='123'&&!JSON.stringify(collector.publicState()).includes('beconfig-store_state'));
-  await ui("document.querySelector('[data-image=\"1\"]').checked=false; document.getElementById('part-select').value='1'; document.getElementById('part-select').dispatchEvent(new Event('change',{bubbles:true}))");
-  await until(()=>ui("!!document.getElementById('open-source')"),'external video action did not render');
-  check('embedded YouTube offers its own site action instead of an anonymous download',await ui("!document.getElementById('download') && document.getElementById('open-source').textContent.includes('YouTube')"));
+  check('external videos are excluded from selectable resources and summarized once',collector.state.result.items.length===1&&collector.state.result.skippedExternal===1&&await ui("document.getElementById('skipped-external').textContent.includes('1') && !document.getElementById('open-source') && !document.getElementById('part-select')"));
   const receipt=collector.state.inspectionId;
-  await assert.rejects(()=>collector.download({inspectionId:receipt,itemIndex:1}),/来源站点/);
-  await assert.rejects(()=>collector.invoke('open-source',{inspectionId:'stale',itemIndex:1}),/已变化/);
-  check('stale or unparsed external videos cannot enter the download queue',true);
-  await ui("document.getElementById('open-source').click()");
-  await until(()=>collector.tabs.active.group==='youtube'&&collector.state.url.includes('SmQd5BgLmd0'),'embedded YouTube did not open in its group');
-  const youtube=collector.tabs.active;
-  check('opening an embedded video retains the Behance page and parsed resources',tab.state.inspectionId===receipt&&tab.view.webContents.getURL().includes('/gallery/123/'));
+  for (const url of ['https://www.youtube.com/watch?v=SmQd5BgLmd0','https://player.vimeo.com/video/123']) {
+    await assert.rejects(()=>collector.withCookies({command:'download',url,referrer:spec.url}).promise,/默认不下载/);
+    collector.state.result.items.push({kind:'video',url,title:'legacy external fixture',formats:[]});
+    try { await assert.rejects(()=>collector.download({inspectionId:receipt,itemIndex:1}),/默认不下载/); }
+    finally { collector.state.result.items.pop(); }
+  }
+  check('old cross-platform resource snapshots and queued downloads stay blocked',true);
+  await ui("document.querySelector('[data-image=\"1\"]').checked=false");
+  collector.switchSite('youtube');await wait(100);
   collector.activateTab(tab.id);await wait(120);
-  check('returning to Behance restores the selected resource entry',await ui("document.getElementById('part-select').value==='1'"));
-  collector.closeTab(youtube.id);collector.activateTab(source.id);
+  check('skipping external players preserves the Behance receipt and image selection',collector.state.inspectionId===receipt&&await ui("!document.querySelector('[data-image=\"1\"]').checked && document.querySelector('[data-image=\"2\"]').checked"));
+  await tab.view.webContents.mainFrame.executeJavaScript("(() => { const node=document.getElementById('beconfig-store_state');const data=JSON.parse(node.textContent);data.project.project.modules=data.project.project.modules.filter(module=>module.__typename==='EmbedModule');node.textContent=JSON.stringify(data); })()");
+  await collector.inspect();
+  await until(()=>ui("document.querySelector('#resources .empty')?.textContent.includes('已跳过 1')"),'external-only summary did not render');
+  check('an external-only work displays a skip summary without a download action or parse error',!collector.state.error&&collector.state.result.items.length===0&&await ui("!document.getElementById('download')"));
+  collector.activateTab(source.id);
 }
 module.exports={run};
