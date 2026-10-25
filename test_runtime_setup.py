@@ -98,6 +98,18 @@ class RuntimeSetupTests(unittest.TestCase):
                 self.assertTrue(runtime.electron_ready(modules,root))
 
     @unittest.skipUnless(os.name=='nt','Windows PowerShell bootstrap')
+    def test_direct_python_gui_routes_before_importing_business_modules(self):
+        with tempfile.TemporaryDirectory(prefix='media dl ') as name:
+            root=Path(name);(root/'distribution').mkdir()
+            shutil.copy2(Path(__file__).with_name('yt_dlp_gui.py'),root/'yt_dlp_gui.py')
+            (root/'distribution/ensure-runtime.ps1').write_text("param([string]$Mode)\nif ($Mode -eq 'legacy') { Write-Output 'project-runtime-selected'; exit 0 }; exit 2",encoding='utf-8-sig')
+            env=os.environ.copy();env.pop('MEDIA_DL_RUNTIME_PREPARED',None)
+            import sys
+            task=subprocess.run([sys.executable,'-B',str(root/'yt_dlp_gui.py')],env=env,capture_output=True,timeout=25)
+            self.assertEqual(task.returncode,0,task.stderr)
+            self.assertIn(b'project-runtime-selected',task.stdout)
+
+    @unittest.skipUnless(os.name=='nt','Windows PowerShell bootstrap')
     def test_python_recovery_rejects_archive_path_traversal(self):
         with tempfile.TemporaryDirectory(prefix='media dl 测试 ') as name:
             root=Path(name);code=root/'代码';scripts=code/'distribution';scripts.mkdir(parents=True)

@@ -20,8 +20,20 @@ import shutil
 import sys
 import threading
 import time
-import tkinter as tk
 from pathlib import Path
+
+# A double-click may select an unrelated system Python. Route to the project runtime
+# before importing GUI/business dependencies; frozen builds and CLI self-tests keep their entry points.
+if (__name__ == "__main__" and os.name == "nt" and not getattr(sys, "frozen", False)
+        and len(sys.argv) == 1 and os.environ.get("MEDIA_DL_RUNTIME_PREPARED") != "1"):
+    _runtime_script = Path(__file__).resolve().parent / "distribution" / "ensure-runtime.ps1"
+    if _runtime_script.is_file():
+        import subprocess
+        _powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        raise SystemExit(subprocess.call([str(_powershell), "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(_runtime_script), "-Mode", "legacy"]))
+
+import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 

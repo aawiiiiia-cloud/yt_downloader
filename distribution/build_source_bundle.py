@@ -163,6 +163,7 @@ def main() -> int:
         "无需依赖原来的 D 盘 Python、Node 和 FFmpeg，也无需安装系统级 Python/Node。\n"
         "适用于 Windows x64；Edge 登录功能需要本机安装 Microsoft Edge。\n"
         "也可使用代码内的 start-collector.cmd / start.cmd；各入口共用同一套检测与补全流程。\n"
+        "直接双击 yt_dlp_gui.py 也会先切换至项目专用 Python 环境，再启动旧版界面。\n"
         "启动时检查依赖，缺失或无法使用时先复用工具/缓存，再按固定版本下载补齐；已有可用依赖不自动升级。\n"
         "Python 修复缓存随包保存；缓存不可用时联网取得校验过的便携 Python，不写系统 PATH。\n"
         "Git 历史保存在 代码\\版本历史.bundle；有 Git 时可用 git clone 恢复到另一个新目录。\n\n"

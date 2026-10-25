@@ -1,6 +1,7 @@
 # Windows 启动入口自动补全依赖
 
 入口：`start-collector.cmd` / `start.cmd` → `distribution/ensure-runtime.ps1` → `distribution/runtime_setup.py`。
+直接双击 `yt_dlp_gui.py` 也先转交专用环境再导入 GUI/业务模块，避免误用系统 Python；不改变冻结产物及带参数自检入口。
 整理包“启动程序”的三个 CMD 也转到这两个源码入口，避免检查逻辑分散及循环调用。
 
 ## 旧版经验及本轮处理
@@ -29,7 +30,7 @@ PowerShell 的文件摘要使用 .NET 内置接口，不依赖父进程的 PSMod
 
 ## 验证
 
-- 203 项 Python 检查（含 10 项本轮补全/回滚/路径安全检查）通过。
+- 204 项 Python 检查（含 11 项本轮补全/回滚/路径安全与直接 Python 入口检查）通过。
 - 从“代码”内 CMD 入口通过 203 项 Electron 隔离检查及单独进程的重启恢复检查。
 - 独立空目录中从本地修复包恢复 Python，通过 Tcl/Tk、pip 检查。
 - 另一独立目录无 Python、无本地修复缓存，实际下载固定上游归档并通过摘要与运行验证；Python 3.13.11、Tcl 8.6.12、pip 25.3。

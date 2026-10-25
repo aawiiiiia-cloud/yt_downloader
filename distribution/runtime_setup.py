@@ -305,7 +305,9 @@ def main():
     tools, modules, node, env = prepare(need_electron=args.mode != 'legacy')
     if args.check: return 0
     if args.test_electron: command = [node / 'node.exe', CODE / 'electron/test-desktop.cjs']
-    elif args.mode == 'legacy': command = [sys.executable, '-B', '-X', 'utf8', CODE / 'yt_dlp_gui.py']
+    elif args.mode == 'legacy':
+        env['MEDIA_DL_RUNTIME_PREPARED'] = '1'
+        command = [sys.executable, '-B', '-X', 'utf8', CODE / 'yt_dlp_gui.py']
     else: command = [modules / 'electron/dist/electron.exe', CODE]
     return subprocess.call(list(map(str, command)), cwd=CODE, env=env)
 

@@ -114,6 +114,7 @@ def main() -> int:
     if args.test_electron:
         command = [str(tools / "node" / "node.exe"), str(code / "electron" / "test-desktop.cjs")]
     elif args.legacy:
+        env['MEDIA_DL_RUNTIME_PREPARED'] = '1'
         command = [env["YT_DOWNLOADER_PYTHON"], "-B", "-X", "utf8", str(code / "yt_dlp_gui.py")]
     else:
         command = [str(tools / "node_modules" / "electron" / "dist" / "electron.exe"), str(code)]
