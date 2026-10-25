@@ -153,9 +153,16 @@ def main() -> int:
         f"源码版本：{commit}\n文件完整性与依赖摘要见 整理清单.json 和 依赖工具\\Python依赖版本.txt。\n",
         encoding="utf-8-sig")
     report = manifest(root, commit, files)
+    print("检查包内运行环境…", flush=True)
+    launch_env = os.environ.copy()
+    for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "ELECTRON_RUN_AS_NODE"):
+        launch_env.pop(name, None)
+    launch_env["PYTHONNOUSERSITE"] = "1"
+    subprocess.run([str(python / "python.exe"), "-B", "-X", "utf8", str(startup / "启动.py"), "--check"],
+        cwd=code, env=launch_env, check=True, timeout=60)
+    (root / "正在整理.txt").unlink()
     print(json.dumps({"destination": str(root), "files": report["fileCount"],
         "sizeMB": round(report["totalBytes"] / 1024 ** 2, 1), "commit": commit}, ensure_ascii=False), flush=True)
-    # Keep the marker until a separate check has passed; the original checkout is never moved.
     return 0
 
 
