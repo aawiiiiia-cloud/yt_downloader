@@ -874,6 +874,9 @@ app.whenReady().then(async () => {
   if (persistenceCheck) {
     await collector.healthTask.promise;
     const assert = require('node:assert/strict');
+    assert.ok(collector.state.login.zcool, 'ZCOOL login should recover from its persisted credential pair');
+    assert.ok(!collector.state.loginExpired.zcool, 'a rejected prior ZCOOL session must not invalidate replacement credentials');
+    console.log('Restart persistence: ZCOOL login credential pair restored');
     assert.equal(collector.state.login.xiaohongshu, true);
     assert.equal(collector.settings.autoParse, false);
     assert.equal(collector.settings.panelWidth, 450);

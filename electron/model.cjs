@@ -12,8 +12,9 @@ const SITES = {
   // Behance also uses Adobe browser storage; anonymous bcp cookies are not login proof.
   behance: { name: 'Behance', home: 'https://www.behance.net/', domains: ['behance.net'], auth: [] },
   taobao: { name: '淘宝', home: 'https://www.taobao.com/', domains: ['taobao.com', 'tmall.com'], authDomains: ['taobao.com', 'tmall.com'], auth: ['cookie17', 'sgcookie'] },
-  // Authenticated cookie names are not verified; anonymous cookies never prove login.
-  zcool: { name: '站酷', home: 'https://www.zcool.com.cn/', domains: ['zcool.com.cn'], cookieDomains: ['zcool.com.cn', 'zcool.cn'], auth: [] },
+  // The official frontend requires both cookies; JSESSIONID/z_ui alone are anonymous/profile state.
+  zcool: { name: '站酷', home: 'https://www.zcool.com.cn/', domains: ['zcool.com.cn'], cookieDomains: ['zcool.com.cn', 'zcool.cn'],
+    auth: ['zcool_mt', 'zcool_logon_new'], authAll: true },
 };
 function belongs(host, domain) { return host === domain || host.endsWith('.' + domain); }
 function navigationUrl(value) {
@@ -81,9 +82,12 @@ function cookieAllowed(cookie, site) {
   return (SITES[site]?.cookieDomains || SITES[site]?.domains)?.some(d => belongs(domain, d)) || false;
 }
 function hasAuth(cookies, site) {
-  return cookies.some(c => cookieAllowed(c, site) && SITES[site].auth.includes(c.name) && c.value &&
+  const config = SITES[site];
+  if (!config?.auth.length) return false;
+  const names = new Set(cookies.filter(c => cookieAllowed(c, site) && config.auth.includes(c.name) && c.value &&
     (!c.expirationDate || c.expirationDate > Date.now() / 1000) &&
-    (SITES[site].authDomains || [SITES[site].domains[0]]).some(domain => belongs(String(c.domain).replace(/^\./, ''), domain)));
+    (config.authDomains || [config.domains[0]]).some(domain => belongs(String(c.domain).replace(/^\./, ''), domain))).map(c => c.name));
+  return config.authAll ? config.auth.every(name => names.has(name)) : names.size > 0;
 }
 function cookieText(cookies, site) {
   const lines = ['# Netscape HTTP Cookie File', '# Local task snapshot; never share this file.'];

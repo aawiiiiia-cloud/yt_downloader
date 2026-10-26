@@ -215,10 +215,10 @@ function render(next) {
   $('login-state').textContent = `${names[selectedSite]} · ${expired ? '登录凭证已失效/过期，请重新登录' : needsLogin ? '未登录（建议登录）' : '已登录'}`;
   $('login-state').classList.toggle('login-warning', needsLogin);
   $('login-state').title = expired ? '请重新登录或导入新的 Cookies，旧凭证不会因再次检测到而恢复。' : needsLogin ? (selectedSite === 'youtube' ? '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。' : '尚未检测到本站登录凭据，建议先登录。') : (selectedSite === 'youtube' ? '已读取登录凭证，下载前仍会自动确认是否有效。' : '已读取登录凭证，实际可用性由网站请求结果确认。');
-  if (selectedSite === 'behance' || selectedSite === 'zcool') {
-    $('login-state').textContent = selectedSite === 'zcool' ? '站酷 · 登录状态以左侧网页为准' : 'Behance · 公开作品可直接解析';
+  if (selectedSite === 'behance') {
+    $('login-state').textContent = 'Behance · 公开作品可直接解析';
     $('login-state').classList.remove('login-warning');
-    $('login-state').title = selectedSite === 'zcool' ? '请在左侧确认登录，再返回作品重新解析；匿名 Cookies 不作为登录凭据。' : 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
+    $('login-state').title = 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
   }
   const loginBusy = !!state.loginRunning || !!state.importingCookies;
   const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
