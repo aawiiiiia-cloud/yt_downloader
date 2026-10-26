@@ -19,7 +19,7 @@ test('defaults start five sites but only one task per site', () => {
   for (const site of Object.keys(SITES)) add(site,site);
   add('second-youtube');
   assert.equal(queue.active.size,5); assert.equal(started.length,5);
-  assert.equal(queue.tasks.filter(task=>task.status==='queued').length,3);
+  assert.equal(queue.tasks.filter(task=>task.status==='queued').length,Object.keys(SITES).length+1-5);
   assert.deepEqual(queue.limits,{globalConcurrency:5,siteConcurrency:1});
 });
 test('a full site does not block another site; eligible jobs retain FIFO order', async () => {

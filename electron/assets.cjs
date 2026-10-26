@@ -7,8 +7,9 @@ const DOMAINS = {
   douyin: ['douyinpic.com', 'douyincdn.com', 'byteimg.com', 'ibytedtos.com', 'pstatp.com'],
   behance: ['behance.net', 'vimeocdn.com', 'adobe.com', 'adobe.net'],
   taobao: ['alicdn.com', 'tbcdn.cn', 'taobaocdn.com'],
+  zcool: ['zcool.cn', 'zcool.com.cn'],
 };
-const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://item.taobao.com/' };
+const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://item.taobao.com/', zcool: 'https://www.zcool.com.cn/' };
 function assetUrl(value, site) {
   const url = new URL(String(value).startsWith('//') ? 'https:' + value : value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || ![null, '', '80', '443'].includes(url.port) ||

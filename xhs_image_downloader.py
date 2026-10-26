@@ -522,6 +522,7 @@ class XhsImageDownloader:
                         extension = _detected_image_extension(
                             temp_path, extension, strict=True,
                         )
+                        self._validate_download(temp_path, image)
                         target_extension = (
                             extension
                             if self.image_format == "original"
@@ -559,7 +560,10 @@ class XhsImageDownloader:
                         self.progress(f"[重试] 图片 {image.index} 当前地址下载失败：{exc}")
         raise XhsDownloadError(
             f"图片 {image.index} 的原图和展示图地址均下载失败：{last_error}"
-        )
+        ) from last_error
+
+    def _validate_download(self, file: Path, image: XhsImage) -> None:
+        """Site-specific checks before converting or atomically publishing an image."""
 
     def _source_label(self, image, candidate_index, total):
         return ("原始素材 CDN" if image.fallback_urls and candidate_index < total - 1

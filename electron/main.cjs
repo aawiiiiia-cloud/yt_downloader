@@ -18,6 +18,7 @@ const { LoginState } = require('./login-state.cjs');
 const { snapshotScript: behanceSnapshotScript } = require('./behance-page.cjs');
 const { externalEntries, collectVimeo } = require('./external-media.cjs');
 const { snapshotScript: taobaoSnapshotScript } = require('./taobao-page.cjs');
+const { snapshotScript: zcoolSnapshotScript } = require('./zcool-page.cjs');
 const { classifyFailure, safeDetail } = require('./task-failure.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
@@ -521,6 +522,15 @@ class CollectorApp {
     try {
       if (siteForUrl(url) === 'xiaohongshu') context = await this.readPage(snapshotScript, tab);
       if (siteForUrl(url) === 'behance') context = await this.readPage(behanceSnapshotScript, tab);
+      if (siteForUrl(url) === 'zcool') {
+        const deadline = Date.now() + 3500;
+        do {
+          if (ticket !== tab.sequence || tab.closed || this.closing) return;
+          context = await this.readPage(zcoolSnapshotScript, tab, false, tab.assetsAbort.signal);
+          if (context && !context.mismatch && context.images?.length) break;
+          await new Promise(resolve => setTimeout(resolve, 150));
+        } while (Date.now() < deadline);
+      }
       if (siteForUrl(url) === 'taobao') {
         const deadline = Date.now() + 4500;
         do {
@@ -673,11 +683,11 @@ class CollectorApp {
     if (item.kind === 'images' && !image) throw new Error('图片不存在');
     if (mode === 'size') {
       if (!image) throw new Error('当前内容不是图片');
-      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal, site === 'taobao' ? item.url : undefined, site === 'taobao' && !(image.width && image.height));
+      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal, ['taobao', 'zcool'].includes(site) ? item.url : undefined, site === 'zcool' || (site === 'taobao' && !(image.width && image.height)));
     }
     const url = image ? image.preview_url || image.fallback_urls?.at(-1) || image.url : item.thumbnail;
     if (!url) throw new Error('当前页面未提供视频封面');
-    return this.assets.preview(url, site, this.tabs.active.assetsAbort.signal, !!data.refresh, site === 'taobao' ? item.url : undefined);
+    return this.assets.preview(url, site, this.tabs.active.assetsAbort.signal, !!data.refresh, ['taobao', 'zcool'].includes(site) ? item.url : undefined);
   }
   async download(data) {
     const tab = this.tabs.active;

@@ -12,6 +12,8 @@ const SITES = {
   // Behance also uses Adobe browser storage; anonymous bcp cookies are not login proof.
   behance: { name: 'Behance', home: 'https://www.behance.net/', domains: ['behance.net'], auth: [] },
   taobao: { name: '淘宝', home: 'https://www.taobao.com/', domains: ['taobao.com', 'tmall.com'], authDomains: ['taobao.com', 'tmall.com'], auth: ['cookie17', 'sgcookie'] },
+  // Authenticated cookie names are not verified; anonymous cookies never prove login.
+  zcool: { name: '站酷', home: 'https://www.zcool.com.cn/', domains: ['zcool.com.cn'], cookieDomains: ['zcool.com.cn', 'zcool.cn'], auth: [] },
 };
 function belongs(host, domain) { return host === domain || host.endsWith('.' + domain); }
 function navigationUrl(value) {
@@ -66,12 +68,17 @@ function contentKey(value) {
       const id = url.searchParams.get('modal_id') || path.match(/^\/(?:video|share\/video)\/(\d+)/)?.[1];
       if (/^\d+$/.test(id || '')) return `douyin:${id}`;
     }
+    if (site === 'zcool' && ['www.zcool.com.cn', 'zcool.com.cn'].includes(url.hostname) &&
+        !url.username && !url.password && ['', '80', '443'].includes(url.port)) {
+      const id = decodeURIComponent(path).match(/^\/work\/(Z[A-Za-z0-9_+=-]{5,100})\.html$/)?.[1];
+      if (id) return `zcool:${id}`;
+    }
   } catch {}
   return null;
 }
 function cookieAllowed(cookie, site) {
   const domain = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
-  return SITES[site]?.domains.some(d => belongs(domain, d)) || false;
+  return (SITES[site]?.cookieDomains || SITES[site]?.domains)?.some(d => belongs(domain, d)) || false;
 }
 function hasAuth(cookies, site) {
   return cookies.some(c => cookieAllowed(c, site) && SITES[site].auth.includes(c.name) && c.value &&

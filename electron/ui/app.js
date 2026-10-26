@@ -1,8 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://www.taobao.com/' };
-const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫' };
+const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://www.taobao.com/', zcool: 'https://www.zcool.com.cn/' };
+const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫', zcool: '站酷' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
 const openedLogs = new Set();
@@ -59,13 +59,13 @@ function loadPreview(frame, refresh = false) {
   const showSize = value => {
     if (!current()) return;
     setLoading(label, false);
-    label.textContent = `${value.displayFallback ? '网页图' : '原图'} ${mediaInfo.size(value.size)}`;
+    label.textContent = `${state.result.site === 'zcool' ? '图片' : value.displayFallback ? '网页图' : '原图'} ${mediaInfo.size(value.size)}`;
     if (value.width && value.height) frame.closest('.image-card').querySelector('.image-meta span:last-child').textContent = `${value.width} × ${value.height}`;
   };
   if (previews.get(key)?.sizeLoaded) showSize(previews.get(key));
   else window.collector.call('image-size', args).then(value => {
     rememberPreview(key, { ...value, sizeLoaded: true }); showSize(value);
-  }, () => { if (current()) { setLoading(label, false); label.textContent = '原图大小未知'; } });
+  }, () => { if (current()) { setLoading(label, false); label.textContent = state.result.site === 'zcool' ? '图片大小未知' : '原图大小未知'; } });
 }
 function updateMediaInfo() {
   const item = state?.result?.items?.[selectedItem];
@@ -78,6 +78,8 @@ function updateMediaInfo() {
     (state.settings.imageFormat === 'original' ? '预览使用网页展示图；大小按原始素材查询，下载优先原图。' : '图片显示源文件大小；格式转换后的大小以实际保存结果为准。') : '大小随画质更新，包含需要合并的音频；估算值以“约”标记。';
   if ($('resource-size-note') && state.result.site === 'behance' && item.kind === 'images' && state.settings.imageFormat === 'original')
     $('resource-size-note').textContent += ' GIF 优先使用静帧预览，保存保留动画。';
+  if ($('resource-size-note') && state.result.site === 'zcool')
+    $('resource-size-note').textContent = '尺寸和大小按下载地址查询；下载时核对实际宽高，低于作品标注尺寸的缩放图不保存。';
   const button = $('download');
   document.querySelectorAll('[data-download-image]').forEach(button => {
     button.disabled = pendingDownloads.has(state.inspectionId);
@@ -164,7 +166,7 @@ function renderResources() {
     const index = items.findIndex(row => row.category === key), count = items[index]?.images?.length || 0;
     return `<button type="button" data-image-category="${index}" role="tab" aria-selected="${index === selectedItem}" ${index < 0 ? 'disabled' : ''}>${label} ${count}</button>`;
   }).join('')}</div>` : items.length > 1 ? `<select id="part-select" class="part-select" aria-label="资源条目">${items.map((row, index) => `<option value="${index}" ${index === selectedItem ? 'selected' : ''}>${index + 1}. ${row.kind === 'images' ? '图片集 · ' : ''}${escape(row.title)}${row.provider ? ' · ' + escape(row.provider) : ''}</option>`).join('')}</select>` : '';
-  const warnings = commerce ? (state.result.warnings || []).map(message => `<p class="muted collection-notice">${escape(message)}</p>`).join('') : '';
+  const warnings = commerce || state.result.site === 'zcool' ? (state.result.warnings || []).map(message => `<p class="muted collection-notice">${escape(message)}</p>`).join('') : '';
   let html = externalTools+parts+warnings + `<h2 class="content-title">${escape(item.title)}</h2><div class="author">${item.externalId?escape(item.provider)+' · 外部托管 · ':''}${escape(item.author)}</div>`;
   if (['external', 'unavailable'].includes(item.kind)) {
     $('resources').innerHTML = html + `<p class="muted">${escape(item.kind === 'external' ? '外部平台托管的视频默认不下载。' : item.message)}</p>`;
@@ -213,19 +215,20 @@ function render(next) {
   $('login-state').textContent = `${names[selectedSite]} · ${expired ? '登录凭证已失效/过期，请重新登录' : needsLogin ? '未登录（建议登录）' : '已登录'}`;
   $('login-state').classList.toggle('login-warning', needsLogin);
   $('login-state').title = expired ? '请重新登录或导入新的 Cookies，旧凭证不会因再次检测到而恢复。' : needsLogin ? (selectedSite === 'youtube' ? '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。' : '尚未检测到本站登录凭据，建议先登录。') : (selectedSite === 'youtube' ? '已读取登录凭证，下载前仍会自动确认是否有效。' : '已读取登录凭证，实际可用性由网站请求结果确认。');
-  if (selectedSite === 'behance') {
-    $('login-state').textContent = 'Behance · 公开作品可直接解析';
+  if (selectedSite === 'behance' || selectedSite === 'zcool') {
+    $('login-state').textContent = selectedSite === 'zcool' ? '站酷 · 登录状态以左侧网页为准' : 'Behance · 公开作品可直接解析';
     $('login-state').classList.remove('login-warning');
-    $('login-state').title = 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
+    $('login-state').title = selectedSite === 'zcool' ? '请在左侧确认登录，再返回作品重新解析；匿名 Cookies 不作为登录凭据。' : 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
   }
   const loginBusy = !!state.loginRunning || !!state.importingCookies;
   const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
   $('web-login').hidden = externalLoginOnly;
-  $('edge-login').hidden = selectedSite === 'behance';
-  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly || selectedSite === 'behance');
+  $('edge-login').hidden = ['behance', 'zcool'].includes(selectedSite);
+  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly || ['behance', 'zcool'].includes(selectedSite));
   $('web-login').disabled = loginBusy;
   document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : externalLoginOnly ? '通过 Edge 登录。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入请选择本站点的 Netscape 格式 Cookies 文件（.txt）。';
   if (selectedSite === 'behance') document.querySelector('.login-help').textContent = '需要登录的作品请先在左侧完成 Adobe 登录；也可导入 Behance Cookies。账号状态以网页为准。';
+  if (selectedSite === 'zcool') document.querySelector('.login-help').textContent = '高清图片请先在左侧登录站酷，再刷新作品页并重新解析；也可导入本站 Cookies。登录及网站验证需手动完成。';
   $('edge-login').disabled = loginBusy; $('cancel-login').hidden = !state.loginRunning;
   $('import-login').disabled = loginBusy;
   $('import-login').textContent = state.importingCookies ? '正在导入…' : '导入Cookies';

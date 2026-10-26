@@ -148,11 +148,13 @@ class TaobaoImages(XhsImageDownloader):
         self.referrer = post.source_url
         return super()._download_one(self, post, image, folder)
 
+    _image_url = staticmethod(image_url)
+
     def urlopen(self, request):
         target = request.url
         for _ in range(5):
             self._check_cancelled()
-            target = image_url(target)
+            target = self._image_url(target)
             try:
                 response = self.session.get(target, headers={'Referer': self.referrer}, stream=True,
                                             allow_redirects=False, timeout=(10, 20))
