@@ -1,5 +1,10 @@
 ﻿param([ValidateSet('collector','legacy')][string]$Mode='collector', [switch]$CheckOnly, [switch]$DesktopTest)
 $ErrorActionPreference='Stop'
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    Write-Host '[依赖] 当前 PowerShell 受到公司或系统安全策略限制，无法执行 Python 恢复。'
+    Write-Host '[依赖] 请重新复制完整的 media-dl（包含依赖工具中的 Python），或联系管理员处理；程序不会修改安全设置。'
+    exit 1
+}
 [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding=[Console]::OutputEncoding
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
@@ -113,7 +118,7 @@ try {
         }
     } finally { if ($owned) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
     $env:YT_DOWNLOADER_PYTHON=$python; $env:YT_DOWNLOADER_TOOLS_DIR=$tools
-    $launch=@('-B','-X','utf8',(Join-Path $PSScriptRoot 'runtime_setup.py'),'--mode',$Mode)
+    $launch=@('-B','-X','utf8',(Join-Path $PSScriptRoot 'launcher.py'),'--mode',$Mode)
     if ($CheckOnly) { $launch+='--check' }
     if ($DesktopTest) { $launch+='--test-electron' }
     & $python @launch

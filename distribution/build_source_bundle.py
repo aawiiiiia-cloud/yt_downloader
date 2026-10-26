@@ -31,14 +31,20 @@ def copy_tree(source: Path, destination: Path, *, python: bool = False) -> None:
 
 
 def command_file(arguments: str = "") -> str:
-    entry = 'start.cmd' if arguments == '--legacy' else 'start-collector.cmd'
+    mode = 'legacy' if arguments == '--legacy' else 'collector'
     forwarded = '--check' if arguments == '--check' else ''
     return '\r\n'.join([
-        '@echo off', 'chcp 65001 >nul', 'setlocal', 'title media-dl',
-        f'call "%~dp0..\\代码\\{entry}" {forwarded} %*',
+        '@echo off', 'chcp 65001 >nul', 'setlocal DisableDelayedExpansion', 'title media-dl',
+        'set "media_entry="', 'set "media_count=0"',
+        'for /d %%D in ("%~dp0..\\*") do if exist "%%~fD\\distribution\\start-runtime.cmd" set "media_entry=%%~fD\\distribution\\start-runtime.cmd"',
+        'for /d %%D in ("%~dp0..\\*") do if exist "%%~fD\\distribution\\start-runtime.cmd" set /a media_count+=1 >nul',
+        'if not "%media_count%"=="1" goto missing',
+        f'call "%media_entry%" --mode {mode} {forwarded} %*',
         'set "media_result=%errorlevel%"',
         'pause' if arguments == '--check' else 'rem Errors are shown by the source launcher.',
-        'exit /b %media_result%', '',
+        'exit /b %media_result%', ':missing',
+        'echo media-dl source folder is missing or ambiguous. Copy the complete folder and retry.',
+        'pause', 'exit /b 1', '',
     ])
 
 
@@ -59,7 +65,7 @@ def python_repair_cache(tools: Path) -> None:
 def manifest(root: Path, commit: str, source_files: list[str]) -> dict:
     entries = []
     for file in sorted(root.rglob("*")):
-        if not file.is_file() or file.name in {"整理清单.json", "正在整理.txt", ".runtime-setup.lock"}:
+        if not file.is_file() or file.name in {"整理清单.json", "正在整理.txt", ".runtime-setup.lock"} or file.name.startswith('.runtime-ready-'):
             continue
         relative = file.relative_to(root).as_posix()
         if relative.startswith("代码/electron-artifacts/") or relative.startswith("依赖工具/验证结果/"):
@@ -165,6 +171,8 @@ def main() -> int:
         "也可使用代码内的 start-collector.cmd / start.cmd；各入口共用同一套检测与补全流程。\n"
         "直接双击 yt_dlp_gui.py 也会先切换至项目专用 Python 环境，再启动旧版界面。\n"
         "启动时检查依赖，缺失或无法使用时先复用工具/缓存，再按固定版本下载补齐；已有可用依赖不自动升级。\n"
+        "日常启动优先使用随包 Python；依赖未变化时复用检查结果，变化或超过七天则重新核验。\n"
+        "检查运行环境会跳过缓存并执行完整检查；无需修改公司或系统的 PowerShell 安全策略。\n"
         "Python 修复缓存随包保存；缓存不可用时联网取得校验过的便携 Python，不写系统 PATH。\n"
         "Git 历史保存在 代码\\版本历史.bundle；有 Git 时可用 git clone 恢复到另一个新目录。\n\n"
         "四、本机数据\n应用仍使用当前 Windows 用户的 .media-collector 保存设置、登录和下载历史。\n"
@@ -179,7 +187,7 @@ def main() -> int:
         launch_env.pop(name, None)
     launch_env["PYTHONNOUSERSITE"] = "1"
     subprocess.run([str(python / "python.exe"), "-B", "-X", "utf8", str(startup / "启动.py"), "--check"],
-        cwd=code, env=launch_env, check=True, timeout=60)
+        cwd=code, env=launch_env, check=True, timeout=240)
     (root / "正在整理.txt").unlink()
     print(json.dumps({"destination": str(root), "files": report["fileCount"],
         "sizeMB": round(report["totalBytes"] / 1024 ** 2, 1), "commit": commit}, ensure_ascii=False), flush=True)
