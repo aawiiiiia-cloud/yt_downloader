@@ -11,6 +11,7 @@ const { Assets, readBody } = require('./assets.cjs');
 const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
 const { SiteTabs, linkScript, MAX_TABS } = require('./site-tabs.cjs');
 const { taobaoPopupKind } = require('./browser-popups.cjs');
+const { TaobaoRelayGuard, relayHelpScript, isTaobaoRelayUrl } = require('./taobao-relay.cjs');
 const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-page.cjs');
 const { resolveDouyinContext } = require('./douyin-context.cjs');
 const { YouTubeProvider } = require('./youtube-provider.cjs');
@@ -193,6 +194,7 @@ class CollectorApp {
       if (this.paneResizing && input.key === 'Escape') { event.preventDefault(); this.endPaneResize(true); }
     });
     web.setWindowOpenHandler(details => this.handleWindowOpen(tab, web, details));
+    tab.relayGuard = new TaobaoRelayGuard(web, url => this.recoverEmptyRelay(tab, url));
     web.once('destroyed', () => setImmediate(() => {
       if (!tab.closed && !this.closing) this.closeTab(tab.id);
     }));
@@ -272,6 +274,7 @@ class CollectorApp {
         createWindow: options => {
           if (kind === 'login') return this.createLoginPopup(tab, options);
           const child = this.initializeTab(this.tabs.add('taobao', next));
+          child.openerTabId = tab.id;
           this.ensureView(child, options.webContents); this.activateTab(child.id);
           return child.view.webContents;
         } };
@@ -290,6 +293,9 @@ class CollectorApp {
       title: '淘宝 · 登录 / 验证', autoHideMenuBar: true });
     const web = popup.webContents;
     this.popups.set(popup, tab.id); web.setUserAgent(this.userAgent);
+    const relayGuard = new TaobaoRelayGuard(web, () => {
+      if (!popup.isDestroyed()) popup.destroy();
+    });
     web.setWindowOpenHandler(details => this.handleWindowOpen(tab, web, details));
     const restrict = (event, details) => {
       const url = typeof details === 'string' ? details : details.url;
@@ -305,8 +311,22 @@ class CollectorApp {
       let host = ''; try { host = new URL(web.getURL()).hostname; } catch {}
       popup.setTitle('淘宝 · 登录 / 验证' + (host ? ' · ' + host : ''));
     });
-    popup.once('closed', () => { clearTimeout(timer); this.popups.delete(popup); this.updateLogin().catch(() => {}); });
+    popup.once('closed', () => { relayGuard.dispose(); clearTimeout(timer); this.popups.delete(popup); this.updateLogin().catch(() => {}); });
     return web;
+  }
+  async recoverEmptyRelay(tab, url) {
+    if (tab.closed || this.closing || !isTaobaoRelayUrl(url)) return;
+    const web = tab.view.webContents;
+    if (web.isDestroyed() || web.getURL() !== url) return;
+    const owner = this.tabs.rows.find(row => row.id === tab.openerTabId && !row.closed);
+    if (owner) {
+      const active = this.tabs.activeId === tab.id;
+      this.closeTab(tab.id);
+      if (active && !owner.closed) this.activateTab(owner.id);
+      await this.updateLogin();
+    } else {
+      await web.mainFrame.executeJavaScript(relayHelpScript(web.navigationHistory.canGoBack(), url));
+    }
   }
   pauseTab(tab) {
     const web = tab.view?.webContents;
@@ -342,7 +362,7 @@ class CollectorApp {
   }
   disposeTab(tab) {
     if (tab.closed) return;
-    tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort(); tab.douyinPage?.dispose();
+    tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort(); tab.douyinPage?.dispose(); tab.relayGuard?.dispose();
     for (const [popup, owner] of this.popups) if (owner === tab.id && !popup.isDestroyed()) popup.destroy();
     // A script-closed WebContentsView has already detached its native view and
     // no longer returns webContents. Do not access it as a still-live page.

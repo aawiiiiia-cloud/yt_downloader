@@ -1,5 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
+const fs = require('node:fs'), path = require('node:path');
+const { app } = require('electron');
 
 // Called before the general HTTPS fixture. All pages are returned locally;
 // this never contacts Taobao, signs a request or uses a real account.
@@ -10,6 +12,12 @@ async function fixture(request) {
   const headers = {'content-type':'text/html; charset=utf-8'};
   if (mode === 'opener') return new Response('<!doctype html><title>本地弹窗测试</title><h1>本地弹窗测试</h1><script>window.replies=[];addEventListener("message",e=>{if(e.origin===location.origin||e.origin==="https://login.taobao.com")replies.push(e.data);});</script>',{headers});
   if (mode === 'redirect') return Response.redirect('https://detail.tmall.com/wow/home/_____tmd_____/page/login_jump?collector_popup=relay',302);
+  if (mode === 'redirect-empty') return Response.redirect('https://detail.tmall.com/wow/home/_____tmd_____/page/login_jump?collector_popup=empty',302);
+  if (mode === 'redirect-late-form') return Response.redirect('https://detail.tmall.com/wow/home/_____tmd_____/page/login_jump?collector_popup=late-form',302);
+  if (mode === 'empty' || mode === 'late-form') return new Response(`<!doctype html><title>本地空白中转测试</title><body><script>
+    if(window.opener)window.opener.postMessage({kind:${JSON.stringify(mode)},opener:true,noNode:typeof require==='undefined',noBridge:typeof window.collector==='undefined'},'*');
+    ${mode === 'late-form' ? "setTimeout(()=>{const f=document.createElement('iframe');f.srcdoc='<form><input placeholder=验证码></form>';document.body.append(f);},400);" : ''}
+    </script></body>`,{headers});
   const body = request.method === 'POST' ? await request.text() : '';
   const payload = JSON.stringify({kind:mode,method:request.method,body});
   const script = `function finish(){if(window.opener)window.opener.postMessage({...${payload},referrer:document.referrer,opener:!!window.opener,noNode:typeof require==='undefined',noBridge:typeof window.collector==='undefined'},'*');window.close();}`;
@@ -76,6 +84,46 @@ async function run(collector, check, until, wait) {
     await until(()=>reply('relay'),'a product redirected to login lost its opener');
     await until(()=>collector.tabs.rows.length===count&&collector.popups.size===0,'redirected login left a blank product tab');
     check('a product redirect can finish its login relay and close its grouped tab',!collector.window.isDestroyed()&&collector.tabs.active===source);
+
+    // The real failure was a product redirect whose callback never called close().
+    // Start both children before waiting so the normal production grace period is tested.
+    await exec("void window.open('https://detail.tmall.com/item.htm?id=424244&collector_popup=redirect-empty','_blank')");
+    await until(()=>collector.tabs.active!==source&&collector.tabs.active.view?.webContents.getURL().includes('collector_popup=empty'),'empty redirected child did not load');
+    const emptyTab=collector.tabs.active;created.add(emptyTab);
+    check('a product redirected to an empty callback retains its original owner',emptyTab.openerTabId===source.id&&await reply('empty'));
+    await exec("void window.open('https://detail.tmall.com/item.htm?id=424245&collector_popup=redirect-late-form','_blank')");
+    await until(()=>collector.tabs.active!==emptyTab&&collector.tabs.active!==source,'verification child did not open');
+    const formTab=collector.tabs.active;created.add(formTab);
+    await until(()=>!formTab.view.webContents.isLoadingMainFrame(),'verification redirect did not load');
+    await until(()=>formTab.view.webContents.executeJavaScript('!!document.querySelector("iframe")'),'late verification frame did not appear');
+    collector.activateTab(previous.id);
+    const preserved=source.state.inspectionId;
+    await until(()=>emptyTab.closed,'a non-closing empty callback left a stale product tab');
+    check('a late redirect is cleaned without switching a background site or replacing its resources',collector.tabs.active===previous&&source.state.inspectionId===preserved);
+    await wait(1000);
+    check('a visible verification iframe on the callback route is retained',!formTab.closed&&collector.tabs.rows.includes(formTab));
+    collector.closeTab(formTab.id);collector.activateTab(source.id);
+
+    await exec(`void window.open(${JSON.stringify(relay.replace('=relay','=empty'))},'collector-empty-login')`);
+    await until(()=>collector.popups.size===1,'empty native callback did not open');
+    const emptyPopup=[...collector.popups.keys()][0];
+    // A direct same-tab redirect has no native opener; it must offer an explicit action.
+    const standalone=collector.openTab('https://detail.tmall.com/collector-popup?collector_popup=opener',{group:'taobao'});created.add(standalone);
+    await until(()=>!standalone.view.webContents.isLoadingMainFrame(),'standalone source did not load');
+    await standalone.view.webContents.loadURL(relay.replace('=relay','=empty'));
+    await exec("void window.open('https://detail.tmall.com/item.htm?id=424246&collector_popup=redirect-empty','_blank')");
+    await until(()=>collector.tabs.active!==standalone&&collector.tabs.active!==source,'active empty child did not open');
+    const activeEmpty=collector.tabs.active;created.add(activeEmpty);
+    await until(()=>standalone.view.webContents.executeJavaScript('document.title==="淘宝登录中转未完成"'),'same-tab callback did not show recovery actions');
+    check('a same-tab empty callback shows return guidance without automatically replaying its request',standalone.view.webContents.getURL().includes('collector_popup=empty')&&
+      await standalone.view.webContents.executeJavaScript('document.body.textContent.includes("返回上一页") && document.body.textContent.includes("打开淘宝首页")'));
+    await until(()=>emptyPopup.isDestroyed()&&collector.popups.size===0,'a non-closing native callback leaked an empty window');
+    check('a blank native login callback is also released after the grace period',!source.closed);
+    await until(()=>activeEmpty.closed,'an active empty callback was not removed');
+    check('cleaning an active callback returns to its original opener',collector.tabs.active===source);
+    collector.activateTab(standalone.id);await wait(150);
+    fs.writeFileSync(path.join(app.getPath('userData'),'..','taobao-relay-recovery.png'),(await standalone.view.webContents.capturePage()).toPNG());
+    collector.closeTab(standalone.id);collector.activateTab(source.id);
 
     const before=collector.tabs.rows.length;
     await exec("void window.open('file:///C:/collector-not-a-real-file','_blank')");await wait(100);

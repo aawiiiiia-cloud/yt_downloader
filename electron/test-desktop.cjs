@@ -5,7 +5,7 @@ const path = require('node:path');
 const executable = require('electron');
 const root = path.resolve(__dirname, '..');
 const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-let result = spawnSync(executable, ['.', '--collector-smoke'], { cwd: root, env, stdio: 'inherit', timeout: 60000, windowsHide: true });
+let result = spawnSync(executable, ['.', '--collector-smoke'], { cwd: root, env, stdio: 'inherit', timeout: 120000, windowsHide: true });
 if (result.status !== 0) process.exit(result.status || 1);
 const report = JSON.parse(fs.readFileSync(path.join(root, 'electron-artifacts', 'smoke-result.json'), 'utf8'));
 result = spawnSync(executable, ['.', '--collector-persistence-check'], {
