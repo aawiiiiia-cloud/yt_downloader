@@ -59,13 +59,14 @@ function loadPreview(frame, refresh = false) {
   const showSize = value => {
     if (!current()) return;
     setLoading(label, false);
-    label.textContent = `${state.result.site === 'zcool' ? '图片' : value.displayFallback ? '网页图' : '原图'} ${mediaInfo.size(value.size)}`;
-    if (value.width && value.height) frame.closest('.image-card').querySelector('.image-meta span:last-child').textContent = `${value.width} × ${value.height}`;
+    label.textContent = '大小：' + (value.size > 0 ? mediaInfo.size(value.size).replace(' MB', 'MB') : '未知');
+    label.title = value.displayFallback ? '网页展示图片的大小' : '源图片大小';
+    if (value.width && value.height) frame.closest('.image-card').querySelector('[data-image-dimensions]').textContent = `尺寸：${value.width}×${value.height}`;
   };
   if (previews.get(key)?.sizeLoaded) showSize(previews.get(key));
   else window.collector.call('image-size', args).then(value => {
     rememberPreview(key, { ...value, sizeLoaded: true }); showSize(value);
-  }, () => { if (current()) { setLoading(label, false); label.textContent = state.result.site === 'zcool' ? '图片大小未知' : '原图大小未知'; } });
+  }, () => { if (current()) { setLoading(label, false); label.textContent = '大小：未知'; label.title = '图片大小未知'; } });
 }
 function updateMediaInfo() {
   const item = state?.result?.items?.[selectedItem];
@@ -174,7 +175,7 @@ function renderResources() {
   }
   if (item.parts?.length > 1) html += `<label class="muted">选择分P<select id="bili-part" class="part-select">${item.parts.map(p => `<option value="${p.index}" ${p.index === item.currentPart ? 'selected' : ''}>P${p.index} · ${escape(p.title)}</option>`).join('')}</select></label>`;
   if (item.kind === 'images') {
-    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<div class="image-card"><label class="image-select"><input type="checkbox" data-image="${image.index}" aria-label="选择第 ${image.index} 张图片" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}<span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '尺寸未知'}</span></span><span class="image-size is-loading" data-image-size aria-busy="true">正在查询原图大小…</span>${image.names?.length ? `<span class="image-name" data-image-name="${image.index}"></span>` : ""}</label><button type="button" class="image-download" data-download-image="${image.index}" aria-label="下载第 ${image.index} 张图片">下载 ↓</button></div>`).join('')}</div>`;
+    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<div class="image-card"><label class="image-select"><input type="checkbox" id="image-select-${image.index}" data-image="${image.index}" aria-label="选择第 ${image.index} 张图片" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}</label><div class="image-footer"><label class="image-meta" for="image-select-${image.index}"><span>${String(image.index).padStart(2, '0')}</span><span data-image-dimensions>尺寸：${image.width && image.height ? image.width + '×' + image.height : '未知'}</span><span class="image-size is-loading" data-image-size aria-busy="true" title="正在读取图片大小">大小：未知</span>${image.names?.length ? `<span class="image-name" data-image-name="${image.index}"></span>` : ""}</label><button type="button" class="image-download" data-download-image="${image.index}" aria-label="下载第 ${image.index} 张图片">下载</button></div></div>`).join('')}</div>`;
   } else {
     html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
@@ -214,10 +215,11 @@ function render(next) {
   const needsLogin = expired || !state.login[selectedSite];
   $('login-state').textContent = `${names[selectedSite]} · ${expired ? '登录凭证已失效/过期，请重新登录' : needsLogin ? '未登录（建议登录）' : '已登录'}`;
   $('login-state').classList.toggle('login-warning', needsLogin);
+  $('login-state').classList.toggle('login-success', !needsLogin && selectedSite !== 'behance');
   $('login-state').title = expired ? '请重新登录或导入新的 Cookies，旧凭证不会因再次检测到而恢复。' : needsLogin ? (selectedSite === 'youtube' ? '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。' : '尚未检测到本站登录凭据，建议先登录。') : (selectedSite === 'youtube' ? '已读取登录凭证，下载前仍会自动确认是否有效。' : '已读取登录凭证，实际可用性由网站请求结果确认。');
   if (selectedSite === 'behance') {
     $('login-state').textContent = 'Behance · 公开作品可直接解析';
-    $('login-state').classList.remove('login-warning');
+    $('login-state').classList.remove('login-warning', 'login-success');
     $('login-state').title = 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
   }
   const loginBusy = !!state.loginRunning || !!state.importingCookies;

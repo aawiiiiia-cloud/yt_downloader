@@ -80,8 +80,8 @@ async function run(collector, check, until, wait, assetRequests) {
     check('ZCOOL page parses exactly 28 ordered body images', collector.state.result?.items[0].images.length === 28 &&
       collector.state.result.items[0].images[27].index === 28);
     check('ZCOOL snapshots exclude private stores and recommendations', !/do-not-forward|recommend.jpg/.test(JSON.stringify(collector.publicState())));
-    await until(() => ui("document.querySelector('[data-preview-image]')?.naturalWidth>0 && document.querySelector('.image-meta')?.textContent.includes('4 × 3')"), 'ZCOOL preview or actual dimensions missing');
-    check('ZCOOL size cards never mislabel resized files as originals', await ui("document.querySelector('[data-image-size]').textContent.startsWith('图片 ') && !document.querySelector('.image-meta').textContent.includes('12 × 9')"));
+    await until(() => ui("document.querySelector('[data-preview-image]')?.naturalWidth>0 && document.querySelector('.image-meta')?.textContent.includes('4×3')"), 'ZCOOL preview or actual dimensions missing');
+    check('ZCOOL size cards never mislabel resized files as originals', await ui("/^大小：[0-9]+[.][0-9]{2}MB$/.test(document.querySelector('[data-image-size]').textContent) && !document.querySelector('.image-meta').textContent.includes('12×9')"));
     check('ZCOOL explains the original-size limitation and exposes only web login and cookie import', await ui("document.querySelector('.collection-notice').textContent.includes('缩放图片') && !document.getElementById('web-login').hidden && document.getElementById('edge-login').hidden && !document.getElementById('import-login').hidden"));
     check('ZCOOL asset requests retain complete signed parameters and permitted origin', assetRequests.some(row =>
       row.url.includes('img.zcool.cn') && row.url.includes('k=fixture&t=fixture') && row.referer === 'https://www.zcool.com.cn/'));
