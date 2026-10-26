@@ -16,7 +16,7 @@ function emptyRelayDocument() {
   for (const element of elements) {
     const style = getComputedStyle(element), rect = element.getBoundingClientRect();
     if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || !rect.width || !rect.height) continue;
-    if (/^(IMG|VIDEO|AUDIO|IFRAME|CANVAS|SVG|INPUT|BUTTON|SELECT|TEXTAREA|OBJECT|EMBED)$/.test(element.tagName) ||
+    if (/^(IMG|VIDEO|AUDIO|IFRAME|CANVAS|SVG|INPUT|BUTTON|SELECT|TEXTAREA|OBJECT|EMBED)$/.test(element.tagName.toUpperCase()) ||
       element.tagName.includes('-') || element.hasAttribute('contenteditable') || element.hasAttribute('role') ||
       style.backgroundImage !== 'none') return false;
     for (const pseudo of ['::before', '::after']) {
@@ -80,7 +80,7 @@ function relayHelpScript(canGoBack, url) {
     if (${!!canGoBack}) {
       const back = document.createElement('button'); back.textContent = '返回上一页'; back.onclick = () => history.back(); panel.append(back,document.createTextNode('　'));
     }
-    const home = document.createElement('a'); home.href = 'https://www.taobao.com/'; home.textContent = '打开淘宝首页'; panel.append(home);
+    const home = document.createElement('a'); home.href = 'https://www.taobao.com/'; home.textContent = '打开淘宝首页'; home.style.color = '#383838'; panel.append(home);
     document.body.replaceChildren(panel); return true;
   })()`;
 }

@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const { app } = require('electron');
+const { emptyRelayScript } = require('./taobao-relay.cjs');
 
 // Called before the general HTTPS fixture. All pages are returned locally;
 // this never contacts Taobao, signs a request or uses a real account.
@@ -85,7 +86,7 @@ async function run(collector, check, until, wait) {
     await until(()=>collector.tabs.rows.length===count&&collector.popups.size===0,'redirected login left a blank product tab');
     check('a product redirect can finish its login relay and close its grouped tab',!collector.window.isDestroyed()&&collector.tabs.active===source);
 
-    // The real failure was a product redirect whose callback never called close().
+    // Reproduce the missing case: a product callback that never calls close().
     // Start both children before waiting so the normal production grace period is tested.
     await exec("void window.open('https://detail.tmall.com/item.htm?id=424244&collector_popup=redirect-empty','_blank')");
     await until(()=>collector.tabs.active!==source&&collector.tabs.active.view?.webContents.getURL().includes('collector_popup=empty'),'empty redirected child did not load');
@@ -102,6 +103,17 @@ async function run(collector, check, until, wait) {
     check('a late redirect is cleaned without switching a background site or replacing its resources',collector.tabs.active===previous&&source.state.inspectionId===preserved);
     await wait(1000);
     check('a visible verification iframe on the callback route is retained',!formTab.closed&&collector.tabs.rows.includes(formTab));
+    for (const kind of ['svg','canvas','img','background','custom-element']) {
+      await formTab.view.webContents.executeJavaScript(`(() => {
+        const kind=${JSON.stringify(kind)};
+        const node=kind==='svg'?document.createElementNS('http://www.w3.org/2000/svg','svg'):document.createElement(kind==='background'?'div':kind);
+        node.style.cssText='display:block;width:40px;height:40px';
+        if(kind==='background')node.style.backgroundImage='linear-gradient(#333,#333)';
+        document.body.replaceChildren(node);
+      })()`);
+      assert.equal(await formTab.view.webContents.executeJavaScript(emptyRelayScript),false,kind+' must not be treated as an empty callback');
+    }
+    check('visible SVG, canvas, images, backgrounds and custom elements cannot be discarded as blank callbacks',true);
     collector.closeTab(formTab.id);collector.activateTab(source.id);
 
     await exec(`void window.open(${JSON.stringify(relay.replace('=relay','=empty'))},'collector-empty-login')`);
