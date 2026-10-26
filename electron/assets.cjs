@@ -126,17 +126,21 @@ class Assets {
       return this.remember(key, { dataUrl: `data:${mime};base64,${bytes.toString('base64')}` });
     }, signal);
   }
-  sourceSize(values, site, signal, referrer, needDimensions = false) {
+  sourceSize(values, site, signal, referrer, needDimensions = false, refresh = false) {
     const urls = [...new Set(values.map(value => assetUrl(value, site)))], key = 'size:' + urls.join('|') + (referrer ? '|' + referrer : '') + (needDimensions ? '|dimensions' : '');
     const cached = this.cache.get(key);
-    if (cached && Date.now() - cached.at < 300000) return Promise.resolve(cached.value);
+    const complete = cached?.value.size > 0 && (!needDimensions || (cached.value.width && cached.value.height));
+    // A temporary header failure must not pin unknown dimensions for five minutes.
+    if (!refresh && cached && Date.now() - cached.at < (complete ? 300000 : 5000)) return Promise.resolve(cached.value);
     return this.limit(async () => {
       const timer = AbortSignal.timeout(10000), abort = signal ? AbortSignal.any([signal, timer]) : timer;
       for (const url of urls) {
         const dimensionsWanted=needDimensions && url===urls[0];let knownSize=null;
-        for (const method of ['HEAD', 'GET']) {
+        // The range response provides both length and pixels. HEAD first wastes
+        // the shared deadline and some image CDNs report a different variant's size.
+        for (const method of (dimensionsWanted ? ['GET', 'HEAD'] : ['HEAD', 'GET'])) {
           try {
-            const response = await this.request(url, site, { method, headers: { ...(method === 'GET' ? { Range: dimensionsWanted ? 'bytes=0-262143' : 'bytes=0-0' } : {}), ...(referrer ? { Referer: referrer } : {}) } }, abort);
+            const response = await this.request(url, site, { method, cache: refresh ? 'reload' : 'default', headers: { ...(method === 'GET' ? { Range: dimensionsWanted ? 'bytes=0-262143' : 'bytes=0-0' } : {}), ...(referrer ? { Referer: referrer } : {}) } }, abort);
             const type = response.headers.get('content-type') || '';
             const range = response.headers.get('content-range')?.match(/^bytes\s+\d+-\d+\/(\d+)$/i);
             const size = Number(range?.[1] || (response.status === 200 ? response.headers.get('content-length') : 0));

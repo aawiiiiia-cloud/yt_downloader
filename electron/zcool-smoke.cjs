@@ -71,8 +71,18 @@ async function loginChecks(collector, check, until) {
 async function run(collector, check, until, wait, assetRequests) {
   const source = collector.tabs.active, add = collector.queue.add;
   const ui = code => collector.window.webContents.executeJavaScript(code);
-  let spec, title;
+  const fetch = collector.assets.fetch;
+  let spec, title, dimensionRequests = 0, reloaded = false;
   try {
+    collector.assets.fetch = (value, options) => {
+      if (new globalThis.URL(value).pathname === '/community/1.jpg' && options.headers?.Range === 'bytes=0-262143') {
+        dimensionRequests++; reloaded = options.cache === 'reload';
+        if (dimensionRequests === 1) return Promise.resolve(new Response(Buffer.from([0xff]), {
+          headers: { 'content-type': 'image/jpeg', 'content-length': '2093605' },
+        }));
+      }
+      return fetch(value, options);
+    };
     const tab = collector.openTab(URL, { group: 'zcool' });
     await until(() => tab.state.site === 'zcool' && !tab.view.webContents.isLoadingMainFrame(), 'ZCOOL fixture did not load');
     await ui("document.getElementById('resources-tab').click()");
@@ -80,7 +90,16 @@ async function run(collector, check, until, wait, assetRequests) {
     check('ZCOOL page parses exactly 28 ordered body images', collector.state.result?.items[0].images.length === 28 &&
       collector.state.result.items[0].images[27].index === 28);
     check('ZCOOL snapshots exclude private stores and recommendations', !/do-not-forward|recommend.jpg/.test(JSON.stringify(collector.publicState())));
+    await until(() => ui("document.querySelector('[data-preview-image]')?.naturalWidth>0 && document.querySelector('[data-image-size]')?.textContent==='大小：2.09MB'"), 'ZCOOL partial dimension fixture did not settle');
+    check('ZCOOL a successful preview never substitutes its thumbnail dimensions for missing source pixels',
+      await ui("document.querySelector('[data-image-dimensions]').textContent==='尺寸：未知'"));
+    check('ZCOOL incomplete dimensions expose retry even when the preview and size succeed',
+      await ui("!document.querySelector('[data-retry-preview=\"1\"]').hidden"));
+    await ui("document.querySelector('[data-image=\"1\"]').checked=false;document.querySelector('[data-retry-preview=\"1\"]').click()");
     await until(() => ui("document.querySelector('[data-preview-image]')?.naturalWidth>0 && document.querySelector('.image-meta')?.textContent.includes('4×3')"), 'ZCOOL preview or actual dimensions missing');
+    check('ZCOOL retry bypasses both partial caches and reloads source headers immediately', dimensionRequests === 2 && reloaded);
+    check('ZCOOL metadata retry preserves image selection and clears the retry button on success',
+      await ui("!document.querySelector('[data-image=\"1\"]').checked && document.querySelector('[data-retry-preview=\"1\"]').hidden"));
     check('ZCOOL size cards never mislabel resized files as originals', await ui("/^大小：[0-9]+[.][0-9]{2}MB$/.test(document.querySelector('[data-image-size]').textContent) && !document.querySelector('.image-meta').textContent.includes('12×9')"));
     check('ZCOOL explains the original-size limitation and exposes only web login and cookie import', await ui("document.querySelector('.collection-notice').textContent.includes('缩放图片') && !document.getElementById('web-login').hidden && document.getElementById('edge-login').hidden && !document.getElementById('import-login').hidden"));
     check('ZCOOL asset requests retain complete signed parameters and permitted origin', assetRequests.some(row =>
@@ -103,6 +122,6 @@ async function run(collector, check, until, wait, assetRequests) {
     check('ZCOOL manual mode retains its completed inspection across navigation', collector.state.inspectionId === receipt);
     const stale = await collector.readPage(snapshotScript);
     check('ZCOOL stale page JSON cannot be attached to a different work', stale.mismatch === true && stale.images.length === 0);
-  } finally { collector.queue.add = add; collector.activateTab(source.id); }
+  } finally { collector.assets.fetch = fetch; collector.queue.add = add; collector.activateTab(source.id); }
 }
 module.exports = { fixture, run };

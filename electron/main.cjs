@@ -703,7 +703,7 @@ class CollectorApp {
     if (item.kind === 'images' && !image) throw new Error('图片不存在');
     if (mode === 'size') {
       if (!image) throw new Error('当前内容不是图片');
-      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal, ['taobao', 'zcool'].includes(site) ? item.url : undefined, site === 'zcool' || (site === 'taobao' && !(image.width && image.height)));
+      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal, ['taobao', 'zcool'].includes(site) ? item.url : undefined, site === 'zcool' || (site === 'taobao' && !(image.width && image.height)), !!data.refresh);
     }
     const url = image ? image.preview_url || image.fallback_urls?.at(-1) || image.url : item.thumbnail;
     if (!url) throw new Error('当前页面未提供视频封面');

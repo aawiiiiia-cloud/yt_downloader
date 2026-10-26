@@ -36,22 +36,29 @@ function previewFrame(index, title) {
 function loadPreview(frame, refresh = false) {
   const receipt = state.inspectionId, itemIndex = selectedItem, imageIndex = frame.dataset.preview;
   const key = `${receipt}:${itemIndex}:${imageIndex}`;
-  const current = () => frame.isConnected && state.inspectionId === receipt && selectedItem === itemIndex;
+  const generation = String((Number(frame.dataset.previewGeneration) || 0) + 1);
+  frame.dataset.previewGeneration = generation;
+  const current = () => frame.isConnected && state.inspectionId === receipt && selectedItem === itemIndex && frame.dataset.previewGeneration === generation;
+  const image = state.result?.items?.[itemIndex]?.images?.find(image => image.index === Number(imageIndex));
+  const needDimensions = state.result?.site === 'zcool' || (state.result?.site === 'taobao' && !(image?.width && image?.height));
+  const complete = value => value.size > 0 && (!needDimensions || (value.width && value.height));
+  let previewFailed = false, metadataIncomplete = false;
   const img = frame.querySelector('img'), message = frame.querySelector('.preview-message'), retry = frame.querySelector('button');
+  const updateRetry = () => { retry.hidden = !(previewFailed || metadataIncomplete); };
   img.hidden = true; message.hidden = false; message.textContent = '正在加载预览…'; retry.hidden = true;
   setLoading(message, true);
   const display = result => {
     if (!current()) return;
-    img.onload = () => { if (current()) { img.hidden = false; message.hidden = true; setLoading(message, false); retry.hidden = true; } };
-    img.onerror = () => { if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = '预览加载失败'; retry.hidden = false; } };
+    img.onload = () => { if (current()) { img.hidden = false; message.hidden = true; setLoading(message, false); previewFailed = false; updateRetry(); } };
+    img.onerror = () => { if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = '预览加载失败'; previewFailed = true; updateRetry(); } };
     img.src = result.dataUrl;
     if (img.complete && img.naturalWidth > 0) img.onload();
   };
   const args = { inspectionId: receipt, itemIndex, imageIndex: imageIndex === 'cover' ? null : Number(imageIndex), refresh };
   if (previews.get(key)?.dataUrl && !refresh) display(previews.get(key));
   else {
-    window.collector.call('preview', args).then(result => { rememberPreview(key, result); display(result); }, error => {
-      if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = error.message; retry.hidden = false; }
+    window.collector.call('preview', args).then(result => { if (current()) { rememberPreview(key, result); display(result); } }, error => {
+      if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = error.message; previewFailed = true; updateRetry(); }
     });
   }
   if (imageIndex === 'cover') return;
@@ -62,11 +69,16 @@ function loadPreview(frame, refresh = false) {
     label.textContent = '大小：' + (value.size > 0 ? mediaInfo.size(value.size).replace(' MB', 'MB') : '未知');
     label.title = value.displayFallback ? '网页展示图片的大小' : '源图片大小';
     if (value.width && value.height) frame.closest('.image-card').querySelector('[data-image-dimensions]').textContent = `尺寸：${value.width}×${value.height}`;
+    metadataIncomplete = !complete(value); updateRetry();
   };
-  if (previews.get(key)?.sizeLoaded) showSize(previews.get(key));
-  else window.collector.call('image-size', args).then(value => {
-    rememberPreview(key, { ...value, sizeLoaded: true }); showSize(value);
-  }, () => { if (current()) { setLoading(label, false); label.textContent = '大小：未知'; label.title = '图片大小未知'; } });
+  const cached = previews.get(key);
+  if (!refresh && cached?.sizeLoaded && (complete(cached) || Date.now() - cached.metadataAt < 5000)) showSize(cached);
+  else {
+    setLoading(label, true);
+    window.collector.call('image-size', args).then(value => {
+      if (current()) { rememberPreview(key, { ...value, sizeLoaded: true, metadataAt: Date.now() }); showSize(value); }
+    }, () => { if (current()) { setLoading(label, false); label.textContent = '大小：未知'; label.title = '图片大小未知'; metadataIncomplete = true; updateRetry(); } });
+  }
 }
 function updateMediaInfo() {
   const item = state?.result?.items?.[selectedItem];

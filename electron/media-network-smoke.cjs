@@ -22,7 +22,7 @@ async function run(check) {
     const preview=await assets.preview('https://img.alicdn.com/fixture.png','taobao',undefined,false,referrer);
     check('the production asset path permits previews using the default browser security policy',preview.dataUrl==='data:image/png;base64,'+png.toString('base64')&&seen[0].referer==='http://source.example/');
     const metadata=await assets.sourceSize(['https://img.alicdn.com/fixture.png'],'taobao',undefined,referrer,true);
-    check('real HEAD/range requests recover source bytes and pixel dimensions',metadata.size===png.length&&metadata.width===4&&metadata.height===3&&seen.some(row=>row.method==='HEAD')&&seen.some(row=>row.range==='bytes=0-262143'));
+    check('one real range request recovers source bytes and pixel dimensions',metadata.size===png.length&&metadata.width===4&&metadata.height===3&&!seen.some(row=>row.method==='HEAD')&&seen.some(row=>row.range==='bytes=0-262143'));
     check('asset requests never send a product path or weaken referrer policy',seen.every(row=>row.referer==='http://source.example/'));
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
