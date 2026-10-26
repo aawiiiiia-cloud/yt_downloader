@@ -185,7 +185,7 @@ async function run(collector, profile, snapshotScript) {
     await require('./behance-smoke.cjs').run(collector, check, until, wait);
     await require('./taobao-smoke.cjs').run(collector, check, until, wait, assetRequests);
     await require('./zcool-smoke.cjs').run(collector, check, until, wait, assetRequests);
-    await require('./popup-smoke.cjs').run(collector, check, until, wait);
+    await require('./popup-smoke.cjs').run(collector, check, until, wait, warnings);
     resolveDownload({ folder: profile, count: 1 }); await wait(100);
     check('background download queue completes', task.status === 'completed');
     await require('./task-failure-smoke.cjs').run(collector, check, until, wait, profile);

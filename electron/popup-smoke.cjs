@@ -25,7 +25,7 @@ async function fixture(request) {
   return new Response(`<!doctype html><title>本地登录 / 验证测试</title><h1>本地登录 / 验证测试</h1><button onclick="finish()">完成</button><script>${script}${mode==='wait'?'':'finish();'}</script>`,{headers});
 }
 
-async function run(collector, check, until, wait) {
+async function run(collector, check, until, wait, warnings = []) {
   const previous = collector.tabs.active;
   const source = collector.openTab('https://detail.tmall.com/collector-popup?collector_popup=opener',{group:'taobao'});
   const web = source.view.webContents, created = new Set([source]);
@@ -134,7 +134,12 @@ async function run(collector, check, until, wait) {
     await until(()=>activeEmpty.closed,'an active empty callback was not removed');
     check('cleaning an active callback returns to its original opener',collector.tabs.active===source);
     collector.activateTab(standalone.id);await wait(150);
-    fs.writeFileSync(path.join(app.getPath('userData'),'..','taobao-relay-recovery.png'),(await standalone.view.webContents.capturePage()).toPNG());
+    // Some Windows compositors cannot capture a newly shown native child view.
+    // All assertions above remain mandatory; report screenshot availability separately.
+    try {
+      await Promise.race([standalone.view.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'),wait(500)]);
+      fs.writeFileSync(path.join(app.getPath('userData'),'..','taobao-relay-recovery.png'),(await standalone.view.webContents.capturePage()).toPNG());
+    } catch (error) { warnings.push('Taobao relay screenshot unavailable: '+error.message); }
     collector.closeTab(standalone.id);collector.activateTab(source.id);
 
     const before=collector.tabs.rows.length;
