@@ -116,6 +116,7 @@ async function run(collector, check, until, wait, assetRequests) {
     await ui("document.getElementById('resources-tab').click();document.getElementById('resources-panel').scrollTop=0");
     await wait(100);
     fs.writeFileSync(path.join(app.getPath('userData'), '..', 'zcool-panel.png'), (await collector.window.webContents.capturePage()).toPNG());
+    await require('./zcool-video-smoke.cjs').run(collector, check, until, wait, assetRequests);
     const receipt = collector.state.inspectionId;
     await tab.view.webContents.mainFrame.executeJavaScript("history.pushState({},'', '/work/ZanotherWork.html')");
     await wait(120);

@@ -91,7 +91,7 @@ function updateMediaInfo() {
     (state.settings.imageFormat === 'original' ? '预览使用网页展示图；大小按原始素材查询，下载优先原图。' : '图片显示源文件大小；格式转换后的大小以实际保存结果为准。') : '大小随画质更新，包含需要合并的音频；估算值以“约”标记。';
   if ($('resource-size-note') && state.result.site === 'behance' && item.kind === 'images' && state.settings.imageFormat === 'original')
     $('resource-size-note').textContent += ' GIF 优先使用静帧预览，保存保留动画。';
-  if ($('resource-size-note') && state.result.site === 'zcool')
+  if ($('resource-size-note') && state.result.site === 'zcool' && item.kind === 'images')
     $('resource-size-note').textContent = '尺寸和大小按下载地址查询；下载时核对实际宽高，低于作品标注尺寸的缩放图不保存。';
   const button = $('download');
   document.querySelectorAll('[data-download-image]').forEach(button => {
@@ -179,7 +179,9 @@ function renderResources() {
     const index = items.findIndex(row => row.category === key), count = items[index]?.images?.length || 0;
     return `<button type="button" data-image-category="${index}" role="tab" aria-selected="${index === selectedItem}" ${index < 0 ? 'disabled' : ''}>${label} ${count}</button>`;
   }).join('')}</div>` : items.length > 1 ? `<select id="part-select" class="part-select" aria-label="资源条目">${items.map((row, index) => `<option value="${index}" ${index === selectedItem ? 'selected' : ''}>${index + 1}. ${row.kind === 'images' ? '图片集 · ' : ''}${escape(row.title)}${row.provider ? ' · ' + escape(row.provider) : ''}</option>`).join('')}</select>` : '';
-  const warnings = commerce || state.result.site === 'zcool' ? (state.result.warnings || []).map(message => `<p class="muted collection-notice">${escape(message)}</p>`).join('') : '';
+  const warnings = commerce || state.result.site === 'zcool' ? (state.result.warnings || [])
+    .filter(message => item.kind === 'images' || !(state.result.imageWarnings || []).includes(message))
+    .map(message => `<p class="muted collection-notice">${escape(message)}</p>`).join('') : '';
   let html = externalTools+parts+warnings + `<h2 class="content-title">${escape(item.title)}</h2><div class="author">${item.externalId?escape(item.provider)+' · 外部托管 · ':''}${escape(item.author)}</div>`;
   if (['external', 'unavailable'].includes(item.kind)) {
     $('resources').innerHTML = html + `<p class="muted">${escape(item.kind === 'external' ? '外部平台托管的视频默认不下载。' : item.message)}</p>`;

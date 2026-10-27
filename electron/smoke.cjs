@@ -51,7 +51,7 @@ async function run(collector, profile, snapshotScript) {
       const resource = new URL(request.url);
       const popupFixture = await require('./popup-smoke.cjs').fixture(request);
       if (popupFixture) return popupFixture;
-      if (resource.hostname === 'img.zcool.cn' || resource.hostname === 'img.alicdn.com' || resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
+      if (resource.hostname === 'video.zcool.cn' || resource.hostname === 'img.zcool.cn' || resource.hostname === 'img.alicdn.com' || resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
         assetRequests.push({ url:request.url, method:request.method, referer:request.headers.get('referer') });
         if (resource.hostname.endsWith('.hdslb.com') && !coverFailed) { coverFailed = true; return new Response('unavailable', {status:503}); }
         return new Response(request.method === 'HEAD' ? null : imageBytes, { headers: { 'content-type':'image/png', 'content-length':request.method === 'HEAD' ? '340000' : String(imageBytes.length) } });

@@ -1,4 +1,4 @@
-"""ZCOOL images from the currently loaded work; never fabricate unsigned original URLs."""
+"""ZCOOL media from the currently loaded work; never fabricate unsigned source URLs."""
 from __future__ import annotations
 
 import json
@@ -47,13 +47,19 @@ def resize_width(value):
     return int(match[1]) if match else None
 
 
-def collection(url, context):
+def validate_context(url, context):
     identifier = work_id(url)
     if not isinstance(context, dict) or context.get('workId') != identifier or context.get('mismatch'):
         raise ValueError('站酷作品数据尚未就绪或已切换，请在左侧完成页面加载、登录或网站验证后重新解析')
-    rows = context.get('images')
+    rows = context.get('images', [])
     if not isinstance(rows, list) or len(rows) > 400 or len(json.dumps(context, ensure_ascii=False)) > 1400000:
         raise ValueError('站酷作品图片数据无效，请重新解析')
+    return identifier
+
+
+def collection(url, context, *, allow_empty=False):
+    identifier = validate_context(url, context)
+    rows = context.get('images') or []
     images, seen = [], set()
     for row in rows:
         if not isinstance(row, dict): continue
@@ -78,6 +84,7 @@ def collection(url, context):
             'expected_width': expected_width, 'expected_height': expected_height,
             'resolutionLimited': limited})
     if not images:
+        if allow_empty: return None
         raise ValueError('尚未读取到站酷作品正文图片，请在左侧完成页面加载、必要的登录或网站验证后重新解析')
     return {'id': identifier, 'mediaId': identifier, 'kind': 'images', 'url': work_url(url),
         'title': str(context.get('title') or identifier)[:240], 'author': str(context.get('author') or '')[:120],
@@ -86,14 +93,19 @@ def collection(url, context):
 
 def inspect_work(collector, url):
     collector.check_cancel()
-    item = collection(url, collector.request.get('context'))
-    warnings = []
-    if any(row['resolutionLimited'] for row in item['images']):
-        warnings.append('当前页面提供了缩放图片。请在左侧登录后重新解析；下载会核对实际尺寸，低于作品标注尺寸时停止保存。')
+    item = collection(url, collector.request.get('context'), allow_empty=True)
+    items = [item] if item else []
+    image_warnings = []
+    if item and any(row['resolutionLimited'] for row in item['images']):
+        image_warnings.append('当前页面提供了缩放图片。请在左侧登录后重新解析；下载会核对实际尺寸，低于作品标注尺寸时停止保存。')
+    warnings = list(image_warnings)
+    from zcool_video import inspect_videos
+    items.extend(inspect_videos(collector, url))
     if (collector.request.get('context') or {}).get('skippedVideos'):
-        warnings.append('此作品的视频暂未接入，本次仅采集正文图片。')
-    collector.log(f"站酷作品：{item['title']} · {len(item['images'])} 张正文图片")
-    return {'site': 'zcool', 'url': work_url(url), 'items': [item], 'warnings': warnings}
+        warnings.append('已跳过不支持的视频来源；当前支持站酷原生 MP4。')
+    if not items: raise ValueError('尚未读取到站酷正文图片或原生视频，请完成左侧页面加载后重新解析')
+    collector.log(f"站酷作品：{len(item['images']) if item else 0} 张正文图片 · {len(items) - bool(item)} 个视频")
+    return {'site': 'zcool', 'url': work_url(url), 'items': items, 'warnings': warnings, 'imageWarnings': image_warnings}
 
 
 class ZcoolImages(TaobaoImages):
@@ -129,6 +141,10 @@ class ZcoolImages(TaobaoImages):
 
 
 def download_work(collector, url, folder):
+    validate_context(url, collector.request.get('context'))
+    if collector.request.get('kind') == 'video':
+        from zcool_video import download_video
+        return download_video(collector, url, folder)
     if collector.request.get('kind') != 'images': raise ValueError('站酷当前仅支持作品图片')
     item = collection(url, collector.request.get('context'))
     if collector.request.get('mediaId') != item['mediaId']: raise ValueError('站酷作品已变化，请重新解析')

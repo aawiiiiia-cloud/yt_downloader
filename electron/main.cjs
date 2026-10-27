@@ -547,7 +547,7 @@ class CollectorApp {
         do {
           if (ticket !== tab.sequence || tab.closed || this.closing) return;
           context = await this.readPage(zcoolSnapshotScript, tab, false, tab.assetsAbort.signal);
-          if (context && !context.mismatch && context.images?.length) break;
+          if (context && !context.mismatch && (context.images?.length || context.videos?.length)) break;
           await new Promise(resolve => setTimeout(resolve, 150));
         } while (Date.now() < deadline);
       }

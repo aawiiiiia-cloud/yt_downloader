@@ -22,6 +22,15 @@ test('defaults start five sites but only one task per site', () => {
   assert.equal(queue.tasks.filter(task=>task.status==='queued').length,Object.keys(SITES).length+1-5);
   assert.deepEqual(queue.limits,{globalConcurrency:5,siteConcurrency:1});
 });
+
+test('different ZCOOL videos use the configured site allowance while duplicate outputs still serialize', () => {
+  const {queue,add,started}=controlled({globalConcurrency:5,siteConcurrency:2});
+  const base={url:'https://www.zcool.com.cn/work/ZNzQyNDUwOTY=.html',kind:'video'};
+  add('v1','zcool',{...base,mediaId:'video-1'});add('duplicate','zcool',{...base,mediaId:'video-1'});
+  add('v2','zcool',{...base,mediaId:'video-2'});add('v3','zcool',{...base,mediaId:'video-3'});
+  assert.deepEqual(started,['v1','v2']);assert.equal(queue.active.size,2);
+  assert.equal(queue.tasks.filter(row=>row.status==='queued').length,2);
+});
 test('a full site does not block another site; eligible jobs retain FIFO order', async () => {
   const {add,started,handles,queue} = controlled({globalConcurrency:3,siteConcurrency:1});
   add('a1');add('a2');add('a3');add('b1','bilibili');

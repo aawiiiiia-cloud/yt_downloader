@@ -36,6 +36,27 @@ test('ZCOOL snapshot reads 28 body images and cannot leak the full store or labe
   assert.equal(workSnapshot(root, url.replace('ZNzQyNjY2ODg=', 'ZanotherWork')).mismatch, true);
   root.props.pageProps.data.productImages = Array(401).fill({}); assert.equal(workSnapshot(root, url), null);
 });
+
+test('ZCOOL native video snapshots retain public media fields and isolate third-party URLs and credentials', () => {
+  const root=fixture(),data=root.props.pageProps.data;
+  const url='https://video.zcool.cn/alivod/sample.mp4?k=keep&t=keep';
+  data.productVideos=[{id:3319907,type:4,url,cover:'https://video.zcool.cn/alivod/sample.mp4!vframeOffset0?k=cover',width:720,height:405,proofToken:'private-proof'},
+    {url:'https://player.vimeo.com/video/123'},{url:'https://video.zcool.cn.evil.invalid/sample.mp4'},
+    {url:'https://u:p@video.zcool.cn/sample.mp4'},{url:'file:///C:/private.mp4'}];
+  const value=workSnapshot(root,'https://www.zcool.com.cn/work/ZNzQyNjY2ODg=.html');
+  assert.equal(value.videos.length,1);assert.equal(value.videos[0].url,url);assert.equal(value.skippedVideos,4);
+  assert.doesNotMatch(JSON.stringify(value),/private-proof|secret-account|vimeo|evil|C:\//);
+});
+
+test('ZCOOL video-only works and malformed covers do not depend on an image collection', () => {
+  const root=fixture(),data=root.props.pageProps.data;
+  delete data.productImages;
+  data.productVideos=[{id:1,url:'https://video.zcool.cn/alivod/sample.mp4',cover:'invalid'}];
+  let value=workSnapshot(root,url);
+  assert.equal(value.images.length,0);assert.equal(value.videos.length,1);assert.equal(value.videos[0].cover,undefined);
+  data.productVideos=Array.from({length:30},(_,id)=>({id,url:'https://video.zcool.cn/alivod/'+id+'.mp4'}));
+  value=workSnapshot(root,url);assert.equal(value.videos.length,24);assert.equal(value.skippedVideos,6);
+});
 test('ZCOOL image allowlist preserves signed queries while anonymous cookies never prove login', () => {
   const asset = fixture().props.pageProps.data.productImages[0].urlBig;
   assert.equal(assetUrl(asset, 'zcool'), asset);

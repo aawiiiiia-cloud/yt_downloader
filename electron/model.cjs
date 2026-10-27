@@ -135,6 +135,7 @@ function downloadTargetKey(spec) {
   if (key.startsWith('bilibili:') || key.startsWith('vimeo:')) key = key.split(':').slice(0, 2).join(':');
   // A product's image categories have separate folders and separate manifests.
   if (key.startsWith('taobao:') && spec.mediaId) key += ':' + spec.mediaId;
+  if (key.startsWith('zcool:') && spec.kind === 'video' && spec.mediaId) key += ':' + spec.mediaId;
   let directory = path.resolve(spec.settings?.saveDir || '.');
   if (process.platform === 'win32') directory = directory.toLowerCase();
   return JSON.stringify([directory, key]);
