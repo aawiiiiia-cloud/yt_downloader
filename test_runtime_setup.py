@@ -176,19 +176,79 @@ class RuntimeSetupTests(unittest.TestCase):
                 (tools/'python/runtime.bin').unlink()
                 runtime.prepare(code,tools,bundled=True)
                 self.assertEqual(packages.call_count,1)
-                provider.assert_called_once_with(tools,strict=True)
+                provider.assert_called_once_with(tools,strict=False)
+                self.assertTrue(runtime.cached_runtime(code,tools,True))
                 (tools/'python/runtime.bin').write_bytes(b'healthy')
                 runtime.save_runtime_cache(code,tools,True)
                 runtime.prepare(code,tools,bundled=True,full_check=True)
                 self.assertEqual(packages.call_count,2);self.assertEqual(provider.call_count,2)
+                self.assertEqual(provider.call_args,mock.call(tools,strict=True))
+
+    def test_normal_cache_misses_never_hash_the_entire_provider(self):
+        # Exercise the real prepare -> ensure_provider path, not only its flag.
+        for scenario in ('first', 'corrupt', 'expired', 'different-machine', 'relocated', 'dependency-change'):
+            with self.subTest(scenario=scenario),tempfile.TemporaryDirectory() as name:
+                root=Path(name);code,tools=self.make_cached_fixture(root)
+                if scenario!='first': runtime.save_runtime_cache(code,tools,True)
+                if scenario=='corrupt': runtime.cache_path(tools,True).write_text('interrupted write')
+                if scenario=='expired':
+                    record=json.loads(runtime.cache_path(tools,True).read_text())
+                    record['checkedAt']-=8*86400;runtime.cache_path(tools,True).write_text(json.dumps(record))
+                if scenario=='relocated':
+                    moved=root/'media dl (新位置)';shutil.copytree(code,moved/'代码');shutil.copytree(tools,moved/'依赖工具')
+                    code,tools=moved/'代码',moved/'依赖工具'
+                if scenario=='dependency-change': (tools/'python/runtime.bin').write_bytes(b'changed dependency')
+                env={'COMPUTERNAME':'fixture-new-company-machine'} if scenario=='different-machine' else {}
+                with mock.patch.dict(os.environ,env),mock.patch.object(runtime,'ensure_packages') as packages,\
+                        mock.patch.object(runtime,'ensure_node',return_value=tools/'node'),\
+                        mock.patch.object(runtime,'ensure_ffmpeg',return_value=tools/'ffmpeg'),\
+                        mock.patch.object(runtime,'ensure_electron',return_value=tools/'node_modules'),\
+                        mock.patch.object(runtime.pot_provider,'provider_bundle_runtime_valid',return_value=True),\
+                        mock.patch.object(runtime.pot_provider,'provider_bundle_valid',side_effect=AssertionError('normal startup attempted full hashing')) as full:
+                    runtime.prepare(code,tools,bundled=True)
+                    self.assertEqual(packages.call_count,1);full.assert_not_called()
+                    self.assertTrue(runtime.cached_runtime(code,tools,True))
+                    runtime.prepare(code,tools,bundled=True)
+                    self.assertEqual(packages.call_count,1)
+
+    def test_explicit_full_check_hashes_once_even_with_a_valid_cache_and_announces_it(self):
+        with tempfile.TemporaryDirectory() as name:
+            code,tools=self.make_cached_fixture(Path(name));runtime.save_runtime_cache(code,tools,True)
+            events=[]
+            with mock.patch.object(runtime,'ensure_packages'),\
+                    mock.patch.object(runtime,'ensure_node',return_value=tools/'node'),\
+                    mock.patch.object(runtime,'ensure_ffmpeg',return_value=tools/'ffmpeg'),\
+                    mock.patch.object(runtime,'ensure_electron',return_value=tools/'node_modules'),\
+                    mock.patch.object(runtime.pot_provider,'provider_bundle_runtime_valid',return_value=True),\
+                    mock.patch.object(runtime.pot_provider,'provider_bundle_valid',side_effect=lambda _path:events.append('full-hash') or True) as full,\
+                    mock.patch.object(runtime,'notice',side_effect=events.append):
+                runtime.prepare(code,tools,bundled=True,full_check=True)
+            full.assert_called_once_with(tools/'bgutil-provider')
+            self.assertLess(events.index('完整核对 YouTube 辅助组件（文件较多，请稍候）…'),events.index('full-hash'))
+            self.assertLess(events.index('检查 Node / npm…'),events.index('检查 Electron…'))
+
+    def test_a_failed_quick_provider_repair_still_needs_full_validation_before_replacing_files(self):
+        with tempfile.TemporaryDirectory() as name:
+            tools=Path(name);target=tools/'bgutil-provider';target.mkdir();(target/'keep').write_bytes(b'previous bundle')
+            def incomplete(stage,*_args): stage.mkdir();(stage/'partial').write_bytes(b'incomplete dependency')
+            with mock.patch.object(runtime.pot_provider,'provider_bundle_runtime_valid',return_value=False),\
+                    mock.patch.object(runtime.pot_provider,'provider_bundle_valid',return_value=False) as full,\
+                    mock.patch.object(runtime.provider_setup,'ensure_provider',side_effect=incomplete),\
+                    self.assertRaisesRegex(RuntimeError,'校验失败'):
+                runtime.ensure_provider(tools,strict=False)
+            self.assertEqual((target/'keep').read_bytes(),b'previous bundle')
+            self.assertTrue(any('.stage-' in call.args[0].name for call in full.call_args_list))
+            self.assertEqual(list(tools.iterdir()),[target])
 
     def test_bad_or_unwritable_cache_does_not_block_healthy_startup(self):
         with tempfile.TemporaryDirectory() as name:
             code,tools=self.make_cached_fixture(Path(name))
             runtime.cache_path(tools,True).write_text('broken json')
             self.assertFalse(runtime.cached_runtime(code,tools,True))
-            with mock.patch.object(Path,'write_text',side_effect=PermissionError('protected')):
+            with mock.patch.object(Path,'write_text',side_effect=PermissionError('protected')),\
+                    mock.patch.object(runtime,'notice') as notice:
                 runtime.save_runtime_cache(code,tools,True)
+            self.assertIn('无法保存启动缓存',notice.call_args.args[0])
             self.assertFalse(runtime.cached_runtime(code,tools,True))
 
     def test_layout_supports_copied_and_source_launchers_without_duplicate_code_folder(self):

@@ -324,6 +324,7 @@ def save_runtime_cache(code, tools, need_electron):
         temporary.replace(cache_path(tools, need_electron))
     except OSError:
         # A cache is optional; a read-only or protected folder must not turn a healthy runtime into a failure.
+        notice('无法保存启动缓存，下次仍会快速检查，不影响本次启动。')
         try: temporary.unlink(missing_ok=True)
         except OSError: pass
 
@@ -338,23 +339,35 @@ def prepare(code=CODE, tools=None, bundled=None, need_electron=True, full_check=
         os.environ.pop(name, None)
     os.environ.update(PIP_USER='0', PIP_REQUIRE_VIRTUALENV='0', PIP_CONFIG_FILE=os.devnull)
     with setup_lock(tools):
+        if bundled and not full_check: notice('正在比对依赖状态…')
         reused = bundled and not full_check and cached_runtime(code, tools, need_electron)
         if reused:
             node, ffmpeg, modules = tools / 'node', tools / 'ffmpeg', tools / 'node_modules'
             notice('依赖未变化，使用已检查的运行环境。')
         else:
+            notice('检查运行环境（首次启动或依赖有变化时请稍候）…')
             pins = json.loads((code / 'distribution/runtime-lock.json').read_text(encoding='utf-8'))['pythonPackages']
+            notice('检查 Python 库…')
             ensure_packages(pins)
+            notice('检查 Node / npm…')
             node = ensure_node(tools, bundled)
             bootstrap._add_to_path(node)
+            notice('检查 FFmpeg / FFprobe…')
             ffmpeg = ensure_ffmpeg(tools, bundled)
             bootstrap._add_to_path(ffmpeg)
+            if need_electron: notice('检查 Electron…')
             modules = ensure_electron(tools, node, bundled) if need_electron else (tools / 'node_modules' if bundled else code / 'node_modules')
             # Avoid the previous duplicate full SHA-256 pass over thousands of provider files.
             if not pot_provider.provider_bundle_runtime_valid(tools / 'bgutil-provider') and not node_ready(tools / 'node'):
                 publish(tools / 'node', lambda stage: copy_node(node, stage), node_ready, (tools,))
-            ensure_provider(tools, strict=full_check or bundled)
-            if bundled: save_runtime_cache(code, tools, need_electron)
+            notice('完整核对 YouTube 辅助组件（文件较多，请稍候）…' if full_check else '快速核对 YouTube 辅助组件…')
+            # A portable package's first launch, relocation or stale cache is
+            # still a normal launch. Reserve full hashing for explicit checks;
+            # installation and repair continue to validate every published file.
+            ensure_provider(tools, strict=full_check)
+            if bundled:
+                notice('保存启动检查结果…')
+                save_runtime_cache(code, tools, need_electron)
         bootstrap._add_to_path(node)
         bootstrap._add_to_path(ffmpeg)
     env = os.environ.copy()
