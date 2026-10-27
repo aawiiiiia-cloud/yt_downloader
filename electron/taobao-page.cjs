@@ -70,7 +70,8 @@ function readPage() {
     const label = owner?.getAttribute('title') || owner?.querySelector('[title]')?.getAttribute('title') || owner?.textContent?.trim() || node.alt || '';
     const width = Number(node.getAttribute('data-original-width')) || Number(node.getAttribute('width')) || null;
     const height = Number(node.getAttribute('data-original-height')) || Number(node.getAttribute('height')) || null;
-    if (sources.length && groups[category].length < 400) groups[category].push({ url: sources[0], alternatives: sources.slice(1, 5), name: category === 'sku' ? label.slice(0, 160) : '',
+    if (sources.length && groups[category].length < 400) groups[category].push({ url: sources[0], alternatives: sources.slice(1, 5),
+      previewUrl: node.currentSrc || node.getAttribute('src') || '', name: category === 'sku' ? label.slice(0, 160) : '',
       // DOM/layout or thumbnail dimensions must not be advertised as original dimensions.
       width: node.hasAttribute('data-original-width') ? width : null, height: node.hasAttribute('data-original-height') ? height : null });
   };

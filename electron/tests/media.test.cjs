@@ -131,12 +131,12 @@ test('fallback image sizes cannot be mistaken for original pixel dimensions', as
 });
 
 test('a dimension timeout keeps known bytes, while a page cancellation discards the request', async t => {
-  const deadline=new AbortController();t.mock.method(AbortSignal,'timeout',()=>deadline.signal);
+  let deadline=new AbortController();t.mock.method(AbortSignal,'timeout',()=>deadline.signal);
   const assets=new Assets(async()=>new Response(new ReadableStream({pull(controller){
     deadline.abort(new DOMException('Timed out','TimeoutError'));controller.error(deadline.signal.reason);
   }}),{headers:{'content-type':'image/png','content-length':'340000'}}));
   assert.equal((await assets.sourceSize(['https://img.alicdn.com/a.png'],'taobao',undefined,undefined,true)).size,340000);
-  const freshDeadline=new AbortController();t.mock.method(AbortSignal,'timeout',()=>freshDeadline.signal);
+  deadline=new AbortController();
   const page=new AbortController();
   const cancelled=new Assets(async(_url,options)=>{
     page.abort();throw page.signal.reason;
@@ -235,4 +235,81 @@ test('cancelled queued assets settle immediately and never issue stale network r
   } finally { gate.resolve(); await Promise.all(running); }
   assert.equal(calls.length, 4); assert.equal(assets.active, 0);
   assert.ok(calls.every(url => !url.includes('stale')));
+});
+
+test('an original preview and its metadata share one request, including a fresh retry', async () => {
+  const calls = [], assets = new Assets(async (_url, options) => {
+    calls.push(options); return new Response(png, { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } });
+  });
+  const url = 'https://img.alicdn.com/original.png', page = new AbortController();
+  for (const refresh of [false, true]) {
+    const before = calls.length;
+    const [preview, metadata] = await Promise.all([
+      assets.preview(url, 'taobao', page.signal, refresh), assets.sourceSize([url], 'taobao', page.signal, undefined, true, refresh),
+    ]);
+    assert.match(preview.dataUrl, /^data:image\/png/);
+    assert.deepEqual(metadata, { size: png.length, width: 4, height: 3, displayFallback: false });
+    assert.equal(calls.length, before + 1); assert.equal(calls.at(-1).cache, refresh ? 'reload' : 'default');
+    assert.equal(calls.at(-1).headers.Range, undefined);
+  }
+  assert.equal(assets.previewRequests.size, 0);
+  await assets.sourceSize([url], 'taobao', page.signal, undefined, true); assert.equal(calls.length, 2);
+});
+
+test('original metadata is available from the header before a slow preview body finishes', async () => {
+  let stream, finished = false, calls = 0;
+  const assets = new Assets(async () => {
+    calls++; return new Response(new ReadableStream({ start(controller) { stream = controller; controller.enqueue(png.subarray(0, 24)); } }),
+      { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } });
+  });
+  const url = 'https://img.alicdn.com/original.png';
+  const preview = assets.preview(url, 'taobao').then(result => { finished = true; return result; });
+  try {
+    const metadata = await assets.sourceSize([url], 'taobao', undefined, undefined, true);
+    assert.equal(metadata.size, png.length); assert.equal(metadata.width, 4); assert.equal(finished, false); assert.equal(calls, 1);
+  } finally { stream.enqueue(png.subarray(24)); stream.close(); await preview; }
+});
+
+test('thumbnail pixels cannot supply original dimensions or bytes', async () => {
+  const calls = [], original = Buffer.from(png); original.writeUInt32BE(1600, 16); original.writeUInt32BE(1200, 20);
+  const assets = new Assets(async (url, options) => {
+    calls.push(url); return new Response(url.endsWith('thumb.png') ? png : original,
+      { headers: { 'content-type': 'image/png', 'content-length': url.endsWith('thumb.png') ? String(png.length) : '2400000' } });
+  });
+  const [preview, metadata] = await Promise.all([assets.preview('https://img.alicdn.com/thumb.png', 'taobao'),
+    assets.sourceSize(['https://img.alicdn.com/original.png', 'https://img.alicdn.com/thumb.png'], 'taobao', undefined, undefined, true)]);
+  assert.match(preview.dataUrl, /^data:image\/png/); assert.equal(metadata.width, 1600); assert.equal(metadata.size, 2400000);
+  assert.equal(metadata.displayFallback, false); assert.equal(calls.length, 2);
+});
+
+test('pending preview reuse stays in its page signal and referrer; cancellation settles both consumers', async () => {
+  const page = new AbortController(); let calls = 0;
+  const assets = new Assets(async (_url, options) => {
+    calls++; return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+  });
+  const url = 'https://img.alicdn.com/original.png';
+  const preview = assets.preview(url, 'taobao', page.signal), duplicate = assets.preview(url, 'taobao', page.signal);
+  const metadata = assets.sourceSize([url], 'taobao', page.signal, undefined, true);
+  const assertions = [assert.rejects(preview), assert.rejects(duplicate), assert.rejects(metadata)];
+  await new Promise(setImmediate); page.abort(); await Promise.all(assertions);
+  assert.equal(calls, 1); assert.equal(assets.previewRequests.size, 0); assert.equal(assets.active, 0);
+  const seen = [], isolated = new Assets(async (_url, options) => { seen.push(options.headers.Referer); return new Response(png,
+    { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } }); });
+  await Promise.all([isolated.preview(url, 'taobao', undefined, false, 'https://item.taobao.com/item.htm?id=1'),
+    isolated.sourceSize([url], 'taobao', undefined, 'https://detail.tmall.com/item.htm?id=2', true)]);
+  assert.deepEqual(seen, ['https://item.taobao.com/', 'https://detail.tmall.com/']);
+});
+
+test('a stalled original preview cannot hold metadata behind its first byte indefinitely', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const first = Promise.withResolvers(); let calls = 0;
+  const reply = () => new Response(png, { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } });
+  const assets = new Assets(async () => ++calls === 1 ? first.promise : reply());
+  const url = 'https://img.alicdn.com/original.png', preview = assets.preview(url, 'taobao');
+  const metadata = assets.sourceSize([url], 'taobao', undefined, undefined, true);
+  try {
+    await new Promise(setImmediate); assert.equal(calls, 1);
+    t.mock.timers.tick(1000);
+    assert.equal((await metadata).width, 4); assert.equal(calls, 2);
+  } finally { first.resolve(reply()); await preview; }
 });
