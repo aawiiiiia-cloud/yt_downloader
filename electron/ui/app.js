@@ -236,12 +236,14 @@ function render(next) {
     $('login-state').classList.remove('login-warning', 'login-success');
     $('login-state').title = 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
   }
-  const loginBusy = !!state.loginRunning || !!state.importingCookies;
+  const loginBusy = !!state.loginRunning || !!state.importingCookies || !!state.openingWebLogin;
   const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
   $('web-login').hidden = externalLoginOnly;
   $('edge-login').hidden = ['behance', 'zcool'].includes(selectedSite);
   document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly || ['behance', 'zcool'].includes(selectedSite));
   $('web-login').disabled = loginBusy;
+  $('web-login').textContent = state.openingWebLogin === selectedSite ? '正在打开…' : '登录';
+  setLoading($('web-login'), state.openingWebLogin === selectedSite);
   document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : externalLoginOnly ? '通过 Edge 登录。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入请选择本站点的 Netscape 格式 Cookies 文件（.txt）。';
   if (selectedSite === 'behance') document.querySelector('.login-help').textContent = '需要登录的作品请先在左侧完成 Adobe 登录；也可导入 Behance Cookies。账号状态以网页为准。';
   if (selectedSite === 'zcool') document.querySelector('.login-help').textContent = '高清图片请先在左侧登录站酷，再刷新作品页并重新解析；也可导入本站 Cookies。登录及网站验证需手动完成。';
@@ -313,7 +315,7 @@ $('import-login').addEventListener('click', async () => {
   if (count) notify(`${names[site]} Cookies 已导入（${count} 条），可重新解析当前页面。`);
 });
 $('cancel-login').addEventListener('click', () => call('cancel-login'));
-$('web-login').addEventListener('click', () => ['youtube', 'vimeo'].includes(selectedSite) ? call('login', { site: selectedSite }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : selectedSite === 'behance' ? 'https://www.behance.net/login' : selectedSite === 'taobao' ? 'https://login.taobao.com/member/login.jhtml' : homes[selectedSite] }));
+$('web-login').addEventListener('click', () => call('web-login', { site: selectedSite }));
 $('required-login').addEventListener('click', () => call('login', { site: 'youtube' }));
 $('resources').addEventListener('change', event => {
   if (event.target.id === 'part-select') { saveDraft(); selectedItem = Number(event.target.value); renderResources(); }

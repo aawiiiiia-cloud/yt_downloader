@@ -49,6 +49,8 @@ async function run(collector, profile, snapshotScript) {
     await session.defaultSession.protocol.handle('https', () => new Response('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="140"><rect width="100" height="140" fill="#eaf4ef"/></svg>', { headers: { 'content-type': 'image/svg+xml' } }));
     await collector.browserSession.protocol.handle('https', async request => {
       const resource = new URL(request.url);
+      const loginFixture = require('./web-login-smoke.cjs').fixture(request);
+      if (loginFixture) return loginFixture;
       const popupFixture = await require('./popup-smoke.cjs').fixture(request);
       if (popupFixture) return popupFixture;
       if (resource.hostname === 'video.zcool.cn' || resource.hostname === 'img.zcool.cn' || resource.hostname === 'img.alicdn.com' || resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
@@ -186,6 +188,7 @@ async function run(collector, profile, snapshotScript) {
     await require('./taobao-smoke.cjs').run(collector, check, until, wait, assetRequests);
     await require('./zcool-smoke.cjs').run(collector, check, until, wait, assetRequests);
     await require('./popup-smoke.cjs').run(collector, check, until, wait, warnings);
+    await require('./web-login-smoke.cjs').run(collector, check, until, wait);
     resolveDownload({ folder: profile, count: 1 }); await wait(100);
     check('background download queue completes', task.status === 'completed');
     await require('./task-failure-smoke.cjs').run(collector, check, until, wait, profile);

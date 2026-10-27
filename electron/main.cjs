@@ -21,6 +21,7 @@ const { externalEntries, collectVimeo } = require('./external-media.cjs');
 const { snapshotScript: taobaoSnapshotScript } = require('./taobao-page.cjs');
 const { snapshotScript: zcoolSnapshotScript } = require('./zcool-page.cjs');
 const { classifyFailure, safeDetail } = require('./task-failure.cjs');
+const { loginPlan, loginHost, surfaceScript, waitForLogin } = require('./web-login.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -77,7 +78,7 @@ class CollectorApp {
       ...concurrencySettings(savedSettings), settingsVersion: 1 };
     // Disable the former default once on upgrade, then remember explicit user choices.
     if (!savedSettings.settingsVersion) this.settings.autoParse = false;
-    this.shared = { health: null, login: {}, loginExpired: {}, loginRunning: null, importingCookies: false };
+    this.shared = { health: null, login: {}, loginExpired: {}, loginRunning: null, importingCookies: false, openingWebLogin: null };
     this.loginState = new LoginState(readJson(path.join(profile, 'login-errors.json'), {}));
     this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
     this.tabs.rows.forEach(tab => this.initializeTab(tab));
@@ -335,6 +336,7 @@ class CollectorApp {
     web.mainFrame.executeJavaScript("document.querySelectorAll('video,audio').forEach(media => media.pause())").catch(() => {});
   }
   activateTab(id) {
+    if (this.webLoginRequest && this.webLoginRequest.tab.id !== id) this.webLoginRequest.cancelled = true;
     const previous = this.tabs.active;
     const tab = this.initializeTab(this.tabs.select(id));
     if (previous && previous !== tab && previous.view) { previous.view.setVisible(false); this.pauseTab(previous); }
@@ -396,6 +398,7 @@ class CollectorApp {
       }, 850);
   }
   navigate(url) {
+    if (this.webLoginRequest) this.webLoginRequest.cancelled = true;
     const target = navigationUrl(url), group = siteForUrl(target);
     if (group && group !== this.tabs.active.group) { this.openTab(target, { group, reuse: true }); return; }
     this.invalidate(this.tabs.active, { preserveResult: !this.settings.autoParse }); this.tabs.active.url = this.state.url = target;
@@ -750,7 +753,7 @@ class CollectorApp {
   }
   async chooseCookies(site) {
     if (!Object.hasOwn(SITES, site)) throw new Error('请选择支持的站点');
-    if (this.state.loginRunning || this.state.importingCookies) throw new Error('已有登录操作正在进行');
+    if (this.state.loginRunning || this.state.importingCookies || this.webLoginRequest) throw new Error('已有登录操作正在进行');
     this.state.importingCookies = true; this.publish();
     try {
       const legacy = path.join(os.homedir(), site === 'youtube' ? '.yt_dlp_gui_cookies.txt' : `.yt_dlp_gui_${site}_cookies.txt`);
@@ -763,9 +766,76 @@ class CollectorApp {
       return await this.importCookies(selection.filePaths[0], site);
     } finally { this.state.importingCookies = false; this.publish(); }
   }
+  async openWebLogin(site) {
+    const plan = loginPlan(site);
+    if (this.webLoginRequest) {
+      if (!this.webLoginRequest.cancelled && this.webLoginRequest.site === site) return this.webLoginRequest.promise;
+      throw new Error('登录界面正在打开，请稍候再试');
+    }
+    if (this.state.loginRunning || this.state.importingCookies) throw new Error('已有登录操作正在进行');
+    if (this.tabs.active.group !== site) throw new Error('请先切换到对应站点再登录');
+    let tab = this.tabs.active;
+    const current = tab.view.webContents.getURL();
+    const existing = this.tabs.rows.find(row => row.group === site && !row.closed && loginHost(site, row.url));
+    if (existing) tab = this.activateTab(existing.id);
+    else if (plan.direct && !loginHost(site, current)) tab = this.openTab(plan.url, { group: site, reuse: true });
+    else if (site === 'behance' && !loginHost(site, current) && current !== plan.url) tab = this.openTab(plan.url, { group: site, reuse: true });
+    else if (!loginHost(site, current) && siteForUrl(current) !== site) tab = this.openTab(plan.url, { group: site, reuse: true });
+    const request = { site, tab, cancelled: false };
+    this.webLoginRequest = request; this.state.openingWebLogin = site; this.publish();
+    const web = tab.view.webContents;
+    // Cancel page-driven navigation away from a modal while it is being opened.
+    // Adobe redirects are expected and use the website's own dynamic state.
+    const navigating = (_event, details) => {
+      const target = typeof details === 'string' ? details : details.url;
+      if (!loginHost(site, target)) request.cancelled = true;
+    };
+    web.on('will-navigate', navigating);
+    const read = async () => {
+      const script = surfaceScript(site);
+      // DOM-ready is sufficient; advertisements may keep the full page loading.
+      const pending = (async () => {
+        const main = await web.mainFrame.executeJavaScript(script).catch(() => null);
+        if (main?.ready) return [main];
+        const frames = web.mainFrame.framesInSubtree.filter(frame => frame !== web.mainFrame &&
+          loginHost(site, frame.url) && main?.frames?.includes(new URL(frame.url).hostname)).slice(0, 6);
+        return [main, ...await Promise.all(frames.map(frame => frame.executeJavaScript(script).catch(() => null)))];
+      })();
+      let timer;
+      try {
+        const rows = await Promise.race([pending, new Promise(resolve => { timer = setTimeout(() => resolve([]), 900); })]);
+        return rows.find(row => row?.ready) || rows.find(row => row?.canTrigger) || {};
+      } finally { clearTimeout(timer); }
+    };
+    request.promise = (async () => {
+      try {
+        await waitForLogin({ probe: read, timeoutMs: site === 'douyin' ? 45000 : 30000,
+          trigger: async () => {
+            this.window.focus(); web.focus();
+            // Native focus changes are asynchronous on Windows. Sending input
+            // in the same tick can drop the first click in a newly opened view.
+            await new Promise(resolve => setTimeout(resolve, 150));
+            if (request.cancelled || tab.closed || this.closing || this.tabs.activeId !== tab.id || web.isDestroyed()) return;
+            const result = await web.mainFrame.executeJavaScript(surfaceScript(site, true)).catch(() => null);
+            if (!result?.target || request.cancelled || tab.closed || this.closing || this.tabs.activeId !== tab.id) return;
+            const { x, y } = result.target;
+            if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= this.browserBounds.width || y >= this.browserBounds.height) return;
+            web.sendInputEvent({ type: 'mouseMove', x, y });
+            web.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+            web.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+          },
+          active: () => !request.cancelled && !tab.closed && !this.closing && this.tabs.activeId === tab.id && !web.isDestroyed(),
+        });
+      } finally {
+        if (!web.isDestroyed()) web.removeListener('will-navigate', navigating);
+        if (this.webLoginRequest === request) { this.webLoginRequest = null; this.state.openingWebLogin = null; this.publish(); }
+      }
+    })();
+    return request.promise;
+  }
   async login(site) {
     if (!SITES[site]) throw new Error('请先选择支持的站点');
-    if (this.loginTask || this.state.loginRunning || this.state.importingCookies) throw new Error('已有登录操作正在进行');
+    if (this.loginTask || this.state.loginRunning || this.state.importingCookies || this.webLoginRequest) throw new Error('已有登录操作正在进行');
     const cookieFile = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
     const tab = this.tabs.active;
     this.state.loginRunning = site; this.publish();
@@ -799,7 +869,7 @@ class CollectorApp {
     if (method === 'close-tab') { this.closeTab(String(data.id)); return; }
     if (method === 'back') { if (this.browser.webContents.navigationHistory.canGoBack()) this.browser.webContents.navigationHistory.goBack(); return; }
     if (method === 'forward') { if (this.browser.webContents.navigationHistory.canGoForward()) this.browser.webContents.navigationHistory.goForward(); return; }
-    if (method === 'reload') { this.browser.webContents.reload(); return; }
+    if (method === 'reload') { if (this.webLoginRequest) this.webLoginRequest.cancelled = true; this.browser.webContents.reload(); return; }
     if (method === 'inspect') return this.inspect();
     if (method === 'inspect-external') return this.inspectExternal(data);
     if (method === 'cancel-inspect') { this.invalidate(this.tabs.active,{preserveResult:true}); this.publish(); return; }
@@ -812,6 +882,7 @@ class CollectorApp {
       return this.queue.retry(String(data.id));
     }
     if (method === 'login') return this.login(data.site);
+    if (method === 'web-login') return this.openWebLogin(data.site);
     if (method === 'cancel-login') { this.loginTask?.cancel(); return; }
     if (method === 'import-cookies') return this.chooseCookies(data.site);
     if (method === 'choose-folder') {
