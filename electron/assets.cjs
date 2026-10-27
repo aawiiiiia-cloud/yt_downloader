@@ -88,13 +88,41 @@ async function readDimensions(response, maximum = 256 * 1024) {
   } finally {await reader.cancel().catch(()=>{});}
 }
 class Assets {
-  constructor(fetch) { this.fetch = fetch; this.cache = new Map(); this.active = 0; this.queue = []; }
-  async limit(work, signal) {
-    if (signal?.aborted) throw new Error('页面已切换');
-    if (this.active >= 4) await new Promise(resolve => this.queue.push(resolve));
-    this.active++;
-    try { if (signal?.aborted) throw new Error('页面已切换'); return await work(); }
-    finally { this.active--; this.queue.shift()?.(); }
+  constructor(fetch) { this.fetch = fetch; this.cache = new Map(); this.active = 0; this.metadataActive = 0; this.queue = []; }
+  limit(work, signal, kind = 'preview') {
+    if (signal?.aborted) return Promise.reject(new Error('页面已切换'));
+    return new Promise((resolve, reject) => {
+      const job = { work, signal, kind, resolve, reject };
+      job.cancel = () => {
+        const index = this.queue.indexOf(job);
+        if (index < 0) return;
+        this.queue.splice(index, 1);
+        signal.removeEventListener('abort', job.cancel);
+        reject(new Error('页面已切换'));
+        this.drain();
+      };
+      signal?.addEventListener('abort', job.cancel, { once: true });
+      this.queue.push(job);
+      this.drain();
+    });
+  }
+  drain() {
+    // Slow original-size probes must leave room for images. Keep the same four
+    // total requests, cap metadata at two, and start queued previews first.
+    while (this.active < 4) {
+      let index = this.queue.findIndex(job => job.kind === 'preview');
+      if (index < 0 && this.metadataActive < 2) index = this.queue.findIndex(job => job.kind === 'metadata');
+      if (index < 0) return;
+      const job = this.queue.splice(index, 1)[0], metadata = job.kind === 'metadata';
+      job.signal?.removeEventListener('abort', job.cancel);
+      this.active++;
+      if (metadata) this.metadataActive++;
+      const finish = () => { this.active--; if (metadata) this.metadataActive--; this.drain(); };
+      Promise.resolve().then(() => {
+        if (job.signal?.aborted) throw new Error('页面已切换');
+        return job.work();
+      }).then(value => { finish(); job.resolve(value); }, error => { finish(); job.reject(error); });
+    }
   }
   remember(key, value) {
     this.cache.delete(key); this.cache.set(key, { value, at: Date.now() });
@@ -160,7 +188,7 @@ class Assets {
         if(knownSize)return this.remember(key,{size:knownSize,displayFallback:urls.length>1 && url===urls.at(-1)});
       }
       return this.remember(key, { size: null });
-    }, signal);
+    }, signal, 'metadata');
   }
 }
 module.exports = { Assets, assetUrl, imageMime, readBody, referrerOrigin, imageDimensions, readDimensions };

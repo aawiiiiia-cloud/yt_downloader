@@ -197,7 +197,7 @@ function renderResources() {
   restoreDraft(); updateMediaInfo(); restoreResourceScroll();
   previewObserver = new IntersectionObserver(entries => entries.forEach(entry => {
     if (entry.isIntersecting) { previewObserver.unobserve(entry.target); loadPreview(entry.target); }
-  }), { root: $('resources-panel'), rootMargin: '100px' });
+  }), { root: $('resources-panel'), rootMargin: '600px 0px' });
   $('resources').querySelectorAll('[data-preview]').forEach(frame => previewObserver.observe(frame));
   document.querySelectorAll('[data-image-name]').forEach(label => {
     const image = item.images?.find(row => row.index === Number(label.dataset.imageName));

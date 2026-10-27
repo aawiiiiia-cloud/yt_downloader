@@ -183,3 +183,56 @@ test('a large JPEG EXIF header split across network chunks still yields the real
   assert.equal(imageDimensions(header.subarray(0,32768)),null);
   assert.deepEqual(await readDimensions(response),{width:2968,height:3957});assert.ok(cancelled);
 });
+
+test('slow original metadata leaves preview capacity without increasing the four-request limit', async () => {
+  const gate = Promise.withResolvers();
+  let active = 0, maximum = 0, metadataActive = 0, metadataMaximum = 0;
+  const assets = new Assets(async (_url, options) => {
+    const metadata = options.method === 'HEAD';
+    maximum = Math.max(maximum, ++active);
+    if (metadata) { metadataMaximum = Math.max(metadataMaximum, ++metadataActive); await gate.promise; metadataActive--; }
+    active--;
+    return new Response(metadata ? null : png, { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } });
+  });
+  const sizes = Array.from({ length: 6 }, (_, i) => assets.sourceSize([`https://img.zcool.cn/source-${i}.png`], 'zcool'));
+  try {
+    await Promise.all(Array.from({ length: 6 }, (_, i) => assets.preview(`https://img.zcool.cn/preview-${i}.png`, 'zcool')));
+    assert.equal(metadataActive, 2, 'previews finish while the original requests are still blocked');
+    assert.ok(maximum <= 4); assert.equal(metadataMaximum, 2);
+  } finally { gate.resolve(); await Promise.all(sizes); }
+  assert.equal(assets.active, 0); assert.equal(assets.queue.length, 0);
+});
+
+test('a newly queued preview starts before older queued metadata after a slot opens', async () => {
+  const gates = Array.from({ length: 4 }, () => Promise.withResolvers()), calls = [];
+  const assets = new Assets(async (url, options) => {
+    const image = Number(new URL(url).pathname.match(/\d+/)[0]);
+    const metadata = options.method === 'HEAD'; calls.push(metadata ? 'metadata' : `preview-${image}`);
+    if (!metadata && image < 4) await gates[image].promise;
+    return new Response(metadata ? null : png, { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } });
+  });
+  const initial = gates.map((_, i) => assets.preview(`https://img.zcool.cn/${i}.png`, 'zcool'));
+  const size = assets.sourceSize(['https://img.zcool.cn/5.png'], 'zcool');
+  const latest = assets.preview('https://img.zcool.cn/6.png', 'zcool');
+  try {
+    gates[0].resolve(); await latest;
+    assert.ok(calls.indexOf('preview-6') < calls.indexOf('metadata') || !calls.includes('metadata'));
+  } finally { gates.forEach(gate => gate.resolve()); await Promise.all([...initial, size]); }
+  assert.ok(calls.includes('metadata'), 'metadata also completes after the previews');
+});
+
+test('cancelled queued assets settle immediately and never issue stale network requests', async () => {
+  const gate = Promise.withResolvers(), calls = [];
+  const assets = new Assets(async url => { calls.push(url); await gate.promise; return new Response(png); });
+  const running = Array.from({ length: 4 }, (_, i) => assets.preview(`https://img.zcool.cn/${i}.png`, 'zcool'));
+  const page = new AbortController();
+  const stalePreview = assets.preview('https://img.zcool.cn/stale-preview.png', 'zcool', page.signal);
+  const staleSize = assets.sourceSize(['https://img.zcool.cn/stale-size.png'], 'zcool', page.signal);
+  const rejected = [assert.rejects(stalePreview, /页面已切换/), assert.rejects(staleSize, /页面已切换/)];
+  try {
+    page.abort(); await Promise.all(rejected);
+    assert.equal(assets.queue.length, 0); assert.equal(assets.active, 4);
+  } finally { gate.resolve(); await Promise.all(running); }
+  assert.equal(calls.length, 4); assert.equal(assets.active, 0);
+  assert.ok(calls.every(url => !url.includes('stale')));
+});
