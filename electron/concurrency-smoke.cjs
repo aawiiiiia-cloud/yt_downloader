@@ -55,9 +55,12 @@ async function run(collector, check, until, wait, profile) {
       fs.readFileSync(firstCookie,'utf8').includes('SESSDATA')&&!fs.readFileSync(secondCookie,'utf8').includes('SESSDATA'));
     const douyin=queue.add(spec('https://www.douyin.com/video/1234567890123456789'),'本地并发 抖音');
     check('downloads beyond the global allowance also remain queued',queue.tasks.find(t=>t.id===douyin).status==='queued'&&queue.active.size===2);
+    const firstTask=queue.tasks.find(t=>t.status==='running'&&t.spec.url.includes('bilibili.com'));
+    const neighbour=queue.tasks.find(t=>t.id===vimeo), neighbourProgress=neighbour.percent;
     jobs[0].emit('progress',{percent:31,status:'downloading'});
-    check('parallel progress updates belong only to the matching task',queue.tasks.find(t=>t.spec===jobs[0].request)?.percent===31 ||
-      queue.tasks.find(t=>t.status==='running'&&t.spec.url.includes('bilibili.com')).percent===31&&queue.tasks.find(t=>t.id===vimeo).percent===0);
+    // Preparation now has unknown progress, rather than a fabricated zero.
+    // Updating one worker must preserve the other worker's actual prior value.
+    check('parallel progress updates belong only to the matching task',firstTask.percent===31&&neighbour.percent===neighbourProgress);
     queue.cancel(vimeo);
     await until(()=>jobs.length===3&&queue.tasks.find(t=>t.id===vimeo).status==='cancelled','cancelled worker did not release its slot');
     check('cancelling one website lets another waiting website start without cancelling its neighbour',jobs[1].cancelled&&!jobs[0].cancelled&&queue.tasks.find(t=>t.id===douyin).status==='running'&&!fs.existsSync(secondCookie)&&fs.existsSync(firstCookie));
