@@ -16,6 +16,7 @@ const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-p
 const { resolveDouyinContext } = require('./douyin-context.cjs');
 const { YouTubeProvider } = require('./youtube-provider.cjs');
 const { LoginState } = require('./login-state.cjs');
+const { openFolder } = require('./task-history.cjs');
 const { snapshotScript: behanceSnapshotScript } = require('./behance-page.cjs');
 const { externalEntries, collectVimeo } = require('./external-media.cjs');
 const { snapshotScript: taobaoSnapshotScript } = require('./taobao-page.cjs');
@@ -887,6 +888,11 @@ class CollectorApp {
     if (method === 'download') return this.download(data);
     if (method === 'preview' || method === 'image-size') return this.asset(data, method === 'preview' ? 'preview' : 'size');
     if (method === 'cancel-task') return this.queue.cancel(String(data.id));
+    if (method === 'clear-history') {
+      const removed = this.queue.clearFinished();
+      this.persist();
+      return removed;
+    }
     if (method === 'retry-task') {
       const task = this.queue.tasks.find(row => row.id === String(data.id));
       if (siteForUrl(task?.spec?.url) === 'youtube') await this.ensureYouTube();
@@ -902,10 +908,9 @@ class CollectorApp {
       return;
     }
     if (method === 'open-folder') {
-      let folder = this.settings.saveDir;
-      if (data.id) folder = this.queue.tasks.find(t => t.id === data.id)?.result?.folder || folder;
-      if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) throw new Error('保存目录尚不存在');
-      return shell.openPath(folder);
+      const task = data.id ? this.queue.tasks.find(t => t.id === String(data.id)) : null;
+      if (data.id && !task) throw new Error('该任务记录已清除。');
+      return openFolder(data.id ? task.result?.folder : this.settings.saveDir, folder => shell.openPath(folder), !!data.id);
     }
     if (method === 'settings') {
       const proxy = String(data.proxy || '').trim();

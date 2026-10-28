@@ -169,6 +169,13 @@ class DownloadQueue {
     const visible = new Set([...pending, ...recent]);
     return this.tasks.filter(task => visible.has(task)).map(({ spec, process, ...task }) => task);
   }
+  clearFinished() {
+    const before = this.tasks.length;
+    this.tasks = this.tasks.filter(task => this.active.has(task) || !['completed', 'failed', 'cancelled'].includes(task.status));
+    const removed = before - this.tasks.length;
+    if (removed) this.changed();
+    return removed;
+  }
   canStart(task) {
     const site = siteForUrl(task.spec?.url);
     let count = 0;

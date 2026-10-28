@@ -102,7 +102,7 @@ test('actual task renderer inserts stage, progress and task log without rebuildi
   assert.ok(start>=0 && end>start);
   const target={innerHTML:''},view={tasks:[{id:'fixture',title:'fixture image',status:'running',
     detail:'image-connecting',percent:null,logs:['正在确认网络与系统代理设置…']}]};
-  const context={$:()=>target,state:view,openedLogs:new Set(),escape:text=>String(text ?? ''),
+  const context={$:()=>target,state:view,openedLogs:new Set(),folderErrors:new Map(),openingFolders:new Set(),clearingHistory:false,escape:text=>String(text ?? ''),
     window:{collectorTaskProgress:taskProgress,collectorTaskSpeed:taskSpeed}};
   vm.runInNewContext(source.slice(start,end)+'\nrenderTasks();',context);
   assert.match(target.innerHTML,/正在连接图片/);assert.match(target.innerHTML,/等待数据/);

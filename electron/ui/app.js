@@ -7,6 +7,8 @@ let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
 let panelRevision = 0;
 const openedLogs = new Set();
+const folderErrors = new Map(), openingFolders = new Set();
+let clearingHistory = false;
 const previews = new Map(), pendingDownloads = new Map();
 const drafts = new Map();
 let tabsSignature = '';
@@ -209,10 +211,14 @@ function renderResources() {
 }
 function renderTasks() {
   const labels = { queued: '等待下载', running: '下载中', cancelling: '正在停止', cancelled: '已取消', completed: '已完成', failed: '下载失败' };
+  const ids = new Set(state.tasks.map(task => task.id));
+  for (const id of folderErrors.keys()) if (!ids.has(id)) folderErrors.delete(id);
+  for (const id of openedLogs) if (!ids.has(id)) openedLogs.delete(id);
+  $('clear-history').disabled = clearingHistory || !state.tasks.some(task => ['completed', 'failed', 'cancelled'].includes(task.status));
   $('tasks').innerHTML = state.tasks.length ? state.tasks.map(task => {
     const error = task.status === 'failed' ? `<p class="task-error"><strong>失败原因：${escape(task.failure?.label || '原因未确定')}</strong><span>${escape(task.error || '请展开任务日志查看详情。')}</span></p>` : task.error ? `<p class="task-error">${escape(task.error)}</p>` : '';
     const progress = window.collectorTaskProgress(task);
-    return `<article class="task-card"><div class="task-heading"><div class="task-title">${escape(task.title)}</div><span class="task-speed" data-task-speed="${escape(task.id)}" title="下载接收速度；等待、校验和转码阶段不显示旧速度"${['running', 'cancelling'].includes(task.status) ? '' : ' hidden'}>${escape(window.collectorTaskSpeed(task))}</span></div><div class="task-meta"><span class="${['running','cancelling'].includes(task.status)?'is-loading':''}" aria-busy="${['running','cancelling'].includes(task.status)}">${labels[task.status] || escape(task.status)}${progress.stage ? ' · ' + escape(progress.stage) : ''}</span><span>${escape(progress.text)}</span></div><progress max="100"${progress.attribute}></progress>${error}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
+    return `<article class="task-card" data-task-id="${escape(task.id)}"><div class="task-heading"><div class="task-title">${escape(task.title)}</div><span class="task-speed" data-task-speed="${escape(task.id)}" title="下载接收速度；等待、校验和转码阶段不显示旧速度"${['running', 'cancelling'].includes(task.status) ? '' : ' hidden'}>${escape(window.collectorTaskSpeed(task))}</span></div><div class="task-meta"><span class="${['running','cancelling'].includes(task.status)?'is-loading':''}" aria-busy="${['running','cancelling'].includes(task.status)}">${labels[task.status] || escape(task.status)}${progress.stage ? ' · ' + escape(progress.stage) : ''}</span><span>${escape(progress.text)}</span></div><progress max="100"${progress.attribute}></progress>${error}<div class="task-actions">${folderErrors.has(task.id) ? `<span class="task-folder-error" role="status">${escape(folderErrors.get(task.id))}</span>` : ''}${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${escape(task.id)}"${openingFolders.has(task.id) ? ' disabled' : ''}>打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
   }).join('') : '<div class="empty"><strong>下载队列还是空的</strong><p>在资源页选择图片或视频，<br>加入队列后可以在这里查看进度。</p></div>';
 }
 function render(next) {
@@ -301,6 +307,15 @@ $('settings-panel').addEventListener('input', event => { if (event.target.matche
 $('settings-panel').addEventListener('change', event => { if (event.target.matches('input:not([readonly]),select')) settingsDirty = true; });
 $('choose-folder').addEventListener('click', async () => { await call('choose-folder'); $('save-dir').value = state.settings.saveDir; });
 $('open-folder').addEventListener('click', () => call('open-folder'));
+$('clear-history').addEventListener('click', async () => {
+  if (clearingHistory) return;
+  clearingHistory = true; renderTasks();
+  try {
+    const removed = await window.collector.call('clear-history');
+    notify(removed ? `已清除 ${removed} 条已结束的任务记录。` : '暂无可清除的任务记录。');
+  } catch (error) { notify(error.message); }
+  finally { clearingHistory = false; renderTasks(); }
+});
 $('save-settings').addEventListener('click', async () => {
   try {
     for (const id of ['global-concurrency', 'site-concurrency']) {
@@ -374,10 +389,17 @@ $('resources').addEventListener('click', async event => {
     finally { release(); }
   }
 });
-$('tasks').addEventListener('click', event => {
+$('tasks').addEventListener('click', async event => {
   if (event.target.dataset.cancel) call('cancel-task', { id: event.target.dataset.cancel });
   if (event.target.dataset.retry) call('retry-task', { id: event.target.dataset.retry });
-  if (event.target.dataset.folder) call('open-folder', { id: event.target.dataset.folder });
+  if (event.target.dataset.folder) {
+    const id = event.target.dataset.folder;
+    if (openingFolders.has(id)) return;
+    openingFolders.add(id); folderErrors.delete(id); renderTasks();
+    try { await window.collector.call('open-folder', { id }); }
+    catch (error) { if (state.tasks.some(task => task.id === id)) folderErrors.set(id, error.message); }
+    finally { openingFolders.delete(id); renderTasks(); }
+  }
 });
 $('tasks').addEventListener('toggle', event => { if (event.target.dataset.log) { const id = event.target.dataset.log; if (event.target.open) openedLogs.add(id); else openedLogs.delete(id); } }, true);
 new ResizeObserver(syncLayout).observe($('browser-slot'));
