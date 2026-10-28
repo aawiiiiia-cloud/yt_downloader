@@ -76,10 +76,8 @@ async function run(collector, check, until, wait) {
   await until(()=>collector.tabs.active!==xhs&&loaded(collector.tabs.active),'manual XHS plus did not open');
   const extraXhs=collector.tabs.active, extraWeb=extraXhs.view.webContents;
   check('manual plus still creates an independent Xiaohongshu homepage',extraXhs.group==='xiaohongshu'&&extraXhs.url==='https://www.xiaohongshu.com/explore');
-  const toolbar=await ui('(()=>{const r=document.querySelector(".browser-tabbar").getBoundingClientRect();return{x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}})()');
-  require('node:fs').writeFileSync(require('node:path').join(__dirname,'..','electron-artifacts','new-tab-style.png'),(await collector.window.webContents.capturePage(toolbar)).toPNG());
   await until(()=>extraWeb.executeJavaScript('!!window.__collectorLinksInstalled'),'fallback link handler not ready');
-  await extraWeb.executeJavaScript(`(()=>{const a=document.createElement('a');a.href=${JSON.stringify(noteUrl)};a.target='_self';document.body.append(a);a.click()})()`,true);
+  await extraWeb.executeJavaScript(`setTimeout(()=>{const a=document.createElement('a');a.href=${JSON.stringify(noteUrl)};a.target='_self';document.body.append(a);a.click()},0);void 0`,true);
   await until(()=>extraXhs.url===noteUrl&&loaded(extraXhs),'same-tab XHS document navigation did not finish');
   check('XHS document navigation without a SPA router stays in its original native view',collector.tabs.active===extraXhs&&collector.tabs.rows.length===xhsCount+1&&extraXhs.view.webContents===extraWeb);
   collector.closeTab(extraXhs.id);collector.activateTab(xhs.id);
