@@ -34,7 +34,7 @@ const metricsScript = `(() => {
     rightItemVisible: !!last && last.right <= root.clientWidth && last.left >= 0 };
 })()`;
 
-async function run(collector, check, until, wait) {
+async function run(collector, check, until, wait, warnings = []) {
   const source = collector.tabs.active, size = collector.window.getSize(), width = collector.settings.panelWidth;
   const wasVisible = collector.window.isVisible();
   const ui = code => collector.window.webContents.executeJavaScript(code);
@@ -95,11 +95,11 @@ async function run(collector, check, until, wait) {
     const dragDeadline = Date.now() + 2000;
     while (Date.now() < dragDeadline && (await measure()).x === 0) await wait(80);
     report.nativeDrag = (await measure()).x > 0;
-    if (!report.nativeDrag && report.captureWarnings?.length) {
-      // A noninteractive desktop session cannot exercise Chromium's native
-      // scrollbar hit testing. Keep that limitation explicit, but still test
-      // actual root scrollability and all resize/navigation behavior.
-      report.nativeInputWarning = 'Native dragging could not be verified in this desktop session; programmatic scrolling tested instead';
+    if (!report.nativeDrag) {
+      // Capture availability alone does not prove native input is delivered.
+      // Preserve the failed input result and report the narrower acceptance.
+      report.nativeInputWarning = 'Taobao native dragging did not move the viewport in this run; only programmatic scrolling verified';
+      warnings.push(report.nativeInputWarning);
       await web.mainFrame.executeJavaScript('scrollTo(document.documentElement.scrollWidth,0)'); await wait(80);
     }
     report.dragged = await measure();

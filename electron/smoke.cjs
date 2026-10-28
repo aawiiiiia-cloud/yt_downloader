@@ -188,7 +188,7 @@ async function run(collector, profile, snapshotScript) {
     await require('./new-sites-smoke.cjs').run(collector, check, until, wait);
     await require('./behance-smoke.cjs').run(collector, check, until, wait);
     await require('./taobao-smoke.cjs').run(collector, check, until, wait, assetRequests);
-    await require('./taobao-scroll-smoke.cjs').run(collector, check, until, wait);
+    await require('./taobao-scroll-smoke.cjs').run(collector, check, until, wait, warnings);
     await require('./zcool-smoke.cjs').run(collector, check, until, wait, assetRequests);
     await require('./popup-smoke.cjs').run(collector, check, until, wait, warnings);
     await require('./web-login-smoke.cjs').run(collector, check, until, wait);
