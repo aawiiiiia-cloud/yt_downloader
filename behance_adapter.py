@@ -323,6 +323,7 @@ def download_project(collector, url, folder):
                                    proxy=str(settings.get('proxy') or ''), progress=collector.log, cancel_event=collector.cancel,
                                    image_format=settings.get('imageFormat', 'original'), image_quality=settings.get('imageQuality', 95),
                                    user_agent=collector.request.get('userAgent'),
+                                   transfer_progress=lambda data: collector.emit('progress', data),
                                    item_progress=lambda current, total, name: collector.emit('progress', {
                                        'status': 'downloading', 'percent': current / max(total, 1) * 100, 'name': name}))
             writer.check_cancel = collector.check_cancel

@@ -22,3 +22,6 @@ node_modules/
 .collector-profile/
 electron-artifacts/
 *.cookies.txt
+
+# 本地 Git 历史备份
+*.bundle

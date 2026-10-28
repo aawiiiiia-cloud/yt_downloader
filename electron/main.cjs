@@ -22,6 +22,8 @@ const { snapshotScript: taobaoSnapshotScript } = require('./taobao-page.cjs');
 const { snapshotScript: zcoolSnapshotScript } = require('./zcool-page.cjs');
 const { classifyFailure, safeDetail } = require('./task-failure.cjs');
 const { loginPlan, loginHost, surfaceScript, waitForLogin } = require('./web-login.cjs');
+const { TaobaoHomeScroll } = require('./taobao-scroll.cjs');
+const { waitForPreparation } = require('./task-preflight.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -177,6 +179,7 @@ class CollectorApp {
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
     this.window.contentView.addChildView(view); view.setVisible(false); view.setBounds(this.browserBounds);
     const web = view.webContents;
+    if (tab.group === 'taobao') tab.homeScroll = new TaobaoHomeScroll(web);
     if (tab.group === 'douyin') tab.douyinPage = new DouyinPage(web);
     web.setUserAgent(this.userAgent); web.setAudioMuted(true);
     // Native webpage views can receive the pointer while it crosses the divider.
@@ -364,7 +367,7 @@ class CollectorApp {
   }
   disposeTab(tab) {
     if (tab.closed) return;
-    tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort(); tab.douyinPage?.dispose(); tab.relayGuard?.dispose();
+    tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort(); tab.douyinPage?.dispose(); tab.relayGuard?.dispose(); tab.homeScroll?.dispose();
     for (const [popup, owner] of this.popups) if (owner === tab.id && !popup.isDestroyed()) popup.destroy();
     // A script-closed WebContentsView has already detached its native view and
     // no longer returns webContents. Do not access it as a still-live page.
@@ -448,8 +451,9 @@ class CollectorApp {
       throw error;
     }
   }
-  async cookieSnapshot(site, verified = false, snapshot = {}) {
+  async cookieSnapshot(site, verified = false, snapshot = {}, signal) {
     const cookies = await this.browserSession.cookies.get({});
+    if (signal?.aborted) throw Object.assign(new Error('操作已取消'), { cancelled: true });
     if (verified && (this.youtubeAuth.status !== 'verified' || fingerprint(cookies) !== this.youtubeAuth.key)) throw authRequired();
     snapshot.key = fingerprint(cookies, site);
     const file = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
@@ -475,13 +479,19 @@ class CollectorApp {
         throw new Error('外部平台托管的视频默认不下载');
       const youtubeVerified = spec.command === 'download' && siteForUrl(spec.url) === 'youtube';
       if (youtubeVerified) await this.ensureYouTube();
-      const cookieFile = await this.cookieSnapshot(site, youtubeVerified, snapshot);
+      let cookieFile;
       try {
+        onEvent?.('log', '正在读取本次任务的登录资料…');
+        cookieFile = await waitForPreparation(() => this.cookieSnapshot(site, youtubeVerified, snapshot, controller.signal),
+          { signal: controller.signal, label: '读取登录资料' });
+        onEvent?.('log', '正在确认网络与系统代理设置…');
         const [proxy, providerUrl] = await Promise.all([
-          this.effectiveProxy(spec.url, spec.settings?.proxy),
+          waitForPreparation(() => this.effectiveProxy(spec.url, spec.settings?.proxy),
+            { signal: controller.signal, label: '系统代理解析' }),
           siteForUrl(spec.url) === 'youtube' ? this.youtubeProvider.ensure(onEvent, controller.signal) : undefined,
         ]);
         if (cancelled) { const error = new Error('操作已取消'); error.cancelled = true; throw error; }
+        onEvent?.('log', '网络准备完成，正在启动下载器…');
         for (let attempt=0;attempt<2;attempt++) {
           const context=spec.command==='download'&&site==='vimeo'&&this.externalTasks.has(spec) ?
             await this.externalDownloadContext(spec,controller.signal,attempt>0) : spec.context;
@@ -503,7 +513,7 @@ class CollectorApp {
           if (failure.code === 'AUTH_EXPIRED') await this.rejectCredentials(site, snapshot.key);
         }
         throw error;
-      } finally { controller.abort(); fs.unlinkSync(cookieFile); }
+      } finally { controller.abort(); if (cookieFile) fs.rmSync(cookieFile, { force: true }); }
     })();
     return this.track(handle);
   }

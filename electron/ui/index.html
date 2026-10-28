@@ -14,4 +14,5 @@
 <details id="advanced-options" class="advanced-options"><summary>高级选项</summary><div class="concurrency-fields"><label>全局并发<input id="global-concurrency" type="number" min="1" max="20" step="1" value="5" required aria-describedby="concurrency-help"></label><label>单站并发<input id="site-concurrency" type="number" min="1" max="20" step="1" value="1" required aria-describedby="concurrency-help"></label></div><p id="concurrency-help" class="muted">可填写 1–20，单站上限对每个网站分别生效。超过上限的任务会排队；调低上限不打断正在下载的任务。</p></details>
 <button id="save-settings" class="primary">保存设置</button><p id="health-detail" class="muted"></p></section>
 <div class="panel-foot"><span class="status-dot"></span><span id="core-status">正在连接下载核心…</span></div></aside></main>
-<script src="media-info.js"></script><script src="split-pane.js"></script><script src="app.js"></script></body></html>
+<script src="media-info.js"></script><script src="split-pane.js"></script><script src="task-progress.js"></script>
+<script src="download-feedback.js"></script><script src="app.js"></script></body></html>

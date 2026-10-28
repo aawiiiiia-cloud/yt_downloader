@@ -232,7 +232,8 @@ def download_product(collector, url, folder):
         cookie_file=Path(collector.request['cookieFile']) if collector.request.get('cookieFile') else None,
         proxy=str(settings.get('proxy') or ''), progress=collector.log, cancel_event=collector.cancel,
         image_format=settings.get('imageFormat', 'original'), image_quality=settings.get('imageQuality', 95),
-        user_agent=collector.request.get('userAgent'), item_progress=progress)
+        user_agent=collector.request.get('userAgent'), item_progress=progress,
+        transfer_progress=lambda data: collector.emit('progress', data))
     post = XhsPost(parse_qs(urlparse(url).query)['id'][0], item['title'], '', '', product_url(url), images)
     _, paths = writer.download_post(post, folder)
     collector.check_cancel()

@@ -53,7 +53,11 @@ def main() -> int:
         threading.Thread(target=read_control, daemon=True).start()
         # Third-party print() must not corrupt the structured stdout protocol.
         with contextlib.redirect_stdout(sys.stderr):
+            if request.get("command") == "download":
+                emit("log", "下载器已启动，正在准备运行环境…")
             prepare_runtime()
+            if request.get("command") == "download":
+                emit("log", "运行环境已就绪，开始处理下载任务")
             command = request.get("command")
             if command == "health":
                 result = runtime_health()

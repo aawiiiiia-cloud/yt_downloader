@@ -164,7 +164,8 @@ def download_work(collector, url, folder):
         cookie_file=Path(collector.request['cookieFile']) if collector.request.get('cookieFile') else None,
         proxy=str(settings.get('proxy') or ''), progress=collector.log, cancel_event=collector.cancel,
         image_format=settings.get('imageFormat', 'original'), image_quality=settings.get('imageQuality', 95),
-        user_agent=collector.request.get('userAgent'), item_progress=progress)
+        user_agent=collector.request.get('userAgent'), item_progress=progress,
+        transfer_progress=lambda data: collector.emit('progress', data))
     _, paths = writer.download_post(XhsPost(item['id'], item['title'], '', item['author'], item['url'], images), folder)
     collector.check_cancel()
     return {'count': len(paths), 'folder': str(paths[0].parent)}

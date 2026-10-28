@@ -176,7 +176,9 @@ class DownloadQueue {
       while (!this.closing && this.active.size < this.limits.globalConcurrency) {
         const task = [...this.tasks].reverse().find(row => row.status === 'queued' && this.canStart(row));
         if (!task) break;
-        this.active.add(task); task.status = 'running'; this.changed(); this.start(task);
+        this.active.add(task); task.status = 'running'; task.percent = null; task.detail = 'preparing'; task.speed = null; task.speedUpdatedAt = null; task.eta = null;
+        task.logs = [...task.logs, '准备下载，正在检查登录资料与网络连接…'].slice(-35);
+        this.changed(); this.start(task);
       }
     } finally { this.pumping = false; }
   }
@@ -184,7 +186,16 @@ class DownloadQueue {
     try {
       task.process = this.run(task.spec, (type, data) => {
         if (type === 'log') task.logs = [...task.logs, safeDetail(data)].slice(-35);
-        if (type === 'progress') { task.percent = Number(data.percent) || 0; task.detail = data.status; }
+        if (type === 'progress') {
+          const percent = Number(data.percent);
+          task.percent = data.percent == null || !Number.isFinite(percent) ? null : Math.max(0, Math.min(100, percent));
+          task.detail = data.status; task.downloadedBytes = Math.max(0, Number(data.downloadedBytes) || 0);
+          const speed = Number(data.speed), eta = Number(data.eta);
+          const receiving = ['downloading', 'image-receiving'].includes(data.status);
+          task.speed = receiving && data.speed != null && Number.isFinite(speed) && speed >= 0 ? speed : null;
+          task.speedUpdatedAt = task.speed == null ? null : Date.now();
+          task.eta = receiving && data.eta != null && Number.isFinite(eta) && eta >= 0 ? eta : null;
+        }
         this.changed();
       });
       task.result = await task.process.promise;
@@ -197,6 +208,7 @@ class DownloadQueue {
       task.failure = failure; task.error = failure.message;
       if (failure.detail && failure.detail !== failure.message) task.logs = [...task.logs, failure.detail].slice(-35);
     } finally {
+      task.speed = null; task.speedUpdatedAt = null; task.eta = null;
       delete task.process; this.active.delete(task); this.changed(); this.pump();
     }
   }

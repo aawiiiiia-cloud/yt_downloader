@@ -24,3 +24,14 @@
 .is-loading::before{content:"";display:inline-block;width:12px;height:12px;box-sizing:border-box;flex-shrink:0;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;margin-right:6px;vertical-align:-2px;animation:media-dl-spin .8s linear infinite;animation-delay:var(--spinner-phase,0ms)}.empty .empty-icon.is-loading{height:36px;line-height:36px;color:var(--accent)}.empty .empty-icon.is-loading::before{width:28px;height:28px;border-width:3px;margin-right:0;vertical-align:middle}.browser-tab .is-loading::before,.task-meta .is-loading::before,.image-size.is-loading::before{width:10px;height:10px;border-width:1.5px;vertical-align:-1px}@keyframes media-dl-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.is-loading::before{animation:none}}
 
 .task-card progress{appearance:none;-webkit-appearance:none;background:#e8e8e8;border-radius:4px;overflow:hidden}.task-card progress::-webkit-progress-bar{background:#e8e8e8;border-radius:4px}.task-card progress::-webkit-progress-value{background:var(--accent);border-radius:4px}
+
+/* Queue receipt and live transfer rate: no overlay can intercept input. */
+.task-heading{display:flex;align-items:flex-start;gap:12px;margin-bottom:10px}
+.task-heading .task-title{flex:1;min-width:0;margin-bottom:0;overflow-wrap:anywhere}
+.task-speed{flex:none;margin-left:auto;font-size:12px;line-height:1.6;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.download-flight{position:fixed;left:0;top:0;width:32px;height:32px;border-radius:50%;background:#252525;color:#fff;box-shadow:0 3px 12px #0003;z-index:10000;pointer-events:none;will-change:transform,opacity}
+.download-flight::before{content:"";position:absolute;left:15px;top:7px;width:2px;height:12px;background:currentColor}
+.download-flight::after{content:"";position:absolute;left:11px;top:12px;width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg)}
+.download-arrived{animation:download-arrived 650ms ease-out}
+@keyframes download-arrived{0%,100%{transform:scale(1)}35%{transform:scale(1.035);box-shadow:inset 0 0 0 2px #7776;background:#e7e7e7}}
+@media(prefers-reduced-motion:reduce){.download-arrived{animation:none;box-shadow:inset 0 0 0 2px #7776}.download-flight{display:none}}

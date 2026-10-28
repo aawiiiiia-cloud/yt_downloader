@@ -5,6 +5,7 @@ const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bili
 const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫', zcool: '站酷' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
+let panelRevision = 0;
 const openedLogs = new Set();
 const previews = new Map(), pendingDownloads = new Map();
 const drafts = new Map();
@@ -106,6 +107,7 @@ function updateMediaInfo() {
   }
 }
 function showPanel(name) {
+  panelRevision += 1;
   saveDraft();
   for (const panel of ['resources', 'tasks', 'settings']) {
     const active = panel === name;
@@ -208,7 +210,8 @@ function renderTasks() {
   const labels = { queued: '等待下载', running: '下载中', cancelling: '正在停止', cancelled: '已取消', completed: '已完成', failed: '下载失败' };
   $('tasks').innerHTML = state.tasks.length ? state.tasks.map(task => {
     const error = task.status === 'failed' ? `<p class="task-error"><strong>失败原因：${escape(task.failure?.label || '原因未确定')}</strong><span>${escape(task.error || '请展开任务日志查看详情。')}</span></p>` : task.error ? `<p class="task-error">${escape(task.error)}</p>` : '';
-    return `<article class="task-card"><div class="task-title">${escape(task.title)}</div><div class="task-meta"><span class="${['running','cancelling'].includes(task.status)?'is-loading':''}" aria-busy="${['running','cancelling'].includes(task.status)}">${labels[task.status] || escape(task.status)}${task.status === 'running' && task.detail === 'processing' ? ' · 正在合并或转码' : ''}</span><span>${Math.round(task.percent || 0)}%</span></div><progress max="100" value="${task.percent || 0}"></progress>${error}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
+    const progress = window.collectorTaskProgress(task);
+    return `<article class="task-card"><div class="task-heading"><div class="task-title">${escape(task.title)}</div><span class="task-speed" data-task-speed="${escape(task.id)}" title="下载接收速度；等待、校验和转码阶段不显示旧速度"${['running', 'cancelling'].includes(task.status) ? '' : ' hidden'}>${escape(window.collectorTaskSpeed(task))}</span></div><div class="task-meta"><span class="${['running','cancelling'].includes(task.status)?'is-loading':''}" aria-busy="${['running','cancelling'].includes(task.status)}">${labels[task.status] || escape(task.status)}${progress.stage ? ' · ' + escape(progress.stage) : ''}</span><span>${escape(progress.text)}</span></div><progress max="100"${progress.attribute}></progress>${error}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
   }).join('') : '<div class="empty"><strong>下载队列还是空的</strong><p>在资源页选择图片或视频，<br>加入队列后可以在这里查看进度。</p></div>';
 }
 function render(next) {
@@ -335,6 +338,8 @@ $('resources').addEventListener('click', async event => {
   const imageButton = event.target.closest('[data-download-image]');
   if (event.target.id === 'download' || imageButton) {
     event.preventDefault();
+    const downloadOrigin = (imageButton || $('download')).getBoundingClientRect();
+    const revision = panelRevision;
     const args = { inspectionId: state.inspectionId, itemIndex: selectedItem,
       indices: imageButton ? [Number(imageButton.dataset.downloadImage)] : [...document.querySelectorAll('[data-image]:checked')].map(i => Number(i.dataset.image)),
       formatId: $('format-select')?.value || '', audioOnly: $('audio-only')?.checked, subtitles: $('subtitles')?.checked };
@@ -349,9 +354,13 @@ $('resources').addEventListener('click', async event => {
         await window.collector.call('login', { site: 'youtube' });
         id = await window.collector.call('download', args);
       }
-      if (id && state.inspectionId === args.inspectionId) {
-        if (imageButton) notify(`第 ${args.indices[0]} 张图片已加入下载队列。`);
-        else { notify(''); showPanel('tasks'); }
+      if (id) {
+        if (state.inspectionId === args.inspectionId)
+          notify(imageButton ? `第 ${args.indices[0]} 张图片已加入下载队列。` : '已加入下载队列。');
+        await window.collectorDownloadFeedback.fly(downloadOrigin, $('tasks-tab'));
+        // Preserve automatic navigation, but never override a user's intervening tab choice.
+        if (!imageButton && state.inspectionId === args.inspectionId && revision === panelRevision)
+          showPanel('tasks');
       }
     } catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
     finally { pendingDownloads.delete(args.inspectionId); updateMediaInfo(); }
@@ -364,4 +373,14 @@ $('tasks').addEventListener('click', event => {
 });
 $('tasks').addEventListener('toggle', event => { if (event.target.dataset.log) { const id = event.target.dataset.log; if (event.target.open) openedLogs.add(id); else openedLogs.delete(id); } }, true);
 new ResizeObserver(syncLayout).observe($('browser-slot'));
+// Refresh only the speed labels, not the entire card (keep log selection and focus intact).
+const speedTimer = window.setInterval(() => {
+  if (!state || $('tasks-panel').hidden) return;
+  const tasks = new Map((state.tasks || []).map(task => [task.id, task]));
+  document.querySelectorAll('[data-task-speed]').forEach(label => {
+    const task = tasks.get(label.dataset.taskSpeed);
+    if (task) label.textContent = window.collectorTaskSpeed(task);
+  });
+}, 1000);
+window.addEventListener('pagehide', () => window.clearInterval(speedTimer));
 window.collector.onState(render); call('state').then(value => { if (value) render(value); syncLayout(); });

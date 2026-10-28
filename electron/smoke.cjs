@@ -49,6 +49,8 @@ async function run(collector, profile, snapshotScript) {
     await session.defaultSession.protocol.handle('https', () => new Response('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="140"><rect width="100" height="140" fill="#eaf4ef"/></svg>', { headers: { 'content-type': 'image/svg+xml' } }));
     await collector.browserSession.protocol.handle('https', async request => {
       const resource = new URL(request.url);
+      const homeScrollFixture = require('./taobao-scroll-smoke.cjs').fixture(request);
+      if (homeScrollFixture) return homeScrollFixture;
       const loginFixture = require('./web-login-smoke.cjs').fixture(request);
       if (loginFixture) return loginFixture;
       const popupFixture = await require('./popup-smoke.cjs').fixture(request);
@@ -186,6 +188,7 @@ async function run(collector, profile, snapshotScript) {
     await require('./new-sites-smoke.cjs').run(collector, check, until, wait);
     await require('./behance-smoke.cjs').run(collector, check, until, wait);
     await require('./taobao-smoke.cjs').run(collector, check, until, wait, assetRequests);
+    await require('./taobao-scroll-smoke.cjs').run(collector, check, until, wait);
     await require('./zcool-smoke.cjs').run(collector, check, until, wait, assetRequests);
     await require('./popup-smoke.cjs').run(collector, check, until, wait, warnings);
     await require('./web-login-smoke.cjs').run(collector, check, until, wait);
