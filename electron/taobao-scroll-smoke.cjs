@@ -36,6 +36,7 @@ const metricsScript = `(() => {
 
 async function run(collector, check, until, wait) {
   const source = collector.tabs.active, size = collector.window.getSize(), width = collector.settings.panelWidth;
+  const wasVisible = collector.window.isVisible();
   const ui = code => collector.window.webContents.executeJavaScript(code);
   const directory = path.join(__dirname, '..', 'electron-artifacts', 'taobao-horizontal-2026-10-28');
   fs.mkdirSync(directory, { recursive: true });
@@ -56,6 +57,9 @@ async function run(collector, check, until, wait) {
     }
   };
   try {
+    // Native scrollbar hit testing and compositor captures need a visible
+    // window; earlier smoke stages deliberately hide their test window.
+    collector.window.show();
     tab = collector.openTab('https://www.taobao.com/?collector-scroll-fixture=1', { group: 'taobao' });
     const web = tab.view.webContents, measure = () => web.mainFrame.executeJavaScript(metricsScript);
     await until(() => web.mainFrame.executeJavaScript('!!document.querySelector("[data-scroll-fixture]")'), 'home scroll fixture did not load');
@@ -135,6 +139,7 @@ async function run(collector, check, until, wait) {
     collector.settings.panelWidth = width; collector.window.setSize(...size);
     if (!source.closed) collector.activateTab(source.id);
     if (tab && !tab.closed) collector.closeTab(tab.id);
+    if (!wasVisible) collector.window.hide();
     await wait(150);
   }
 }
