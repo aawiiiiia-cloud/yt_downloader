@@ -12,10 +12,14 @@ import os
 import re
 import sys
 import threading
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
+
+from collector_errors import safe_error_text
+from image_transfer import ImageRateMeter, ImageTransferPolicy, OriginalSourcePlan
 
 try:
     import yt_dlp
@@ -59,6 +63,10 @@ XHS_ORIGINAL_IMAGE_ORIGINS = (
 
 class XhsDownloadError(RuntimeError):
     """给 GUI/CLI 展示的可读错误。"""
+
+
+class _SlowOriginalTransfer(Exception):
+    """Internal signal: try an equal-quality original, not a preview."""
 
 
 class XhsCancelled(XhsDownloadError):
@@ -383,6 +391,7 @@ class XhsImageDownloader:
         image_format: str = "original",
         image_quality: int = 95,
         user_agent: str | None = None,
+        transfer_progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.cookie_file = cookie_file
         self.proxy = proxy.strip()
@@ -390,6 +399,10 @@ class XhsImageDownloader:
         self.progress = progress
         self.cancel_event = cancel_event
         self.item_progress = item_progress
+        self.transfer_progress = transfer_progress
+        self._completed_images = 0
+        self.transfer_policy = ImageTransferPolicy()
+        self._origin_health: dict[str, tuple[int, float]] = {}
         normalized_format = image_format.strip().lower()
         if normalized_format not in IMAGE_OUTPUT_FORMATS:
             raise ValueError(f"不支持的图片输出格式: {image_format}")
@@ -463,10 +476,14 @@ class XhsImageDownloader:
         folder = self._post_folder(post, output_dir)
         folder.mkdir(parents=True, exist_ok=True)
         completed: list[Path] = []
+        self._origin_health.clear()
+        self._completed_images = 0
+        self.progress(f"[准备] 共 {len(post.images)} 张选中图片，按原始编号保存")
         with yt_dlp.YoutubeDL(self._ydl_options()) as ydl:
             for image in post.images:
                 self._check_cancelled()
                 completed.append(self._download_one(ydl, post, image, folder))
+                self._completed_images += 1
         self._write_summary(post, folder)
         self.progress(f"[完成] 已保存 {len(completed)} 张图片 → {folder}")
         return post, tuple(completed)
@@ -476,93 +493,182 @@ class XhsImageDownloader:
             f"{post.title} [{post.note_id}]", f"小红书图文 [{post.note_id}]",
         )
 
+    def _transfer(self, post: XhsPost, image: XhsImage, status: str,
+                  received: int = 0, expected: int | None = None,
+                  speed: float | None = None) -> None:
+        if self.transfer_progress is None:
+            return
+        total = max(len(post.images), 1)
+        # Receiving bytes is not completion: validation and atomic publication follow.
+        fraction = min(received / expected, 0.99) if expected else None
+        if status in {"image-validating", "image-converting"}:
+            fraction = 0.99
+        self.transfer_progress({
+            "status": status, "percent": (
+                (self._completed_images + fraction) / total * 100
+                if fraction is not None else None
+            ), "downloadedBytes": received, "totalBytes": expected,
+            "imageIndex": image.index, "speed": speed,
+        })
+
+    def _original_candidate_indices(self, image: XhsImage) -> tuple[int, ...]:
+        """Only generated, same-resource XHS originals qualify for low-rate switching."""
+        candidates = (image.url, *image.fallback_urls)
+        origins = set(XHS_ORIGINAL_IMAGE_ORIGINS)
+        paths = []
+        for index, url in enumerate(candidates):
+            parsed = urlparse(url)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            if origin in origins and not parsed.query and "!" not in parsed.path:
+                paths.append((index, parsed.path))
+        if not paths:
+            return ()
+        resource = paths[0][1]
+        return tuple(index for index, path in paths if path == resource)
+
     def _download_one(
         self, ydl: yt_dlp.YoutubeDL, post: XhsPost, image: XhsImage, folder: Path,
     ) -> Path:
         last_error: Exception | None = None
         temp_path = folder / f".{image.index:02d}.part"
         candidates = (image.url, *image.fallback_urls)
-        for candidate_index, image_url in enumerate(candidates):
-            if candidate_index:
-                self.progress(
-                    f"[回退] 图片 {image.index} 原图地址不可用，尝试备用地址 "
-                    f"{candidate_index}/{len(candidates) - 1}"
-                )
-            for attempt in range(1, 3):
+        originals = self._original_candidate_indices(image)
+        policy = self.transfer_policy
+        plan = None
+        if originals:
+            ranks = {}
+            for index in originals:
+                host = urlparse(candidates[index]).hostname or ""
+                penalty, rate = self._origin_health.get(host, (0, 0))
+                ranks[index] = (penalty, -rate, index)
+            plan = OriginalSourcePlan(len(candidates), originals, ranks, policy.max_slow_sources)
+            attempts = plan.attempts()
+        else:
+            # Other sites retain their own original/preview ordering.
+            attempts = ((index, attempt, False) for index in range(len(candidates))
+                        for attempt in range(1, 3))
+        previous_index = None
+        for candidate_index, attempt, watch_slow in attempts:
+            self._check_cancelled()
+            image_url = candidates[candidate_index]
+            host = urlparse(image_url).hostname or ""
+            is_original = candidate_index in originals
+            if previous_index is not None and previous_index != candidate_index:
+                label = "同质量原图" if is_original else "备用图片"
+                self.progress(f"[回退] 图片 {image.index} 正在切换{label}节点 · 地址 {candidate_index + 1}/{len(candidates)}")
+            if attempt > 1:
+                self.progress(f"[重试] 图片 {image.index} 再试地址 {candidate_index + 1}/{len(candidates)}")
+            if plan and candidate_index in plan.slow and not watch_slow:
+                self.progress(f"[继续] 图片 {image.index} 本轮备用原图未能更快完成，继续已测较快的原图地址，不再因低速反复切换")
+            previous_index = candidate_index
+            received, expected, started, meter = 0, None, None, None
+            try:
+                self._transfer(post, image, "image-connecting")
+                # A per-request timeout leaves the other sites' network settings intact.
+                timeout = policy.original_idle_timeout if is_original else 30
+                extensions = {"timeout": timeout} if is_original else {}
+                self.progress(f"[连接] 图片 {image.index} · 下载地址 {candidate_index + 1}/{len(candidates)} · "
+                              f"尝试 {attempt}/2（单次网络等待超时 {timeout:g} 秒）"
+                              f"{' · 原图节点 ' + host if is_original else ''}")
+                request = Request(image_url, headers={"Referer": post.source_url}, extensions=extensions)
+                with ydl.urlopen(request) as response:
+                    content_type = str(response.headers.get("Content-Type") or "")
+                    mime = content_type.split(";", 1)[0].strip().lower()
+                    generic_binary = mime in {"application/octet-stream", "binary/octet-stream"}
+                    if content_type and not mime.startswith("image/") and not generic_binary:
+                        raise XhsDownloadError(f"服务器返回的不是图片：{content_type}")
+                    extension = _image_extension(content_type, image_url)
+                    expected = _as_positive_int(response.headers.get("Content-Length"))
+                    self.progress(f"[接收] 图片 {image.index} 已连接，正在接收图片数据")
+                    self._transfer(post, image, "image-receiving", received, expected)
+                    started = last_progress = last_log = time.monotonic()
+                    meter = ImageRateMeter(started, policy)
+                    with open(temp_path, "wb") as handle:
+                        while True:
+                            self._check_cancelled()
+                            block = response.read(policy.read_size)
+                            now = time.monotonic()
+                            if not block:
+                                break
+                            handle.write(block)
+                            received += len(block)
+                            speed = meter.update(now, received)
+                            if received == len(block) or now - last_progress >= 0.2:
+                                self._transfer(post, image, "image-receiving", received, expected, speed)
+                                last_progress = now
+                            # A cancellation during a progress callback wins over switching.
+                            self._check_cancelled()
+                            if now - last_log >= policy.log_interval:
+                                total_text = f" / {expected / 1024:.0f} KB" if expected else "（总大小未知）"
+                                self.progress(f"[接收进度] 图片 {image.index} · {received / 1024:.0f} KB{total_text} · "
+                                              f"最近速度 {(speed or 0) / 1024:.1f} KB/s · 接收 {now - started:.1f} 秒")
+                                last_log = now
+                            if watch_slow and meter.should_switch(received, expected):
+                                raise _SlowOriginalTransfer()
+                        elapsed = now - started
+                        self._transfer(post, image, "image-receiving", received, expected,
+                                       meter.update(now, received) if received else None)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    self._check_cancelled()
+                    if expected is not None and received != expected:
+                        raise XhsDownloadError(f"图片 {image.index} 下载不完整：应为 {expected} 字节，实际 {received} 字节")
+                    if received <= 0:
+                        raise XhsDownloadError(f"图片 {image.index} 内容为空")
+                    average = received / elapsed if elapsed > 0 else 0
+                    self.progress(f"[接收完成] 图片 {image.index} · {received / 1024:.0f} KB · "
+                                  f"{elapsed:.1f} 秒 · 平均 {average / 1024:.1f} KB/s")
+                    self._transfer(post, image, "image-validating", received, expected)
+                    self.progress(f"[校验] 图片 {image.index} 接收完成，检查完整性")
+                    extension = _detected_image_extension(temp_path, extension, strict=True)
+                    self._validate_download(temp_path, image)
+                    target_extension = extension if self.image_format == "original" else IMAGE_OUTPUT_FORMATS[self.image_format][0]
+                    target = folder / f"{image.index:02d}{target_extension}"
+                    converted = False
+                    if self.image_format == "original" or _same_image_format(extension, self.image_format):
+                        os.replace(temp_path, target)
+                    else:
+                        self._transfer(post, image, "image-converting", received, expected)
+                        self.progress(f"[转换] 图片 {image.index} 正在转换为 {self.image_format.upper()}")
+                        _convert_image(temp_path, target, self.image_format, self.image_quality)
+                        temp_path.unlink(missing_ok=True)
+                        converted = True
+                    if is_original:
+                        self._origin_health[host] = (0 if average >= policy.minimum_rate else 1, average)
+                    source_label = self._source_label(image, candidate_index, len(candidates))
+                    self.progress(f"[图片] {image.index}/{len(post.images)} 已保存（{source_label}"
+                                  f"{'，已转换为 ' + self.image_format.upper() if converted else '，保留原始编码'}）：{target.name}")
+                    if self.item_progress:
+                        self.item_progress(image.index, len(post.images), target.name)
+                    return target
+            except XhsCancelled:
+                temp_path.unlink(missing_ok=True)
+                raise
+            except _SlowOriginalTransfer:
+                # A slow response is still an original that works. Revisit it before
+                # considering a display fallback if the alternate originals all fail.
+                temp_path.unlink(missing_ok=True)
+                self._origin_health[host] = (1, meter.speed or 0)
+                plan.mark_slow(candidate_index, meter.speed)
+                self.progress(f"[低速] 图片 {image.index} · 连续 {policy.slow_window * policy.slow_windows:g} 秒低于 "
+                              f"{policy.minimum_rate / 1024:g} KB/s · 最近 {(meter.speed or 0) / 1024:.1f} KB/s · "
+                              f"已接收 {received / 1024:.0f} KB，尝试其他同质量原图节点")
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                temp_path.unlink(missing_ok=True)
                 self._check_cancelled()
-                try:
-                    request = Request(image_url, headers={"Referer": post.source_url})
-                    with ydl.urlopen(request) as response:
-                        content_type = str(response.headers.get("Content-Type") or "")
-                        mime = content_type.split(";", 1)[0].strip().lower()
-                        generic_binary = mime in {
-                            "application/octet-stream", "binary/octet-stream",
-                        }
-                        if content_type and not mime.startswith("image/") and not generic_binary:
-                            raise XhsDownloadError(f"服务器返回的不是图片：{content_type}")
-                        extension = _image_extension(content_type, image_url)
-                        expected = _as_positive_int(response.headers.get("Content-Length"))
-                        received = 0
-                        with open(temp_path, "wb") as handle:
-                            while True:
-                                self._check_cancelled()
-                                block = response.read(256 * 1024)
-                                if not block:
-                                    break
-                                handle.write(block)
-                                received += len(block)
-                            handle.flush()
-                            os.fsync(handle.fileno())
-                        if expected is not None and received != expected:
-                            raise XhsDownloadError(
-                                f"图片 {image.index} 下载不完整：应为 {expected} 字节，实际 {received} 字节"
-                            )
-                        if received <= 0:
-                            raise XhsDownloadError(f"图片 {image.index} 内容为空")
-                        extension = _detected_image_extension(
-                            temp_path, extension, strict=True,
-                        )
-                        target_extension = (
-                            extension
-                            if self.image_format == "original"
-                            else IMAGE_OUTPUT_FORMATS[self.image_format][0]
-                        )
-                        target = folder / f"{image.index:02d}{target_extension}"
-                        converted = False
-                        if self.image_format == "original" or _same_image_format(
-                            extension, self.image_format
-                        ):
-                            os.replace(temp_path, target)
-                        else:
-                            _convert_image(
-                                temp_path, target, self.image_format, self.image_quality,
-                            )
-                            temp_path.unlink(missing_ok=True)
-                            converted = True
-                        source_label = self._source_label(image, candidate_index, len(candidates))
-                        self.progress(
-                            f"[图片] {image.index}/{len(post.images)} 已保存"
-                            f"（{source_label}"
-                            f"{'，已转换为 ' + self.image_format.upper() if converted else '，保留原始编码'}"
-                            f"）：{target.name}"
-                        )
-                        if self.item_progress:
-                            self.item_progress(image.index, len(post.images), target.name)
-                        return target
-                except XhsCancelled:
-                    temp_path.unlink(missing_ok=True)
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    last_error = exc
-                    temp_path.unlink(missing_ok=True)
-                    if attempt < 2:
-                        self.progress(f"[重试] 图片 {image.index} 当前地址下载失败：{exc}")
-        raise XhsDownloadError(
-            f"图片 {image.index} 的原图和展示图地址均下载失败：{last_error}"
-        )
+                if is_original:
+                    self._origin_health[host] = (2, 0)
+                elapsed_text = f"，接收 {time.monotonic() - started:.1f} 秒" if started is not None else "，尚未收到图片数据"
+                self.progress(f"[失败] 图片 {image.index} 地址 {candidate_index + 1}/{len(candidates)} · "
+                              f"已接收 {received / 1024:.0f} KB{elapsed_text}：{safe_error_text(exc)}")
+        raise XhsDownloadError(f"图片 {image.index} 的原图和展示图地址均下载失败：{safe_error_text(last_error)}") from last_error
+
+    def _validate_download(self, file: Path, image: XhsImage) -> None:
+        """Site-specific checks before converting or atomically publishing an image."""
 
     def _source_label(self, image, candidate_index, total):
-        return ("原始素材 CDN" if image.fallback_urls and candidate_index < total - 1
+        return ("原始素材 CDN" if candidate_index in self._original_candidate_indices(image)
                 else "网页展示图兜底（可能带水印）")
 
     @staticmethod

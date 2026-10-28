@@ -7,15 +7,16 @@ const DOMAINS = {
   douyin: ['douyinpic.com', 'douyincdn.com', 'byteimg.com', 'ibytedtos.com', 'pstatp.com'],
   behance: ['behance.net', 'vimeocdn.com', 'adobe.com', 'adobe.net'],
   taobao: ['alicdn.com', 'tbcdn.cn', 'taobaocdn.com'],
+  zcool: ['zcool.cn', 'zcool.com.cn'],
 };
-const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://item.taobao.com/' };
+const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://item.taobao.com/', zcool: 'https://www.zcool.com.cn/' };
 function assetUrl(value, site) {
   const url = new URL(String(value).startsWith('//') ? 'https:' + value : value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || ![null, '', '80', '443'].includes(url.port) ||
       !DOMAINS[site]?.some(domain => url.hostname === domain || url.hostname.endsWith('.' + domain))) throw new Error('图片地址不属于当前站点的受支持素材域名');
   url.protocol = 'https:'; url.port = ''; url.hash = ''; return url.href;
 }
-async function readBody(response, maximum) {
+async function readBody(response, maximum, onChunk) {
   const reader = response.body?.getReader();
   if (!reader) throw new Error('没有取得图片内容');
   const buffers = []; let bytes = 0;
@@ -25,6 +26,7 @@ async function readBody(response, maximum) {
       bytes += chunk.value.length;
       if (bytes > maximum) throw new Error('预览内容过大');
       buffers.push(Buffer.from(chunk.value));
+      onChunk?.(buffers.at(-1));
     }
     return Buffer.concat(buffers);
   } finally { await reader.cancel().catch(() => {}); }
@@ -87,16 +89,44 @@ async function readDimensions(response, maximum = 256 * 1024) {
   } finally {await reader.cancel().catch(()=>{});}
 }
 class Assets {
-  constructor(fetch) { this.fetch = fetch; this.cache = new Map(); this.active = 0; this.queue = []; }
-  async limit(work, signal) {
-    if (signal?.aborted) throw new Error('页面已切换');
-    if (this.active >= 4) await new Promise(resolve => this.queue.push(resolve));
-    this.active++;
-    try { if (signal?.aborted) throw new Error('页面已切换'); return await work(); }
-    finally { this.active--; this.queue.shift()?.(); }
+  constructor(fetch) { this.fetch = fetch; this.cache = new Map(); this.previewRequests = new Map(); this.active = 0; this.metadataActive = 0; this.queue = []; }
+  limit(work, signal, kind = 'preview') {
+    if (signal?.aborted) return Promise.reject(new Error('页面已切换'));
+    return new Promise((resolve, reject) => {
+      const job = { work, signal, kind, resolve, reject };
+      job.cancel = () => {
+        const index = this.queue.indexOf(job);
+        if (index < 0) return;
+        this.queue.splice(index, 1);
+        signal.removeEventListener('abort', job.cancel);
+        reject(new Error('页面已切换'));
+        this.drain();
+      };
+      signal?.addEventListener('abort', job.cancel, { once: true });
+      this.queue.push(job);
+      this.drain();
+    });
   }
-  remember(key, value) {
-    this.cache.delete(key); this.cache.set(key, { value, at: Date.now() });
+  drain() {
+    // Slow original-size probes must leave room for images. Keep the same four
+    // total requests, cap metadata at two, and start queued previews first.
+    while (this.active < 4) {
+      let index = this.queue.findIndex(job => job.kind === 'preview');
+      if (index < 0 && this.metadataActive < 2) index = this.queue.findIndex(job => job.kind === 'metadata');
+      if (index < 0) return;
+      const job = this.queue.splice(index, 1)[0], metadata = job.kind === 'metadata';
+      job.signal?.removeEventListener('abort', job.cancel);
+      this.active++;
+      if (metadata) this.metadataActive++;
+      const finish = () => { this.active--; if (metadata) this.metadataActive--; this.drain(); };
+      Promise.resolve().then(() => {
+        if (job.signal?.aborted) throw new Error('页面已切换');
+        return job.work();
+      }).then(value => { finish(); job.resolve(value); }, error => { finish(); job.reject(error); });
+    }
+  }
+  remember(key, value, imageInfo) {
+    this.cache.delete(key); this.cache.set(key, { value, at: Date.now(), ...(imageInfo ? { imageInfo } : {}) });
     while (this.cache.size > 48 || [...this.cache.values()].reduce((sum, row) => sum + (row.value.dataUrl?.length || 0), 0) > 24000000) this.cache.delete(this.cache.keys().next().value);
     return value;
   }
@@ -117,25 +147,54 @@ class Assets {
   preview(value, site, signal, refresh = false, referrer) {
     const url = assetUrl(value, site), key = 'preview:' + url + (referrer ? '|' + referrer : '');
     if (!refresh && this.cache.has(key)) return Promise.resolve(this.cache.get(key).value);
-    return this.limit(async () => {
+    const pending = this.previewRequests.get(key);
+    if (pending && pending.site === site && pending.signal === signal && pending.refresh === refresh) return pending.result;
+    const info = Promise.withResolvers(), entry = { site, signal, refresh, info: info.promise };
+    this.previewRequests.set(key, entry);
+    entry.result = this.limit(async () => {
       const timer = AbortSignal.timeout(12000), abort = signal ? AbortSignal.any([signal, timer]) : timer;
       const response = await this.request(url, site, { cache: refresh ? 'reload' : 'default', ...(referrer ? { headers: { Referer: referrer } } : {}) }, abort);
       if (!response.ok) { await response.body?.cancel(); throw new Error(`预览加载失败（${response.status}），可点击重试`); }
-      const bytes = await readBody(response, 6 * 1024 * 1024), mime = imageMime(bytes);
-      return this.remember(key, { dataUrl: `data:${mime};base64,${bytes.toString('base64')}` });
-    }, signal);
+      const encoding = response.headers.get('content-encoding');
+      const size = response.status === 200 && (!encoding || encoding === 'identity') ? Number(response.headers.get('content-length')) : 0;
+      const chunks = []; let prefixLength = 0, dimensions = null;
+      const bytes = await readBody(response, 6 * 1024 * 1024, chunk => {
+        if (dimensions || prefixLength >= 256 * 1024) return;
+        const prefix = chunk.subarray(0, 256 * 1024 - prefixLength); chunks.push(prefix); prefixLength += prefix.length;
+        dimensions = imageDimensions(Buffer.concat(chunks, prefixLength));
+        // Let an exact-original metadata query finish from the same response,
+        // as soon as its header arrives, without waiting for the full preview.
+        if (size > 0 && dimensions) info.resolve({ size, ...dimensions });
+      }), mime = imageMime(bytes);
+      const imageInfo = { size: bytes.length, ...dimensions };
+      info.resolve(imageInfo);
+      return this.remember(key, { dataUrl: `data:${mime};base64,${bytes.toString('base64')}` }, imageInfo);
+    }, signal).finally(() => {
+      info.resolve(null);
+      if (this.previewRequests.get(key) === entry) this.previewRequests.delete(key);
+    });
+    return entry.result;
   }
-  sourceSize(values, site, signal, referrer, needDimensions = false) {
+  sourceSize(values, site, signal, referrer, needDimensions = false, refresh = false) {
     const urls = [...new Set(values.map(value => assetUrl(value, site)))], key = 'size:' + urls.join('|') + (referrer ? '|' + referrer : '') + (needDimensions ? '|dimensions' : '');
     const cached = this.cache.get(key);
-    if (cached && Date.now() - cached.at < 300000) return Promise.resolve(cached.value);
-    return this.limit(async () => {
+    const complete = cached?.value.size > 0 && (!needDimensions || (cached.value.width && cached.value.height));
+    // A temporary header failure must not pin unknown dimensions for five minutes.
+    if (!refresh && cached && Date.now() - cached.at < (complete ? 300000 : 5000)) return Promise.resolve(cached.value);
+    const enough = info => info?.size > 0 && (!needDimensions || (info.width && info.height));
+    const previewKey = 'preview:' + urls[0] + (referrer ? '|' + referrer : '');
+    const preview = this.cache.get(previewKey);
+    if (!refresh && preview && Date.now() - preview.at < 300000 && enough(preview.imageInfo))
+      return Promise.resolve(this.remember(key, { ...preview.imageInfo, displayFallback: false }));
+    const probe = () => this.limit(async () => {
       const timer = AbortSignal.timeout(10000), abort = signal ? AbortSignal.any([signal, timer]) : timer;
       for (const url of urls) {
         const dimensionsWanted=needDimensions && url===urls[0];let knownSize=null;
-        for (const method of ['HEAD', 'GET']) {
+        // The range response provides both length and pixels. HEAD first wastes
+        // the shared deadline and some image CDNs report a different variant's size.
+        for (const method of (dimensionsWanted ? ['GET', 'HEAD'] : ['HEAD', 'GET'])) {
           try {
-            const response = await this.request(url, site, { method, headers: { ...(method === 'GET' ? { Range: dimensionsWanted ? 'bytes=0-262143' : 'bytes=0-0' } : {}), ...(referrer ? { Referer: referrer } : {}) } }, abort);
+            const response = await this.request(url, site, { method, cache: refresh ? 'reload' : 'default', headers: { ...(method === 'GET' ? { Range: dimensionsWanted ? 'bytes=0-262143' : 'bytes=0-0' } : {}), ...(referrer ? { Referer: referrer } : {}) } }, abort);
             const type = response.headers.get('content-type') || '';
             const range = response.headers.get('content-range')?.match(/^bytes\s+\d+-\d+\/(\d+)$/i);
             const size = Number(range?.[1] || (response.status === 200 ? response.headers.get('content-length') : 0));
@@ -155,7 +214,16 @@ class Assets {
         if(knownSize)return this.remember(key,{size:knownSize,displayFallback:urls.length>1 && url===urls.at(-1)});
       }
       return this.remember(key, { size: null });
-    }, signal);
+    }, signal, 'metadata');
+    const pending = this.previewRequests.get(previewKey);
+    if (!pending || pending.site !== site || pending.signal !== signal || pending.refresh !== refresh) return probe();
+    // Only the exact original URL may supply original dimensions. Do not hold a
+    // metadata query behind a preview with a slow first byte indefinitely.
+    let timer;
+    return Promise.race([pending.info, new Promise(resolve => { timer = setTimeout(() => resolve(null), 1000); })]).then(info => {
+      if (signal?.aborted) throw new Error('页面已切换');
+      return enough(info) ? this.remember(key, { ...info, displayFallback: false }) : probe();
+    }).finally(() => clearTimeout(timer));
   }
 }
 module.exports = { Assets, assetUrl, imageMime, readBody, referrerOrigin, imageDimensions, readDimensions };

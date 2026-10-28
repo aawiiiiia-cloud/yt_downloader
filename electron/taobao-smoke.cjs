@@ -6,7 +6,7 @@ const { app } = require('electron');
 
 function fixture(id) {
   const data = {loaderData:{home:{data:{item:{itemId:id,title:`受控商品 ${id}`,images:[
-    'https://img.alicdn.com/main1.jpg_800x800q90.jpg','https://img.alicdn.com/main2.jpg']},
+    'https://img.alicdn.com/main1.jpg','https://img.alicdn.com/main2.jpg']},
     skuBase:{props:[{name:'颜色',values:[{name:'红色',image:'https://img.alicdn.com/red.jpg_80x80.jpg'},{name:'蓝色',image:'https://img.alicdn.com/blue.jpg_80x80.jpg'},{name:'无图规格'}]}]},
     account:{token:'fixture-taobao-account-secret'},video:{url:'https://cloud.video.taobao.com/do-not-collect.mp4'}}}}};
   const state=id==='1070500473161'?'':`<script>window.${id==='784122440183'?'__INITIAL_STATE__':'__ICE_APP_CONTEXT__'}=${JSON.stringify(data)}</script>`;
@@ -28,11 +28,15 @@ async function run(collector, check, until, wait, assetRequests) {
       await until(()=>tab.state.site==='taobao'&&!tab.view.webContents.isLoadingMainFrame(),'isolated product fixture did not load');
       await collector.inspect();
       check('isolated product parses into three image categories: '+host,collector.state.result?.items.map(row=>row.category).join(',')==='main,sku,detail');
+      const mainImage=collector.state.result.items[0].images[0];
+      check('a later DOM display variant replaces the full-original preview without changing downloads: '+host,
+        mainImage.url==='https://img.alicdn.com/main1.jpg'&&mainImage.preview_url==='https://img.alicdn.com/main1.jpg_800x800q90.jpg'&&
+        mainImage.fallback_urls.includes(mainImage.preview_url));
       check('product snapshot excludes recommendations, reviews, account fields and videos: '+host,
         !/recommend.jpg|review.jpg|unrelated.jpg|fixture-taobao-account-secret|do-not-collect.mp4/.test(JSON.stringify(collector.publicState())));
       await until(()=>ui("document.querySelectorAll('[data-image-category]').length===3 && document.querySelector('[data-preview-image]')?.naturalWidth>0"),'product categories or previews did not render');
-      await until(()=>ui("document.querySelector('.image-meta')?.textContent.includes('4 × 3')"),'original image header dimensions did not render');
-      check('source header dimensions replace unknown values without using thumbnail dimensions: '+host,await ui("!document.querySelector('.image-meta').textContent.includes('800 × 800')"));
+      await until(()=>ui("document.querySelector('.image-meta')?.textContent.includes('4×3')"),'original image header dimensions did not render');
+      check('source header dimensions replace unknown values without using thumbnail dimensions: '+host,await ui("!document.querySelector('.image-meta').textContent.includes('800×800')"));
       await ui("document.querySelector('[data-image=\"1\"]').checked=false;document.querySelector('[data-image-category=\"1\"]').click()");
       await until(()=>ui("document.querySelector('[data-image-name]')?.textContent.includes('颜色：红色')"),'SKU names did not render');
       check('small SKU images are retained with their actual labels: '+host,collector.state.result.items[1].images.length===2&&await ui("document.querySelectorAll('[data-download-image]').length===2"));

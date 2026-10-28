@@ -25,6 +25,8 @@ def error_payload(error):
         if not isinstance(current, BaseException) or id(current) in seen:
             continue
         seen.add(id(current))
+        if getattr(current, 'failure_code', None) == 'IMAGE_RESOLUTION_LIMITED':
+            result['code'] = 'IMAGE_RESOLUTION_LIMITED'
         message = safe_error_text(current)
         if message and message not in messages:
             messages.append(message)

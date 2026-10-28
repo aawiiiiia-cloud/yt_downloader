@@ -47,6 +47,15 @@ def original_url(value):
     return parsed._replace(path=path).geturl()
 
 
+def preview_rank(value):
+    """Prefer an existing, useful CDN display variant without inventing a URL."""
+    match = re.search(r'\.(?:jpe?g|png|gif|webp|avif)_(\d{1,6})x(\d{1,6})[^/]*$', urlparse(value).path, re.I)
+    edge = max(map(int, match.groups())) if match else 0
+    # Tiny SKU icons must not replace a clearer preview. An 800-pixel display
+    # variant is adequate for the resizable sidebar without fetching the original.
+    return (1, -abs(edge - 800)) if edge >= 400 else (0, 0)
+
+
 def collections(url, context):
     url = product_url(url)
     identifier = parse_qs(urlparse(url).query)['id'][0]
@@ -81,16 +90,32 @@ def collections(url, context):
             if not candidates:
                 continue
             key = candidates[0]
+            preview = display
+            for value in [row.get('previewUrl'), display, *alternatives[:5]]:
+                try:
+                    candidate = image_url(value)
+                    if original_url(candidate) == key and preview_rank(candidate) > preview_rank(preview):
+                        preview = candidate
+                except (ValueError, TypeError):
+                    continue
+            if preview not in candidates:
+                candidates.append(preview)
             name = str(row.get('name') or '')[:160]
             if key in seen:
-                if name and name not in seen[key]['names']:
-                    seen[key]['names'].append(name)
+                image = seen[key]
+                if name and name not in image['names']:
+                    image['names'].append(name)
+                # JSON often arrives before the DOM's display variant. Keep its
+                # useful preview and fallbacks when merging the same source image.
+                image['fallback_urls'] = tuple(dict.fromkeys([*image['fallback_urls'], *[url for url in candidates if url != key]]))
+                if preview_rank(preview) > preview_rank(image['preview_url']):
+                    image['preview_url'] = preview
                 continue
             size = lambda key: row.get(key) if type(row.get(key)) is int and 0 < row[key] < 1000000 else None
             image = {**asdict(XhsImage(len(images) + 1, key, tuple(candidates[1:]),
                                       size('width') if key == display else None,
                                       size('height') if key == display else None)),
-                     'preview_url': display, 'names': [name] if name else []}
+                     'preview_url': preview, 'names': [name] if name else []}
             images.append(image); seen[key] = image
         if images:
             result.append({'id': f'{identifier}_{category}', 'kind': 'images', 'url': url,
@@ -148,11 +173,13 @@ class TaobaoImages(XhsImageDownloader):
         self.referrer = post.source_url
         return super()._download_one(self, post, image, folder)
 
+    _image_url = staticmethod(image_url)
+
     def urlopen(self, request):
         target = request.url
         for _ in range(5):
             self._check_cancelled()
-            target = image_url(target)
+            target = self._image_url(target)
             try:
                 response = self.session.get(target, headers={'Referer': self.referrer}, stream=True,
                                             allow_redirects=False, timeout=(10, 20))
@@ -205,7 +232,8 @@ def download_product(collector, url, folder):
         cookie_file=Path(collector.request['cookieFile']) if collector.request.get('cookieFile') else None,
         proxy=str(settings.get('proxy') or ''), progress=collector.log, cancel_event=collector.cancel,
         image_format=settings.get('imageFormat', 'original'), image_quality=settings.get('imageQuality', 95),
-        user_agent=collector.request.get('userAgent'), item_progress=progress)
+        user_agent=collector.request.get('userAgent'), item_progress=progress,
+        transfer_progress=lambda data: collector.emit('progress', data))
     post = XhsPost(parse_qs(urlparse(url).query)['id'][0], item['title'], '', '', product_url(url), images)
     _, paths = writer.download_post(post, folder)
     collector.check_cancel()

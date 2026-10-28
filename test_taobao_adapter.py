@@ -76,6 +76,42 @@ class TaobaoTests(unittest.TestCase):
         data['groups']={}
         with self.assertRaisesRegex(ValueError,'尚未读取'):service(data).inspect()
 
+    def test_dom_display_variant_is_retained_when_json_original_arrives_first(self):
+        data=context();data['groups']['main']=[{'url':'https://img.alicdn.com/a.jpg'},
+            {'url':'https://img.alicdn.com/a.jpg_800x800q90.jpg','width':800,'height':800}]
+        images=service(data).inspect()['items'][0]['images']
+        self.assertEqual(len(images),1);image=images[0]
+        self.assertEqual(image['url'],'https://img.alicdn.com/a.jpg')
+        self.assertEqual(image['preview_url'],'https://img.alicdn.com/a.jpg_800x800q90.jpg')
+        self.assertIn(image['preview_url'],image['fallback_urls'])
+        self.assertIsNone(image['width']);self.assertIsNone(image['height'])
+
+    def test_current_display_variant_survives_original_first_dom_attributes_and_keeps_signatures(self):
+        original='https://img.alicdn.com/a.jpg?sig=keep'
+        preview='https://img.alicdn.com/a.jpg_800x800q90.jpg?sig=keep'
+        data=context();data['groups']['main']=[{'url':original,'previewUrl':preview}]
+        image=service(data).inspect()['items'][0]['images'][0]
+        self.assertEqual(image['preview_url'],preview);self.assertEqual(image['url'],original)
+
+    def test_foreign_mismatched_and_tiny_previews_cannot_replace_a_clearer_image(self):
+        for preview in ('https://evil.invalid/a.jpg_800x800.jpg','https://img.alicdn.com/other.jpg_800x800.jpg',
+                        'https://img.alicdn.com/a.jpg_80x80.jpg','https://img.alicdn.com/a.jpg_800x800.jpg?sig=different'):
+            with self.subTest(preview=preview):
+                data=context();data['groups']['main']=[{'url':'https://img.alicdn.com/a.jpg','previewUrl':preview}]
+                image=service(data).inspect()['items'][0]['images'][0]
+                self.assertEqual(image['preview_url'],image['url'])
+
+    def test_a_merged_display_variant_remains_a_download_fallback_after_the_original_fails(self):
+        original='https://img.alicdn.com/a.jpg';preview=original+'_800x800q90.jpg'
+        data=context();data['groups']['main']=[{'url':original},{'url':preview}]
+        calls=[]
+        def get(url,**_kwargs):
+            calls.append(url);return response(image_bytes()) if url==preview else response(b'forbidden',403)
+        with tempfile.TemporaryDirectory() as folder,mock.patch('requests.Session.get',side_effect=get):
+            result=service(data,kind='images',mediaId='main',indices=[1],settings={'saveDir':folder}).download()
+            self.assertEqual(result['count'],1);self.assertEqual(calls[0],original);self.assertEqual(calls[-1],preview)
+            with Image.open(next(Path(folder).rglob('01.png'))) as image:self.assertEqual(image.size,(9,7))
+
     def test_selected_image_is_decoded_and_saved_in_product_category_folder(self):
         png=image_bytes()
         with tempfile.TemporaryDirectory() as folder,mock.patch('requests.Session.get',side_effect=lambda *_a,**_k:response(png)) as get:

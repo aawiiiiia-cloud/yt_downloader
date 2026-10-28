@@ -22,7 +22,10 @@ def checked_url(value: str) -> str:
     value = str(value).strip()
     parsed = urlparse(value)
     if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password or not site_for_url(value):
-        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo、抖音、Behance 和淘宝的内容链接")
+        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo、抖音、Behance、淘宝和站酷的内容链接")
+    if site_for_url(value) == 'zcool':
+        from zcool_adapter import work_url
+        return work_url(value)
     if site_for_url(value) == 'taobao':
         from taobao_adapter import product_url
         return product_url(value)
@@ -337,26 +340,37 @@ class Collector:
         if identifier and identifier not in self.reported_formats:
             self.reported_formats.add(identifier)
             self.log(f"[格式] {identifier} · {info.get('width', '?')}×{info.get('height', '?')} · {info.get('fps', '?')}fps")
-        self.emit("progress", {"percent": min(100, data.get("downloaded_bytes", 0) / total * 100) if total else 0,
-                               "status": data.get("status"), "speed": data.get("speed"), "eta": data.get("eta"),
+        receiving = data.get("status") == "downloading"
+        downloaded = data.get("downloaded_bytes") or 0
+        self.emit("progress", {"percent": min(100, downloaded / total * 100) if total else None,
+                               "status": data.get("status"),
+                               "speed": data.get("speed") if receiving else None,
+                               "eta": data.get("eta") if receiving else None,
+                               "downloadedBytes": downloaded, "totalBytes": total or None,
                                "height": info.get("height"), "formatId": info.get("format_id")})
 
     def postprocess(self, _data):
         self.check_cancel()
-        self.emit("progress", {"status": "processing", "percent": 100})
+        self.emit("progress", {"status": "processing", "percent": 100, "speed": None, "eta": None})
 
     def xhs_downloader(self):
         from xhs_image_downloader import XhsImageDownloader
         settings = self.request.get("settings") or {}
+        completed = 0
+        def item_progress(_index, total, name):
+            nonlocal completed
+            completed += 1
+            self.emit("progress", {
+                "status": "downloading", "percent": completed / max(total, 1) * 100, "name": name,
+            })
         return XhsImageDownloader(
             cookie_file=Path(self.request["cookieFile"]) if self.request.get("cookieFile") else None,
             proxy=str(settings.get("proxy") or ""), progress=self.log, cancel_event=self.cancel,
             image_format=settings.get("imageFormat", "original"),
             image_quality=int(settings.get("imageQuality", 95)),
             user_agent=self.request.get("userAgent"),
-            item_progress=lambda current, total, name: self.emit("progress", {
-                "status": "downloading", "percent": current / max(total, 1) * 100, "name": name,
-            }),
+            item_progress=item_progress,
+            transfer_progress=lambda data: self.emit("progress", data),
         )
 
     def inspect(self) -> dict:
@@ -367,6 +381,9 @@ class Collector:
         if site_for_url(url) == 'taobao':
             from taobao_adapter import inspect_product
             return inspect_product(self, url)
+        if site_for_url(url) == 'zcool':
+            from zcool_adapter import inspect_work
+            return inspect_work(self, url)
         if site_for_url(self.request.get('referrer') or '') == 'behance' and site_for_url(url) != 'behance':
             from external_media import validate_external
             validate_external(url, self.request['referrer'], self.request.get('context'))
@@ -447,9 +464,14 @@ class Collector:
         folder = Path(settings["saveDir"]).expanduser().resolve()
         folder.mkdir(parents=True, exist_ok=True)
         self.check_cancel()
+        self.emit("progress", {"status": "extracting", "percent": None, "speed": None})
+        self.log("[准备] 正在获取资源信息与下载地址；网络连接或重试时可在任务日志查看状态")
         if site_for_url(url) == 'taobao':
             from taobao_adapter import download_product
             return download_product(self, url, folder)
+        if site_for_url(url) == 'zcool':
+            from zcool_adapter import download_work
+            return download_work(self, url, folder)
         if site_for_url(url) == 'behance':
             from behance_adapter import download_project
             return download_project(self, url, folder)
@@ -482,6 +504,8 @@ class Collector:
                 from external_media import browser_vimeo
                 loaded = browser_vimeo(url, self.request.get('context'), ydl, self.check_cancel)
             if loaded:
+                self.emit("progress", {"status": "video-connecting", "percent": None, "speed": None})
+                self.log("[连接] 已取得视频地址，正在连接并接收数据")
                 ydl.process_ie_result(loaded, download=True)
                 result = 0
             else:

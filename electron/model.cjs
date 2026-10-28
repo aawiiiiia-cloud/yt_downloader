@@ -12,6 +12,9 @@ const SITES = {
   // Behance also uses Adobe browser storage; anonymous bcp cookies are not login proof.
   behance: { name: 'Behance', home: 'https://www.behance.net/', domains: ['behance.net'], auth: [] },
   taobao: { name: '淘宝', home: 'https://www.taobao.com/', domains: ['taobao.com', 'tmall.com'], authDomains: ['taobao.com', 'tmall.com'], auth: ['cookie17', 'sgcookie'] },
+  // The official frontend requires both cookies; JSESSIONID/z_ui alone are anonymous/profile state.
+  zcool: { name: '站酷', home: 'https://www.zcool.com.cn/', domains: ['zcool.com.cn'], cookieDomains: ['zcool.com.cn', 'zcool.cn'],
+    auth: ['zcool_mt', 'zcool_logon_new'], authAll: true },
 };
 function belongs(host, domain) { return host === domain || host.endsWith('.' + domain); }
 function navigationUrl(value) {
@@ -66,17 +69,25 @@ function contentKey(value) {
       const id = url.searchParams.get('modal_id') || path.match(/^\/(?:video|share\/video)\/(\d+)/)?.[1];
       if (/^\d+$/.test(id || '')) return `douyin:${id}`;
     }
+    if (site === 'zcool' && ['www.zcool.com.cn', 'zcool.com.cn'].includes(url.hostname) &&
+        !url.username && !url.password && ['', '80', '443'].includes(url.port)) {
+      const id = decodeURIComponent(path).match(/^\/work\/(Z[A-Za-z0-9_+=-]{5,100})\.html$/)?.[1];
+      if (id) return `zcool:${id}`;
+    }
   } catch {}
   return null;
 }
 function cookieAllowed(cookie, site) {
   const domain = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
-  return SITES[site]?.domains.some(d => belongs(domain, d)) || false;
+  return (SITES[site]?.cookieDomains || SITES[site]?.domains)?.some(d => belongs(domain, d)) || false;
 }
 function hasAuth(cookies, site) {
-  return cookies.some(c => cookieAllowed(c, site) && SITES[site].auth.includes(c.name) && c.value &&
+  const config = SITES[site];
+  if (!config?.auth.length) return false;
+  const names = new Set(cookies.filter(c => cookieAllowed(c, site) && config.auth.includes(c.name) && c.value &&
     (!c.expirationDate || c.expirationDate > Date.now() / 1000) &&
-    (SITES[site].authDomains || [SITES[site].domains[0]]).some(domain => belongs(String(c.domain).replace(/^\./, ''), domain)));
+    (config.authDomains || [config.domains[0]]).some(domain => belongs(String(c.domain).replace(/^\./, ''), domain))).map(c => c.name));
+  return config.authAll ? config.auth.every(name => names.has(name)) : names.size > 0;
 }
 function cookieText(cookies, site) {
   const lines = ['# Netscape HTTP Cookie File', '# Local task snapshot; never share this file.'];
@@ -124,6 +135,7 @@ function downloadTargetKey(spec) {
   if (key.startsWith('bilibili:') || key.startsWith('vimeo:')) key = key.split(':').slice(0, 2).join(':');
   // A product's image categories have separate folders and separate manifests.
   if (key.startsWith('taobao:') && spec.mediaId) key += ':' + spec.mediaId;
+  if (key.startsWith('zcool:') && spec.kind === 'video' && spec.mediaId) key += ':' + spec.mediaId;
   let directory = path.resolve(spec.settings?.saveDir || '.');
   if (process.platform === 'win32') directory = directory.toLowerCase();
   return JSON.stringify([directory, key]);
@@ -164,7 +176,9 @@ class DownloadQueue {
       while (!this.closing && this.active.size < this.limits.globalConcurrency) {
         const task = [...this.tasks].reverse().find(row => row.status === 'queued' && this.canStart(row));
         if (!task) break;
-        this.active.add(task); task.status = 'running'; this.changed(); this.start(task);
+        this.active.add(task); task.status = 'running'; task.percent = null; task.detail = 'preparing'; task.speed = null; task.speedUpdatedAt = null; task.eta = null;
+        task.logs = [...task.logs, '准备下载，正在检查登录资料与网络连接…'].slice(-35);
+        this.changed(); this.start(task);
       }
     } finally { this.pumping = false; }
   }
@@ -172,7 +186,16 @@ class DownloadQueue {
     try {
       task.process = this.run(task.spec, (type, data) => {
         if (type === 'log') task.logs = [...task.logs, safeDetail(data)].slice(-35);
-        if (type === 'progress') { task.percent = Number(data.percent) || 0; task.detail = data.status; }
+        if (type === 'progress') {
+          const percent = Number(data.percent);
+          task.percent = data.percent == null || !Number.isFinite(percent) ? null : Math.max(0, Math.min(100, percent));
+          task.detail = data.status; task.downloadedBytes = Math.max(0, Number(data.downloadedBytes) || 0);
+          const speed = Number(data.speed), eta = Number(data.eta);
+          const receiving = ['downloading', 'image-receiving'].includes(data.status);
+          task.speed = receiving && data.speed != null && Number.isFinite(speed) && speed >= 0 ? speed : null;
+          task.speedUpdatedAt = task.speed == null ? null : Date.now();
+          task.eta = receiving && data.eta != null && Number.isFinite(eta) && eta >= 0 ? eta : null;
+        }
         this.changed();
       });
       task.result = await task.process.promise;
@@ -185,6 +208,7 @@ class DownloadQueue {
       task.failure = failure; task.error = failure.message;
       if (failure.detail && failure.detail !== failure.message) task.logs = [...task.logs, failure.detail].slice(-35);
     } finally {
+      task.speed = null; task.speedUpdatedAt = null; task.eta = null;
       delete task.process; this.active.delete(task); this.changed(); this.pump();
     }
   }

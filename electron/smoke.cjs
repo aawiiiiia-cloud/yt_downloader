@@ -49,15 +49,20 @@ async function run(collector, profile, snapshotScript) {
     await session.defaultSession.protocol.handle('https', () => new Response('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="140"><rect width="100" height="140" fill="#eaf4ef"/></svg>', { headers: { 'content-type': 'image/svg+xml' } }));
     await collector.browserSession.protocol.handle('https', async request => {
       const resource = new URL(request.url);
+      const homeScrollFixture = require('./taobao-scroll-smoke.cjs').fixture(request);
+      if (homeScrollFixture) return homeScrollFixture;
+      const loginFixture = require('./web-login-smoke.cjs').fixture(request);
+      if (loginFixture) return loginFixture;
       const popupFixture = await require('./popup-smoke.cjs').fixture(request);
       if (popupFixture) return popupFixture;
-      if (resource.hostname === 'img.alicdn.com' || resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
+      if (resource.hostname === 'video.zcool.cn' || resource.hostname === 'img.zcool.cn' || resource.hostname === 'img.alicdn.com' || resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
         assetRequests.push({ url:request.url, method:request.method, referer:request.headers.get('referer') });
         if (resource.hostname.endsWith('.hdslb.com') && !coverFailed) { coverFailed = true; return new Response('unavailable', {status:503}); }
         return new Response(request.method === 'HEAD' ? null : imageBytes, { headers: { 'content-type':'image/png', 'content-length':request.method === 'HEAD' ? '340000' : String(imageBytes.length) } });
       }
       if (resource.hostname === 'www.youtube.com' && resource.pathname === '/') return new Response(`<script>ytcfg.set({"LOGGED_IN":${youtubeLoggedIn}})</script>`, {headers:{'content-type':'text/html'}});
       if (resource.hostname === 'www.behance.net') return new Response(`<html><head><title>受控 Behance 作品</title></head><body><script id="beconfig-store_state" type="application/json">${JSON.stringify({project:{project:require('./fixtures/behance.json')}})}</script></body></html>`, {headers:{'content-type':'text/html; charset=utf-8'}});
+      if (resource.hostname === 'www.zcool.com.cn') return new Response(require('./zcool-smoke.cjs').fixture(), {headers:{'content-type':'text/html; charset=utf-8'}});
       if (['item.taobao.com','detail.tmall.com','chaoshi.detail.tmall.com'].includes(resource.hostname)) return new Response(require('./taobao-smoke.cjs').fixture(resource.searchParams.get('id')), {headers:{'content-type':'text/html; charset=utf-8'}});
       if (resource.hostname === 'player.vimeo.com') return new Response(`<html><body><script>var playerConfig=${JSON.stringify({video:{id:123456,title:'受控外部视频',duration:6,thumbs:{240:'https://i.vimeocdn.com/video/external.png'}},request:{files:{progressive:[{quality:'240p',width:426,height:240,url:'https://vod-test.vimeocdn.com/external.mp4?token=privateVimeoStream'}]}}})}</script></body></html>`,{headers:{'content-type':'text/html; charset=utf-8'}});
       if (new URL(request.url).pathname === '/collector-slow-resource') return new Response(new ReadableStream({
@@ -130,7 +135,7 @@ async function run(collector, profile, snapshotScript) {
     await wait(150);
     check('resources reach the rendered right panel', await collector.window.webContents.executeJavaScript('document.querySelectorAll("[data-image]").length === 2'));
     check('XHS images also offer a separate download button for each image', await collector.window.webContents.executeJavaScript('document.querySelectorAll("[data-download-image]").length === 2'));
-    await until(() => collector.window.webContents.executeJavaScript('[...document.querySelectorAll("[data-image-size]")].some(row => row.textContent.includes("0.34 MB"))'), 'original image sizes were not displayed');
+    await until(() => collector.window.webContents.executeJavaScript('[...document.querySelectorAll("[data-image-size]")].some(row => row.textContent.includes("0.34MB"))'), 'original image sizes were not displayed');
     check('image size comes from the original rather than the smaller preview', true);
     const domReady = new Promise(resolve => collector.browser.webContents.once('dom-ready', resolve));
     const slowLoad = collector.browser.webContents.loadURL(`https://www.xiaohongshu.com/explore/${a}?slow=1`);
@@ -183,7 +188,10 @@ async function run(collector, profile, snapshotScript) {
     await require('./new-sites-smoke.cjs').run(collector, check, until, wait);
     await require('./behance-smoke.cjs').run(collector, check, until, wait);
     await require('./taobao-smoke.cjs').run(collector, check, until, wait, assetRequests);
-    await require('./popup-smoke.cjs').run(collector, check, until, wait);
+    await require('./taobao-scroll-smoke.cjs').run(collector, check, until, wait);
+    await require('./zcool-smoke.cjs').run(collector, check, until, wait, assetRequests);
+    await require('./popup-smoke.cjs').run(collector, check, until, wait, warnings);
+    await require('./web-login-smoke.cjs').run(collector, check, until, wait);
     resolveDownload({ folder: profile, count: 1 }); await wait(100);
     check('background download queue completes', task.status === 'completed');
     await require('./task-failure-smoke.cjs').run(collector, check, until, wait, profile);

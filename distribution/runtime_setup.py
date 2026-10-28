@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 from contextlib import contextmanager
+import hashlib
 import importlib.util
 import json
 import os
@@ -258,9 +259,10 @@ def ensure_electron(tools, node, bundled):
     return target
 
 
-def ensure_provider(tools):
+def ensure_provider(tools, *, strict=False):
     target = tools / 'bgutil-provider'
-    if pot_provider.provider_bundle_valid(target): return
+    valid = pot_provider.provider_bundle_valid if strict else pot_provider.provider_bundle_runtime_valid
+    if valid(target): return
     candidates = [CODE / 'tools/bgutil-provider', CODE / 'dist/yt_dlp_gui/tools/bgutil-provider', Path.home() / '.yt_dlp_tools/bgutil-provider']
     origin = next((p for p in candidates if p.resolve() != target.resolve() and pot_provider.provider_bundle_valid(p)), None)
     notice('补全 YouTube 本地解算辅助服务。')
@@ -270,7 +272,65 @@ def ensure_provider(tools):
     publish(target, build, pot_provider.provider_bundle_valid, (tools,))
 
 
-def prepare(code=CODE, tools=None, bundled=None, need_electron=True):
+def runtime_fingerprint(code, tools, need_electron):
+    """Inventory metadata, not file contents. This is a startup cache, not a trust boundary."""
+    digest = hashlib.sha256()
+    digest.update(json.dumps([str(code.resolve()), str(tools.resolve()), sys.executable,
+        sys.version, os.environ.get('COMPUTERNAME', ''), str(Path.home()), need_electron, 1]).encode('utf-8'))
+    roots = [tools / name for name in ('python', 'node', 'ffmpeg', 'bgutil-provider')]
+    if need_electron: roots.append(tools / 'node_modules')
+    def visit(directory):
+        if directory.is_symlink() or directory.is_junction():
+            raise OSError('链接目录不能使用启动缓存')
+        with os.scandir(directory) as entries:
+            for entry in sorted(entries, key=lambda item: item.name):
+                if entry.name == '__pycache__' or entry.name.endswith(('.pyc', '.pyo')): continue
+                path = Path(entry.path)
+                if entry.is_symlink(): raise OSError('链接不能使用启动缓存')
+                digest.update(str(path.relative_to(tools)).encode('utf-8'))
+                if entry.is_dir(follow_symlinks=False): visit(path)
+                else:
+                    stat = entry.stat(follow_symlinks=False)
+                    digest.update(f':{stat.st_size}:{stat.st_mtime_ns};'.encode('ascii'))
+    for root in roots: visit(root)
+    for relative in ('package.json', 'package-lock.json', 'bootstrap.py', 'pot_provider.py',
+            'provider_setup.py', 'distribution/runtime-lock.json', 'distribution/runtime_setup.py',
+            'distribution/launcher.py', 'distribution/start-runtime.cmd'):
+        file = code / relative
+        stat = file.stat()
+        digest.update(f'{relative}:{stat.st_size}:{stat.st_mtime_ns};'.encode('utf-8'))
+    return digest.hexdigest()
+
+
+def cache_path(tools, need_electron):
+    return tools / ('.runtime-ready-collector.json' if need_electron else '.runtime-ready-legacy.json')
+
+
+def cached_runtime(code, tools, need_electron):
+    try:
+        record = json.loads(cache_path(tools, need_electron).read_text(encoding='utf-8'))
+        age = time.time() - record['checkedAt']
+        return (record['format'] == 1 and 0 <= age < 7 * 86400 and
+            record['fingerprint'] == runtime_fingerprint(code, tools, need_electron))
+    except (OSError, ValueError, TypeError, KeyError): return False
+
+
+def save_runtime_cache(code, tools, need_electron):
+    temporary = cache_path(tools, need_electron).with_suffix('.tmp')
+    try:
+        record = {'format': 1, 'checkedAt': time.time(),
+            'fingerprint': runtime_fingerprint(code, tools, need_electron)}
+        temporary.write_text(json.dumps(record) + '\n', encoding='utf-8')
+        temporary.replace(cache_path(tools, need_electron))
+    except OSError:
+        # A cache is optional; a read-only or protected folder must not turn a healthy runtime into a failure.
+        notice('无法保存启动缓存，下次仍会快速检查，不影响本次启动。')
+        try: temporary.unlink(missing_ok=True)
+        except OSError: pass
+
+
+def prepare(code=CODE, tools=None, bundled=None, need_electron=True, full_check=False):
+    code = Path(code).resolve()
     bundled = (code.parent / '启动程序/启动.py').is_file() if bundled is None else bundled
     tools = tools or Path(os.environ.get('YT_DOWNLOADER_TOOLS_DIR') or Path.home() / '.yt_dlp_tools')
     os.environ['YT_DOWNLOADER_TOOLS_DIR'] = str(tools)
@@ -279,16 +339,37 @@ def prepare(code=CODE, tools=None, bundled=None, need_electron=True):
         os.environ.pop(name, None)
     os.environ.update(PIP_USER='0', PIP_REQUIRE_VIRTUALENV='0', PIP_CONFIG_FILE=os.devnull)
     with setup_lock(tools):
-        pins = json.loads((code / 'distribution/runtime-lock.json').read_text(encoding='utf-8'))['pythonPackages']
-        ensure_packages(pins)
-        node = ensure_node(tools, bundled)
+        if bundled and not full_check: notice('正在比对依赖状态…')
+        reused = bundled and not full_check and cached_runtime(code, tools, need_electron)
+        if reused:
+            node, ffmpeg, modules = tools / 'node', tools / 'ffmpeg', tools / 'node_modules'
+            notice('依赖未变化，使用已检查的运行环境。')
+        else:
+            notice('检查运行环境（首次启动或依赖有变化时请稍候）…')
+            pins = json.loads((code / 'distribution/runtime-lock.json').read_text(encoding='utf-8'))['pythonPackages']
+            notice('检查 Python 库…')
+            ensure_packages(pins)
+            notice('检查 Node / npm…')
+            node = ensure_node(tools, bundled)
+            bootstrap._add_to_path(node)
+            notice('检查 FFmpeg / FFprobe…')
+            ffmpeg = ensure_ffmpeg(tools, bundled)
+            bootstrap._add_to_path(ffmpeg)
+            if need_electron: notice('检查 Electron…')
+            modules = ensure_electron(tools, node, bundled) if need_electron else (tools / 'node_modules' if bundled else code / 'node_modules')
+            # Avoid the previous duplicate full SHA-256 pass over thousands of provider files.
+            if not pot_provider.provider_bundle_runtime_valid(tools / 'bgutil-provider') and not node_ready(tools / 'node'):
+                publish(tools / 'node', lambda stage: copy_node(node, stage), node_ready, (tools,))
+            notice('完整核对 YouTube 辅助组件（文件较多，请稍候）…' if full_check else '快速核对 YouTube 辅助组件…')
+            # A portable package's first launch, relocation or stale cache is
+            # still a normal launch. Reserve full hashing for explicit checks;
+            # installation and repair continue to validate every published file.
+            ensure_provider(tools, strict=full_check)
+            if bundled:
+                notice('保存启动检查结果…')
+                save_runtime_cache(code, tools, need_electron)
         bootstrap._add_to_path(node)
-        ffmpeg = ensure_ffmpeg(tools, bundled)
         bootstrap._add_to_path(ffmpeg)
-        modules = ensure_electron(tools, node, bundled) if need_electron else (tools / 'node_modules' if bundled else code / 'node_modules')
-        if not pot_provider.provider_bundle_valid(tools / 'bgutil-provider') and not node_ready(tools / 'node'):
-            publish(tools / 'node', lambda stage: copy_node(node, stage), node_ready, (tools,))
-        ensure_provider(tools)
     env = os.environ.copy()
     env.pop('ELECTRON_RUN_AS_NODE', None)
     env.update(YT_DOWNLOADER_PYTHON=sys.executable, NODE_PATH=str(modules))
@@ -302,7 +383,7 @@ def main():
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--test-electron', action='store_true')
     args = parser.parse_args()
-    tools, modules, node, env = prepare(need_electron=args.mode != 'legacy')
+    tools, modules, node, env = prepare(need_electron=args.mode != 'legacy', full_check=args.check)
     if args.check: return 0
     if args.test_electron: command = [node / 'node.exe', CODE / 'electron/test-desktop.cjs']
     elif args.mode == 'legacy':

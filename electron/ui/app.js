@@ -1,10 +1,11 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://www.taobao.com/' };
-const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫' };
+const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://www.taobao.com/', zcool: 'https://www.zcool.com.cn/' };
+const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫', zcool: '站酷' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
+let panelRevision = 0;
 const openedLogs = new Set();
 const previews = new Map(), pendingDownloads = new Map();
 const drafts = new Map();
@@ -36,22 +37,29 @@ function previewFrame(index, title) {
 function loadPreview(frame, refresh = false) {
   const receipt = state.inspectionId, itemIndex = selectedItem, imageIndex = frame.dataset.preview;
   const key = `${receipt}:${itemIndex}:${imageIndex}`;
-  const current = () => frame.isConnected && state.inspectionId === receipt && selectedItem === itemIndex;
+  const generation = String((Number(frame.dataset.previewGeneration) || 0) + 1);
+  frame.dataset.previewGeneration = generation;
+  const current = () => frame.isConnected && state.inspectionId === receipt && selectedItem === itemIndex && frame.dataset.previewGeneration === generation;
+  const image = state.result?.items?.[itemIndex]?.images?.find(image => image.index === Number(imageIndex));
+  const needDimensions = state.result?.site === 'zcool' || (state.result?.site === 'taobao' && !(image?.width && image?.height));
+  const complete = value => value.size > 0 && (!needDimensions || (value.width && value.height));
+  let previewFailed = false, metadataIncomplete = false;
   const img = frame.querySelector('img'), message = frame.querySelector('.preview-message'), retry = frame.querySelector('button');
+  const updateRetry = () => { retry.hidden = !(previewFailed || metadataIncomplete); };
   img.hidden = true; message.hidden = false; message.textContent = '正在加载预览…'; retry.hidden = true;
   setLoading(message, true);
   const display = result => {
     if (!current()) return;
-    img.onload = () => { if (current()) { img.hidden = false; message.hidden = true; setLoading(message, false); retry.hidden = true; } };
-    img.onerror = () => { if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = '预览加载失败'; retry.hidden = false; } };
+    img.onload = () => { if (current()) { img.hidden = false; message.hidden = true; setLoading(message, false); previewFailed = false; updateRetry(); } };
+    img.onerror = () => { if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = '预览加载失败'; previewFailed = true; updateRetry(); } };
     img.src = result.dataUrl;
     if (img.complete && img.naturalWidth > 0) img.onload();
   };
   const args = { inspectionId: receipt, itemIndex, imageIndex: imageIndex === 'cover' ? null : Number(imageIndex), refresh };
   if (previews.get(key)?.dataUrl && !refresh) display(previews.get(key));
   else {
-    window.collector.call('preview', args).then(result => { rememberPreview(key, result); display(result); }, error => {
-      if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = error.message; retry.hidden = false; }
+    window.collector.call('preview', args).then(result => { if (current()) { rememberPreview(key, result); display(result); } }, error => {
+      if (current()) { img.hidden = true; message.hidden = false; setLoading(message, false); message.textContent = error.message; previewFailed = true; updateRetry(); }
     });
   }
   if (imageIndex === 'cover') return;
@@ -59,13 +67,19 @@ function loadPreview(frame, refresh = false) {
   const showSize = value => {
     if (!current()) return;
     setLoading(label, false);
-    label.textContent = `${value.displayFallback ? '网页图' : '原图'} ${mediaInfo.size(value.size)}`;
-    if (value.width && value.height) frame.closest('.image-card').querySelector('.image-meta span:last-child').textContent = `${value.width} × ${value.height}`;
+    label.textContent = '大小：' + (value.size > 0 ? mediaInfo.size(value.size).replace(' MB', 'MB') : '未知');
+    label.title = value.displayFallback ? '网页展示图片的大小' : '源图片大小';
+    if (value.width && value.height) frame.closest('.image-card').querySelector('[data-image-dimensions]').textContent = `尺寸：${value.width}×${value.height}`;
+    metadataIncomplete = !complete(value); updateRetry();
   };
-  if (previews.get(key)?.sizeLoaded) showSize(previews.get(key));
-  else window.collector.call('image-size', args).then(value => {
-    rememberPreview(key, { ...value, sizeLoaded: true }); showSize(value);
-  }, () => { if (current()) { setLoading(label, false); label.textContent = '原图大小未知'; } });
+  const cached = previews.get(key);
+  if (!refresh && cached?.sizeLoaded && (complete(cached) || Date.now() - cached.metadataAt < 5000)) showSize(cached);
+  else {
+    setLoading(label, true);
+    window.collector.call('image-size', args).then(value => {
+      if (current()) { rememberPreview(key, { ...value, sizeLoaded: true, metadataAt: Date.now() }); showSize(value); }
+    }, () => { if (current()) { setLoading(label, false); label.textContent = '大小：未知'; label.title = '图片大小未知'; metadataIncomplete = true; updateRetry(); } });
+  }
 }
 function updateMediaInfo() {
   const item = state?.result?.items?.[selectedItem];
@@ -78,6 +92,8 @@ function updateMediaInfo() {
     (state.settings.imageFormat === 'original' ? '预览使用网页展示图；大小按原始素材查询，下载优先原图。' : '图片显示源文件大小；格式转换后的大小以实际保存结果为准。') : '大小随画质更新，包含需要合并的音频；估算值以“约”标记。';
   if ($('resource-size-note') && state.result.site === 'behance' && item.kind === 'images' && state.settings.imageFormat === 'original')
     $('resource-size-note').textContent += ' GIF 优先使用静帧预览，保存保留动画。';
+  if ($('resource-size-note') && state.result.site === 'zcool' && item.kind === 'images')
+    $('resource-size-note').textContent = '尺寸和大小按下载地址查询；下载时核对实际宽高，低于作品标注尺寸的缩放图不保存。';
   const button = $('download');
   document.querySelectorAll('[data-download-image]').forEach(button => {
     button.disabled = pendingDownloads.has(state.inspectionId);
@@ -91,6 +107,7 @@ function updateMediaInfo() {
   }
 }
 function showPanel(name) {
+  panelRevision += 1;
   saveDraft();
   for (const panel of ['resources', 'tasks', 'settings']) {
     const active = panel === name;
@@ -164,7 +181,9 @@ function renderResources() {
     const index = items.findIndex(row => row.category === key), count = items[index]?.images?.length || 0;
     return `<button type="button" data-image-category="${index}" role="tab" aria-selected="${index === selectedItem}" ${index < 0 ? 'disabled' : ''}>${label} ${count}</button>`;
   }).join('')}</div>` : items.length > 1 ? `<select id="part-select" class="part-select" aria-label="资源条目">${items.map((row, index) => `<option value="${index}" ${index === selectedItem ? 'selected' : ''}>${index + 1}. ${row.kind === 'images' ? '图片集 · ' : ''}${escape(row.title)}${row.provider ? ' · ' + escape(row.provider) : ''}</option>`).join('')}</select>` : '';
-  const warnings = commerce ? (state.result.warnings || []).map(message => `<p class="muted collection-notice">${escape(message)}</p>`).join('') : '';
+  const warnings = commerce || state.result.site === 'zcool' ? (state.result.warnings || [])
+    .filter(message => item.kind === 'images' || !(state.result.imageWarnings || []).includes(message))
+    .map(message => `<p class="muted collection-notice">${escape(message)}</p>`).join('') : '';
   let html = externalTools+parts+warnings + `<h2 class="content-title">${escape(item.title)}</h2><div class="author">${item.externalId?escape(item.provider)+' · 外部托管 · ':''}${escape(item.author)}</div>`;
   if (['external', 'unavailable'].includes(item.kind)) {
     $('resources').innerHTML = html + `<p class="muted">${escape(item.kind === 'external' ? '外部平台托管的视频默认不下载。' : item.message)}</p>`;
@@ -172,7 +191,7 @@ function renderResources() {
   }
   if (item.parts?.length > 1) html += `<label class="muted">选择分P<select id="bili-part" class="part-select">${item.parts.map(p => `<option value="${p.index}" ${p.index === item.currentPart ? 'selected' : ''}>P${p.index} · ${escape(p.title)}</option>`).join('')}</select></label>`;
   if (item.kind === 'images') {
-    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<div class="image-card"><label class="image-select"><input type="checkbox" data-image="${image.index}" aria-label="选择第 ${image.index} 张图片" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}<span class="image-meta"><span>${String(image.index).padStart(2, '0')}</span><span>${image.width && image.height ? image.width + ' × ' + image.height : '尺寸未知'}</span></span><span class="image-size is-loading" data-image-size aria-busy="true">正在查询原图大小…</span>${image.names?.length ? `<span class="image-name" data-image-name="${image.index}"></span>` : ""}</label><button type="button" class="image-download" data-download-image="${image.index}" aria-label="下载第 ${image.index} 张图片">下载 ↓</button></div>`).join('')}</div>`;
+    html += `<div class="section-row"><span class="muted">图文 · ${item.images.length} 张图片</span><button id="select-all" class="text-button">全选 / 取消全选</button></div><div class="image-grid">${item.images.map(image => `<div class="image-card"><label class="image-select"><input type="checkbox" id="image-select-${image.index}" data-image="${image.index}" aria-label="选择第 ${image.index} 张图片" checked>${previewFrame(image.index, '第 ' + image.index + ' 张图片')}</label><div class="image-footer"><label class="image-meta" for="image-select-${image.index}"><span>${String(image.index).padStart(2, '0')}</span><span data-image-dimensions>尺寸：${image.width && image.height ? image.width + '×' + image.height : '未知'}</span><span class="image-size is-loading" data-image-size aria-busy="true" title="正在读取图片大小">大小：未知</span>${image.names?.length ? `<span class="image-name" data-image-name="${image.index}"></span>` : ""}</label><button type="button" class="image-download" data-download-image="${image.index}" aria-label="下载第 ${image.index} 张图片">下载</button></div></div>`).join('')}</div>`;
   } else {
     html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
@@ -180,7 +199,7 @@ function renderResources() {
   restoreDraft(); updateMediaInfo(); restoreResourceScroll();
   previewObserver = new IntersectionObserver(entries => entries.forEach(entry => {
     if (entry.isIntersecting) { previewObserver.unobserve(entry.target); loadPreview(entry.target); }
-  }), { root: $('resources-panel'), rootMargin: '100px' });
+  }), { root: $('resources-panel'), rootMargin: '600px 0px' });
   $('resources').querySelectorAll('[data-preview]').forEach(frame => previewObserver.observe(frame));
   document.querySelectorAll('[data-image-name]').forEach(label => {
     const image = item.images?.find(row => row.index === Number(label.dataset.imageName));
@@ -191,7 +210,8 @@ function renderTasks() {
   const labels = { queued: '等待下载', running: '下载中', cancelling: '正在停止', cancelled: '已取消', completed: '已完成', failed: '下载失败' };
   $('tasks').innerHTML = state.tasks.length ? state.tasks.map(task => {
     const error = task.status === 'failed' ? `<p class="task-error"><strong>失败原因：${escape(task.failure?.label || '原因未确定')}</strong><span>${escape(task.error || '请展开任务日志查看详情。')}</span></p>` : task.error ? `<p class="task-error">${escape(task.error)}</p>` : '';
-    return `<article class="task-card"><div class="task-title">${escape(task.title)}</div><div class="task-meta"><span class="${['running','cancelling'].includes(task.status)?'is-loading':''}" aria-busy="${['running','cancelling'].includes(task.status)}">${labels[task.status] || escape(task.status)}${task.status === 'running' && task.detail === 'processing' ? ' · 正在合并或转码' : ''}</span><span>${Math.round(task.percent || 0)}%</span></div><progress max="100" value="${task.percent || 0}"></progress>${error}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
+    const progress = window.collectorTaskProgress(task);
+    return `<article class="task-card"><div class="task-heading"><div class="task-title">${escape(task.title)}</div><span class="task-speed" data-task-speed="${escape(task.id)}" title="下载接收速度；等待、校验和转码阶段不显示旧速度"${['running', 'cancelling'].includes(task.status) ? '' : ' hidden'}>${escape(window.collectorTaskSpeed(task))}</span></div><div class="task-meta"><span class="${['running','cancelling'].includes(task.status)?'is-loading':''}" aria-busy="${['running','cancelling'].includes(task.status)}">${labels[task.status] || escape(task.status)}${progress.stage ? ' · ' + escape(progress.stage) : ''}</span><span>${escape(progress.text)}</span></div><progress max="100"${progress.attribute}></progress>${error}<div class="task-actions">${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${task.id}">打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
   }).join('') : '<div class="empty"><strong>下载队列还是空的</strong><p>在资源页选择图片或视频，<br>加入队列后可以在这里查看进度。</p></div>';
 }
 function render(next) {
@@ -212,20 +232,24 @@ function render(next) {
   const needsLogin = expired || !state.login[selectedSite];
   $('login-state').textContent = `${names[selectedSite]} · ${expired ? '登录凭证已失效/过期，请重新登录' : needsLogin ? '未登录（建议登录）' : '已登录'}`;
   $('login-state').classList.toggle('login-warning', needsLogin);
+  $('login-state').classList.toggle('login-success', !needsLogin && selectedSite !== 'behance');
   $('login-state').title = expired ? '请重新登录或导入新的 Cookies，旧凭证不会因再次检测到而恢复。' : needsLogin ? (selectedSite === 'youtube' ? '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。' : '尚未检测到本站登录凭据，建议先登录。') : (selectedSite === 'youtube' ? '已读取登录凭证，下载前仍会自动确认是否有效。' : '已读取登录凭证，实际可用性由网站请求结果确认。');
   if (selectedSite === 'behance') {
     $('login-state').textContent = 'Behance · 公开作品可直接解析';
-    $('login-state').classList.remove('login-warning');
+    $('login-state').classList.remove('login-warning', 'login-success');
     $('login-state').title = 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
   }
-  const loginBusy = !!state.loginRunning || !!state.importingCookies;
+  const loginBusy = !!state.loginRunning || !!state.importingCookies || !!state.openingWebLogin;
   const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
   $('web-login').hidden = externalLoginOnly;
-  $('edge-login').hidden = selectedSite === 'behance';
-  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly || selectedSite === 'behance');
+  $('edge-login').hidden = ['behance', 'zcool'].includes(selectedSite);
+  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly || ['behance', 'zcool'].includes(selectedSite));
   $('web-login').disabled = loginBusy;
+  $('web-login').textContent = state.openingWebLogin === selectedSite ? '正在打开…' : '登录';
+  setLoading($('web-login'), state.openingWebLogin === selectedSite);
   document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : externalLoginOnly ? '通过 Edge 登录。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入请选择本站点的 Netscape 格式 Cookies 文件（.txt）。';
   if (selectedSite === 'behance') document.querySelector('.login-help').textContent = '需要登录的作品请先在左侧完成 Adobe 登录；也可导入 Behance Cookies。账号状态以网页为准。';
+  if (selectedSite === 'zcool') document.querySelector('.login-help').textContent = '高清图片请先在左侧登录站酷，再刷新作品页并重新解析；也可导入本站 Cookies。登录及网站验证需手动完成。';
   $('edge-login').disabled = loginBusy; $('cancel-login').hidden = !state.loginRunning;
   $('import-login').disabled = loginBusy;
   $('import-login').textContent = state.importingCookies ? '正在导入…' : '导入Cookies';
@@ -294,7 +318,7 @@ $('import-login').addEventListener('click', async () => {
   if (count) notify(`${names[site]} Cookies 已导入（${count} 条），可重新解析当前页面。`);
 });
 $('cancel-login').addEventListener('click', () => call('cancel-login'));
-$('web-login').addEventListener('click', () => ['youtube', 'vimeo'].includes(selectedSite) ? call('login', { site: selectedSite }) : call('navigate', { url: selectedSite === 'bilibili' ? 'https://passport.bilibili.com/login' : selectedSite === 'behance' ? 'https://www.behance.net/login' : selectedSite === 'taobao' ? 'https://login.taobao.com/member/login.jhtml' : homes[selectedSite] }));
+$('web-login').addEventListener('click', () => call('web-login', { site: selectedSite }));
 $('required-login').addEventListener('click', () => call('login', { site: 'youtube' }));
 $('resources').addEventListener('change', event => {
   if (event.target.id === 'part-select') { saveDraft(); selectedItem = Number(event.target.value); renderResources(); }
@@ -314,6 +338,8 @@ $('resources').addEventListener('click', async event => {
   const imageButton = event.target.closest('[data-download-image]');
   if (event.target.id === 'download' || imageButton) {
     event.preventDefault();
+    const downloadOrigin = (imageButton || $('download')).getBoundingClientRect();
+    const revision = panelRevision;
     const args = { inspectionId: state.inspectionId, itemIndex: selectedItem,
       indices: imageButton ? [Number(imageButton.dataset.downloadImage)] : [...document.querySelectorAll('[data-image]:checked')].map(i => Number(i.dataset.image)),
       formatId: $('format-select')?.value || '', audioOnly: $('audio-only')?.checked, subtitles: $('subtitles')?.checked };
@@ -328,9 +354,13 @@ $('resources').addEventListener('click', async event => {
         await window.collector.call('login', { site: 'youtube' });
         id = await window.collector.call('download', args);
       }
-      if (id && state.inspectionId === args.inspectionId) {
-        if (imageButton) notify(`第 ${args.indices[0]} 张图片已加入下载队列。`);
-        else { notify(''); showPanel('tasks'); }
+      if (id) {
+        if (state.inspectionId === args.inspectionId)
+          notify(imageButton ? `第 ${args.indices[0]} 张图片已加入下载队列。` : '已加入下载队列。');
+        await window.collectorDownloadFeedback.fly(downloadOrigin, $('tasks-tab'));
+        // Preserve automatic navigation, but never override a user's intervening tab choice.
+        if (!imageButton && state.inspectionId === args.inspectionId && revision === panelRevision)
+          showPanel('tasks');
       }
     } catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
     finally { pendingDownloads.delete(args.inspectionId); updateMediaInfo(); }
@@ -343,4 +373,14 @@ $('tasks').addEventListener('click', event => {
 });
 $('tasks').addEventListener('toggle', event => { if (event.target.dataset.log) { const id = event.target.dataset.log; if (event.target.open) openedLogs.add(id); else openedLogs.delete(id); } }, true);
 new ResizeObserver(syncLayout).observe($('browser-slot'));
+// Refresh only the speed labels, not the entire card (keep log selection and focus intact).
+const speedTimer = window.setInterval(() => {
+  if (!state || $('tasks-panel').hidden) return;
+  const tasks = new Map((state.tasks || []).map(task => [task.id, task]));
+  document.querySelectorAll('[data-task-speed]').forEach(label => {
+    const task = tasks.get(label.dataset.taskSpeed);
+    if (task) label.textContent = window.collectorTaskSpeed(task);
+  });
+}, 1000);
+window.addEventListener('pagehide', () => window.clearInterval(speedTimer));
 window.collector.onState(render); call('state').then(value => { if (value) render(value); syncLayout(); });

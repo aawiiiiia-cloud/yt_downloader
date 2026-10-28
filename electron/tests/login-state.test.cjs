@@ -5,12 +5,13 @@ const { SITES } = require('../model.cjs');
 test('all sites keep rejected credentials marked until actual authentication cookies change', () => {
   for (const [site, config] of Object.entries(SITES)) {
     if (!config.auth.length) continue; // Behance uses Adobe storage; no cookie-only login claim.
-    const cookie = { domain: '.' + config.domains[0], path: '/', name: config.auth[0], value: 'old-auth' };
-    const state = new LoginState(); state.observe([cookie]);
+    const names = config.authAll ? config.auth : [config.auth[0]];
+    const cookies = names.map(name => ({ domain: '.' + config.domains[0], path: '/', name, value: 'old-auth' }));
+    const state = new LoginState(); state.observe(cookies);
     assert.ok(state.state().detected[site]); state.reject(site, state.keys[site]);
-    state.observe([cookie, { ...cookie, name: 'analytics', value: 'new-analytics' }]); assert.ok(state.state().expired[site]);
-    const restored = new LoginState(JSON.parse(JSON.stringify(state.invalid))); restored.observe([cookie]); assert.ok(restored.state().expired[site]);
-    restored.observe([{ ...cookie, value: 'new-auth' }]); assert.ok(!restored.state().expired[site]);
+    state.observe([...cookies, { ...cookies[0], name: 'analytics', value: 'new-analytics' }]); assert.ok(state.state().expired[site]);
+    const restored = new LoginState(JSON.parse(JSON.stringify(state.invalid))); restored.observe(cookies); assert.ok(restored.state().expired[site]);
+    restored.observe(cookies.map(cookie => ({ ...cookie, value: 'new-auth' }))); assert.ok(!restored.state().expired[site]);
     assert.doesNotMatch(JSON.stringify(state.invalid), /old-auth/);
   }
 });
