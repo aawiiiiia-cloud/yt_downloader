@@ -140,6 +140,15 @@ function downloadTargetKey(spec) {
   if (process.platform === 'win32') directory = directory.toLowerCase();
   return JSON.stringify([directory, key]);
 }
+function downloadsConflict(left, right) {
+  const target = downloadTargetKey(left);
+  if (!target || target !== downloadTargetKey(right)) return false;
+  const indices = spec => spec.kind === 'images' && Array.isArray(spec.indices) && spec.indices.length &&
+    spec.indices.every(index => Number.isInteger(index) && index > 0) ? new Set(spec.indices) : null;
+  const a = indices(left), b = indices(right);
+  // Unknown selections and videos keep the conservative whole-output lock.
+  return !a || !b || [...a].some(index => b.has(index));
+}
 const pendingStatus = status => ['queued', 'running', 'cancelling'].includes(status);
 class DownloadQueue {
   constructor(run, changed, settings = {}) {
@@ -161,11 +170,17 @@ class DownloadQueue {
     return this.tasks.filter(task => visible.has(task)).map(({ spec, process, ...task }) => task);
   }
   canStart(task) {
-    const site = siteForUrl(task.spec?.url), target = downloadTargetKey(task.spec);
+    const site = siteForUrl(task.spec?.url);
     let count = 0;
     for (const running of this.active) {
       if (siteForUrl(running.spec?.url) === site) count++;
-      if (target && target === downloadTargetKey(running.spec)) return false;
+      if (downloadsConflict(task.spec, running.spec)) return false;
+    }
+    // Do not let later single-image jobs repeatedly overtake a waiting batch
+    // that contains their image. Unrelated images/sites may still fill slots.
+    for (const earlier of [...this.tasks].reverse()) {
+      if (earlier === task) break;
+      if (earlier.status === 'queued' && downloadsConflict(task.spec, earlier.spec)) return false;
     }
     return count < this.limits.siteConcurrency;
   }
@@ -218,6 +233,7 @@ class DownloadQueue {
     if (task.status === 'queued') { task.status = 'cancelled'; task.error = describeFailure('CANCELLED').message; }
     else if (task.status === 'running') { task.status = 'cancelling'; task.process?.cancel(); }
     this.changed();
+    this.pump();
   }
   retry(id) {
     const task = this.tasks.find(t => t.id === id);
@@ -226,4 +242,4 @@ class DownloadQueue {
   }
   close() { this.closing = true; this.tasks.forEach(t => this.cancel(t.id)); }
 }
-module.exports = { SITES, belongs, navigationUrl, siteForUrl, contentKey, cookieAllowed, cookieText, readCookies, hasAuth, concurrencySettings, downloadTargetKey, DownloadQueue };
+module.exports = { SITES, belongs, navigationUrl, siteForUrl, contentKey, cookieAllowed, cookieText, readCookies, hasAuth, concurrencySettings, downloadTargetKey, downloadsConflict, DownloadQueue };

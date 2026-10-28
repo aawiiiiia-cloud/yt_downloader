@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from PIL import Image
 from taobao_adapter import TaobaoImages
+from image_summary import write_image_summary
 from xhs_image_downloader import XhsImage, XhsPost, _safe_name
 
 
@@ -131,13 +132,11 @@ class ZcoolImages(TaobaoImages):
         row = self.verified[image.index]
         return f"站酷页面图片 {row['width']}×{row['height']}" + ('，尺寸已核对' if row['dimensionsVerified'] else '，作品尺寸未知')
 
-    def _write_summary(self, post, folder):
+    def _write_summary(self, post, folder, *, check_cancel=None):
         # No signed media URLs, tokens or cookies in saved manifests.
         data = {'site': 'zcool', 'work_id': post.note_id, 'title': post.title, 'author': post.author,
             'images': [self.verified[image.index] for image in post.images]}
-        temp = folder / '.work.json.tmp'
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-        temp.replace(folder / 'work.json')
+        write_image_summary(folder / 'work.json', data, data['images'], ('site', 'work_id'), check_cancel)
 
 
 def download_work(collector, url, folder):

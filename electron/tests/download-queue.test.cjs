@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { SITES, DownloadQueue, concurrencySettings, downloadTargetKey } = require('../model.cjs');
+const { SITES, DownloadQueue, concurrencySettings, downloadTargetKey, downloadsConflict } = require('../model.cjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function controlled(settings) {
   const started = [], handles = new Map();
@@ -94,13 +94,66 @@ test('same output is serialized while other content and separate save folders ca
   assert.deepEqual(started,['original','different-folder','other-video']);
   handles.get('original').resolve({});await tick();assert.equal(started.at(-1),'duplicate');assert.equal(queue.active.size,3);
 });
-test('image jobs for the same product category are serialized without locking another category', () => {
+test('different images in one product category and other categories may run together', () => {
   const {add,started} = controlled({globalConcurrency:5,siteConcurrency:5});
   const url='https://detail.tmall.com/item.htm?id=123';
   add('main1','taobao',{url,kind:'images',mediaId:'main',indices:[1]});
   add('main2','taobao',{url,kind:'images',mediaId:'main',indices:[2]});
   add('sku','taobao',{url,kind:'images',mediaId:'sku',indices:[1]});
-  assert.deepEqual(started,['main1','sku']);
+  assert.deepEqual(started,['main1','main2','sku']);
+});
+
+for (const [site,url,mediaId] of [
+  ['xiaohongshu','https://www.xiaohongshu.com/explore/0123456789abcdef01234567',undefined],
+  ['taobao','https://detail.tmall.com/item.htm?id=123','main'],
+  ['behance','https://www.behance.net/gallery/123/Fixture',undefined],
+  ['zcool','https://www.zcool.com.cn/work/ZNzQyNjY2ODg=.html','ZNzQyNjY2ODg='],
+]) {
+  test(`${site}: a batch protects every selected image while a distinct image fills the second slot`, async () => {
+    const {add,started,queue,handles}=controlled({globalConcurrency:5,siteConcurrency:2});
+    const image=(indices)=>({url,mediaId,kind:'images',indices});
+    add('batch',site,image([1,2]));add('overlap',site,image([2]));add('distinct',site,image([3]));
+    assert.deepEqual(started,['batch','distinct']);assert.equal(queue.tasks.find(t=>t.title==='overlap').status,'queued');
+    assert.equal(queue.active.size,2);handles.get('batch').resolve({});await tick();
+    assert.deepEqual(started,['batch','distinct','overlap']);assert.equal(queue.active.size,2);
+  });
+}
+
+test('queued overlapping batches keep FIFO; cancelling one immediately frees its reservation', () => {
+  const {add,started,queue}=controlled({globalConcurrency:5,siteConcurrency:3});
+  const url='https://detail.tmall.com/item.htm?id=123',image=indices=>({url,kind:'images',mediaId:'main',indices});
+  add('image2','taobao',image([2]));const batch=add('batch12','taobao',image([1,2]));
+  add('later-image1','taobao',image([1]));add('image3','taobao',image([3]));
+  assert.deepEqual(started,['image2','image3']);queue.cancel(batch);
+  assert.deepEqual(started,['image2','image3','later-image1']);
+});
+
+test('a cancelling batch keeps all selected files protected until its worker settles', async () => {
+  const {add,queue,started,handles}=controlled({globalConcurrency:5,siteConcurrency:2});
+  const url='https://detail.tmall.com/item.htm?id=123',image=indices=>({url,kind:'images',mediaId:'main',indices});
+  const batch=add('batch','taobao',image([1,2]));add('image2','taobao',image([2]));queue.cancel(batch);
+  assert.deepEqual(started,['batch']);assert.equal(queue.tasks.find(t=>t.id===batch).status,'cancelling');
+  handles.get('batch').reject(Object.assign(new Error('cancelled'),{cancelled:true}));await tick();
+  assert.deepEqual(started,['batch','image2']);
+});
+
+test('failed batches release their files; retries wait for an overlapping single-image task', async () => {
+  const {add,queue,started,handles}=controlled({globalConcurrency:5,siteConcurrency:2});
+  const url='https://detail.tmall.com/item.htm?id=123',image=indices=>({url,kind:'images',mediaId:'main',indices});
+  const batch=add('batch','taobao',image([1,2]));add('image2','taobao',image([2]));
+  handles.get('batch').reject(new Error('Read timed out'));await tick();
+  queue.retry(batch);assert.deepEqual(started,['batch','image2']);
+  handles.get('image2').resolve({});await tick();assert.deepEqual(started,['batch','image2','batch']);
+});
+
+test('conflict checks stay conservative for unknown selections, formats and video/image mixes', () => {
+  const base={url:'https://detail.tmall.com/item.htm?id=123',kind:'images',mediaId:'main',indices:[1,2],settings:{saveDir:'same'}};
+  assert.equal(downloadsConflict(base,{...base,indices:[3,4]}),false);
+  for(const indices of [[2],[],undefined,['2']])assert.equal(downloadsConflict(base,{...base,indices}),true);
+  assert.equal(downloadsConflict(base,{...base,indices:[2],settings:{saveDir:'same',imageFormat:'png'}}),true);
+  assert.equal(downloadsConflict(base,{...base,kind:'video'}),true);
+  assert.equal(downloadsConflict(base,{...base,mediaId:'sku'}),false);
+  assert.equal(downloadsConflict(base,{...base,settings:{saveDir:'elsewhere'}}),false);
 });
 test('alternate parts and Vimeo access hashes cannot race the same video output', () => {
   for(const [a,b] of [['https://www.bilibili.com/video/BVfixture?p=1','https://www.bilibili.com/video/BVfixture?p=2'],

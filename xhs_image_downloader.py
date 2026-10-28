@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from collector_errors import safe_error_text
 from image_transfer import ImageRateMeter, ImageTransferPolicy, OriginalSourcePlan
+from image_summary import write_image_summary
 
 try:
     import yt_dlp
@@ -484,7 +485,7 @@ class XhsImageDownloader:
                 self._check_cancelled()
                 completed.append(self._download_one(ydl, post, image, folder))
                 self._completed_images += 1
-        self._write_summary(post, folder)
+        self._write_summary(post, folder, check_cancel=self._check_cancelled)
         self.progress(f"[完成] 已保存 {len(completed)} 张图片 → {folder}")
         return post, tuple(completed)
 
@@ -672,7 +673,7 @@ class XhsImageDownloader:
                 else "网页展示图兜底（可能带水印）")
 
     @staticmethod
-    def _write_summary(post: XhsPost, folder: Path) -> None:
+    def _write_summary(post: XhsPost, folder: Path, *, check_cancel=None) -> None:
         # 不保存 Cookie、图片临时签名 URL 或分享链接中的 xsec_token。
         data = {
             "note_id": post.note_id,
@@ -681,9 +682,7 @@ class XhsImageDownloader:
             "author": post.author,
             "image_count": len(post.images),
         }
-        temp = folder / ".post.json.tmp"
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temp, folder / "post.json")
+        write_image_summary(folder / 'post.json', data, [{'index': image.index} for image in post.images], ('note_id',), check_cancel)
 
 
 def _build_parser() -> argparse.ArgumentParser:

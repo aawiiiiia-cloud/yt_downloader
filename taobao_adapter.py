@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import requests
 from xhs_image_downloader import XhsImage, XhsPost, XhsImageDownloader, _safe_name
+from image_summary import write_image_summary
 
 HOSTS = {'item.taobao.com', 'detail.tmall.com', 'chaoshi.detail.tmall.com'}
 IMAGE_DOMAINS = ('alicdn.com', 'tbcdn.cn', 'taobaocdn.com')
@@ -202,13 +203,11 @@ class TaobaoImages(XhsImageDownloader):
     def _source_label(self, image, candidate_index, total):
         return '商品原图优先' if candidate_index == 0 else '商品备用图片'
 
-    def _write_summary(self, post, folder):
+    def _write_summary(self, post, folder, *, check_cancel=None):
         selected = {image.index for image in post.images}
         payload = {'site': 'taobao', 'item_id': post.note_id, 'title': post.title, 'category': self.category,
                    'images': [{'index': row['index'], 'names': row['names']} for row in self.rows if row['index'] in selected]}
-        temp = folder / '.product.json.tmp'
-        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf8')
-        temp.replace(folder / 'product.json')
+        write_image_summary(folder / 'product.json', payload, payload['images'], ('site', 'item_id', 'category'), check_cancel)
 
 
 def download_product(collector, url, folder):

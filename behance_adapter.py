@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from xhs_image_downloader import XhsImage, XhsPost, XhsImageDownloader
+from image_summary import write_image_summary
 
 
 IMAGE_DOMAINS = ('behance.net',)
@@ -47,12 +48,10 @@ class BehanceImages(XhsImageDownloader):
         return '作品源文件' if candidate_index == 0 else '作品备用图片'
 
     @staticmethod
-    def _write_summary(post, folder):
+    def _write_summary(post, folder, *, check_cancel=None):
         data = {'site': 'behance', 'project_id': post.note_id, 'title': post.title,
                 'author': post.author, 'image_count': len(post.images), 'source_url': post.source_url}
-        temp = folder / '.project.json.tmp'
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf8')
-        temp.replace(folder / 'project.json')
+        write_image_summary(folder / 'project.json', data, [{'index': image.index} for image in post.images], ('site', 'project_id'), check_cancel)
 
 
 class BehanceProject:

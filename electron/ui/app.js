@@ -95,13 +95,14 @@ function updateMediaInfo() {
   if ($('resource-size-note') && state.result.site === 'zcool' && item.kind === 'images')
     $('resource-size-note').textContent = '尺寸和大小按下载地址查询；下载时核对实际宽高，低于作品标注尺寸的缩放图不保存。';
   const button = $('download');
+  const pendingKey = index => JSON.stringify([state.inspectionId, selectedItem, index]);
   document.querySelectorAll('[data-download-image]').forEach(button => {
-    button.disabled = pendingDownloads.has(state.inspectionId);
-    setLoading(button, pendingDownloads.get(state.inspectionId) === Number(button.dataset.downloadImage));
+    button.disabled = pendingDownloads.has(pendingKey(Number(button.dataset.downloadImage)));
+    setLoading(button, button.disabled);
   });
   if (button) {
     const checkingYouTube = state.result.site === 'youtube' && state.youtubeAuth === 'checking';
-    button.disabled = pendingDownloads.has(state.inspectionId);
+    button.disabled = pendingDownloads.has(pendingKey(null));
     button.textContent = button.disabled ? '正在处理…' : checkingYouTube ? '正在验证登录…' : '下载所选';
     setLoading(button, button.disabled || checkingYouTube);
   }
@@ -343,8 +344,14 @@ $('resources').addEventListener('click', async event => {
     const args = { inspectionId: state.inspectionId, itemIndex: selectedItem,
       indices: imageButton ? [Number(imageButton.dataset.downloadImage)] : [...document.querySelectorAll('[data-image]:checked')].map(i => Number(i.dataset.image)),
       formatId: $('format-select')?.value || '', audioOnly: $('audio-only')?.checked, subtitles: $('subtitles')?.checked };
-    if (pendingDownloads.has(args.inspectionId)) return;
-    pendingDownloads.set(args.inspectionId, imageButton ? Number(imageButton.dataset.downloadImage) : null); updateMediaInfo();
+    const requestKey = JSON.stringify([args.inspectionId, args.itemIndex, imageButton ? Number(imageButton.dataset.downloadImage) : null]);
+    if (pendingDownloads.has(requestKey)) return;
+    const requestToken = {};
+    pendingDownloads.set(requestKey, requestToken); updateMediaInfo();
+    const release = () => {
+      // A previous animation finishing must not unlock a newer request.
+      if (pendingDownloads.get(requestKey) === requestToken) { pendingDownloads.delete(requestKey); updateMediaInfo(); }
+    };
     try {
       let id;
       try { id = await window.collector.call('download', args); }
@@ -355,6 +362,7 @@ $('resources').addEventListener('click', async event => {
         id = await window.collector.call('download', args);
       }
       if (id) {
+        release();
         if (state.inspectionId === args.inspectionId)
           notify(imageButton ? `第 ${args.indices[0]} 张图片已加入下载队列。` : '已加入下载队列。');
         await window.collectorDownloadFeedback.fly(downloadOrigin, $('tasks-tab'));
@@ -363,7 +371,7 @@ $('resources').addEventListener('click', async event => {
           showPanel('tasks');
       }
     } catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
-    finally { pendingDownloads.delete(args.inspectionId); updateMediaInfo(); }
+    finally { release(); }
   }
 });
 $('tasks').addEventListener('click', event => {

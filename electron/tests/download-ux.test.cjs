@@ -94,7 +94,7 @@ function clickFixture({single=false, fail=false, switchPanel=false, changeReceip
     window:{collector:{call:async method=>{actions.push(method);if(method==='login')return;
       if(fail)throw new Error('fixture failure');if(retryLogin&&!actions.includes('login'))throw Object.assign(new Error('auth'),{code:'YOUTUBE_AUTH_REQUIRED'});return 'task-id';}},
       collectorDownloadFeedback:{fly:async(rect,tab)=>{assert.equal(rect,origin);assert.equal(tab,target);actions.push('fly');if(switchPanel)context.panelRevision++;if(changeReceipt)context.state.inspectionId='new';}}},};
-  return {context,actions,run:()=>vm.runInNewContext('(async()=>{'+source.slice(start,end)+'})()',context)};
+  return {context,actions,button,run:()=>vm.runInNewContext('(async()=>{'+source.slice(start,end)+'})()',context)};
 }
 test('actual download handler captures origin before awaiting and flies only after successful queue receipt', async () => {
   for(const single of [false,true]) {
@@ -106,7 +106,49 @@ test('actual download handler captures origin before awaiting and flies only aft
 });
 test('actual download handler never steals tab after user navigation and suppresses duplicate requests', async () => {
   for(const setting of [{switchPanel:true},{changeReceipt:true}]) {const f=clickFixture(setting);await f.run();assert.equal(f.actions.includes('tasks'),false);}
-  const f=clickFixture();f.context.pendingDownloads.set('receipt',7);await f.run();assert.equal(f.actions.includes('download'),false);assert.equal(f.actions.includes('fly'),false);
+  const f=clickFixture();f.context.pendingDownloads.set(JSON.stringify(['receipt',0,null]),{});await f.run();assert.equal(f.actions.includes('download'),false);assert.equal(f.actions.includes('fly'),false);
+});
+
+test('different image buttons submit together while the same pending button cannot submit twice', async () => {
+  const f=clickFixture({single:true}), requests=[];
+  f.context.window.collector.call=async()=>{const next=Promise.withResolvers();requests.push(next);return next.promise;};
+  const first=f.run();await f.run();assert.equal(requests.length,1);
+  const secondButton={...f.button,dataset:{downloadImage:'8'}};
+  f.context.event.target.closest=()=>secondButton;const second=f.run();assert.equal(requests.length,2);
+  assert.equal(f.context.pendingDownloads.size,2);requests[0].resolve('first');await first;
+  assert.equal(f.context.pendingDownloads.size,1);requests[1].resolve('second');await second;
+  assert.equal(f.context.pendingDownloads.size,0);
+});
+
+test('queue receipt unlocks before animation and an old animation cannot clear a newer request', async () => {
+  const f=clickFixture({single:true}), requests=[],flights=[];
+  f.context.window.collector.call=async()=>{const p=Promise.withResolvers();requests.push(p);return p.promise;};
+  f.context.window.collectorDownloadFeedback.fly=async()=>{const p=Promise.withResolvers();flights.push(p);return p.promise;};
+  const first=f.run();requests[0].resolve('first');await tick();
+  assert.equal(f.context.pendingDownloads.size,0);assert.equal(flights.length,1);
+  const second=f.run();assert.equal(f.context.pendingDownloads.size,1);
+  flights[0].resolve();await first;assert.equal(f.context.pendingDownloads.size,1);
+  requests[1].reject(new Error('second request failed'));await second;assert.equal(f.context.pendingDownloads.size,0);
+});
+
+test('pending batch submission does not disable single-image submission and vice versa', async () => {
+  const f=clickFixture(),requests=[];
+  f.context.window.collector.call=async()=>{const p=Promise.withResolvers();requests.push(p);return p.promise;};
+  const batch=f.run();f.context.event.target.id='single';f.context.event.target.closest=()=>f.button;
+  const single=f.run();assert.equal(requests.length,2);assert.equal(f.context.pendingDownloads.size,2);
+  requests.forEach((p,i)=>p.resolve('task-'+i));await Promise.all([batch,single]);
+});
+
+test('actual button renderer locks only its own request in the selected resource', () => {
+  const begin=source.indexOf('function updateMediaInfo() {'),end=source.indexOf('\nfunction showPanel(',begin);
+  const buttons=[1,2].map(index=>({dataset:{downloadImage:String(index)}})),batch={};
+  const pending=new Map([[JSON.stringify(['receipt',0,1]),{}]]);
+  const context={state:{inspectionId:'receipt',result:{site:'xiaohongshu',items:[{kind:'images'}]},settings:{}},selectedItem:0,
+    pendingDownloads:pending,$:id=>id==='download'?batch:null,document:{querySelectorAll:()=>buttons},setLoading(){}};
+  const render=()=>vm.runInNewContext(source.slice(begin,end)+'\nupdateMediaInfo();',context);
+  render();assert.equal(buttons[0].disabled,true);assert.equal(buttons[1].disabled,false);assert.equal(batch.disabled,false);
+  pending.set(JSON.stringify(['receipt',0,null]),{});render();assert.equal(batch.disabled,true);assert.equal(buttons[1].disabled,false);
+  context.selectedItem=1;context.state.result.items.push({kind:'images'});render();assert.ok(buttons.every(b=>!b.disabled));assert.equal(batch.disabled,false);
 });
 test('speed ticker updates labels only; feedback script obeys existing CSP and load order', () => {
   const html=fs.readFileSync(path.resolve(__dirname,'../ui/index.html'),'utf8');
