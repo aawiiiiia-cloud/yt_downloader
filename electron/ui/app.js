@@ -5,7 +5,6 @@ const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bili
 const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫', zcool: '站酷' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
-let panelRevision = 0;
 const openedLogs = new Set();
 const folderErrors = new Map(), openingFolders = new Set();
 let clearingHistory = false;
@@ -110,7 +109,6 @@ function updateMediaInfo() {
   }
 }
 function showPanel(name) {
-  panelRevision += 1;
   saveDraft();
   for (const panel of ['resources', 'tasks', 'settings']) {
     const active = panel === name;
@@ -355,7 +353,6 @@ $('resources').addEventListener('click', async event => {
   if (event.target.id === 'download' || imageButton) {
     event.preventDefault();
     const downloadOrigin = (imageButton || $('download')).getBoundingClientRect();
-    const revision = panelRevision;
     const args = { inspectionId: state.inspectionId, itemIndex: selectedItem,
       indices: imageButton ? [Number(imageButton.dataset.downloadImage)] : [...document.querySelectorAll('[data-image]:checked')].map(i => Number(i.dataset.image)),
       formatId: $('format-select')?.value || '', audioOnly: $('audio-only')?.checked, subtitles: $('subtitles')?.checked };
@@ -381,9 +378,6 @@ $('resources').addEventListener('click', async event => {
         if (state.inspectionId === args.inspectionId)
           notify(imageButton ? `第 ${args.indices[0]} 张图片已加入下载队列。` : '已加入下载队列。');
         await window.collectorDownloadFeedback.fly(downloadOrigin, $('tasks-tab'));
-        // Preserve automatic navigation, but never override a user's intervening tab choice.
-        if (!imageButton && state.inspectionId === args.inspectionId && revision === panelRevision)
-          showPanel('tasks');
       }
     } catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
     finally { release(); }

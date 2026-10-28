@@ -52,20 +52,20 @@ function fixtureHost(reduced=false) {
   return {host,target:node(),icons,animations,timers,dispatch:name=>{for(const fn of [...events.get(name)||[]])fn();}};
 }
 const origin={left:270,right:350,top:400,width:80,height:40};
-test('receipt pops then flies to tasks-tab center; pulses only on arrival and cleans overlay', async () => {
+test('receipt flies to tasks-tab center and cleans its icon without adding a target highlight', async () => {
   const f=fixtureHost(),feedback=createDownloadFeedback(f.host),p=feedback.fly(origin,f.target);
   assert.equal(f.icons.length,1);assert.equal(f.target.classList.contains('download-arrived'),false);
   const a=f.animations[0];assert.equal(a.options.duration,780);assert.equal(a.frames[0].opacity,0);
   assert.ok(a.frames.some(k=>k.transform.includes('scale(1.15)')));
   assert.equal(a.frames.at(-1).transform,'translate(244px, 34px) scale(0.3)');
-  a.finish();await p;assert.equal(f.icons[0].isConnected,false);assert.equal(f.target.classList.contains('download-arrived'),true);
+  a.finish();await p;assert.equal(f.icons[0].isConnected,false);assert.equal(f.target.classList.contains('download-arrived'),false);
   feedback.clear();assert.equal(f.timers.size,0);assert.equal(f.target.classList.contains('download-arrived'),false);
 });
-test('reduced motion and missing animation API give arrival feedback without flying', async () => {
+test('reduced motion and missing animation API skip flying without adding a target highlight', async () => {
   for(const reduced of [true,false]) {
     const f=fixtureHost(reduced);if(!reduced)delete f.host.document.body.animate;
     const feedback=createDownloadFeedback(f.host);await feedback.fly(origin,f.target);
-    assert.equal(f.icons.length,0);assert.equal(f.target.classList.contains('download-arrived'),true);feedback.clear();
+    assert.equal(f.icons.length,0);assert.equal(f.target.classList.contains('download-arrived'),false);feedback.clear();
   }
 });
 test('resize/pagehide/animation rejection and invisible target never leak an overlay', async () => {
@@ -87,25 +87,25 @@ const start=source.indexOf("  const imageButton = event.target.closest('[data-do
 assert.ok(start>0&&end>start);
 function clickFixture({single=false, fail=false, switchPanel=false, changeReceipt=false, retryLogin=false}={}) {
   const actions=[],button={dataset:{downloadImage:'7'},getBoundingClientRect:()=>{actions.push('origin');return origin;}},target={};
-  const context={state:{inspectionId:'receipt'},selectedItem:0,panelRevision:0,pendingDownloads:new Map(),
+  const context={state:{inspectionId:'receipt'},selectedItem:0,panel:'resources',pendingDownloads:new Map(),
     event:{preventDefault(){},target:{id:single?'single':'download',closest:()=>single?button:null}},
     $:id=>id==='download'?button:id==='tasks-tab'?target:null,document:{querySelectorAll:()=>[{dataset:{image:'7'}}]},
-    updateMediaInfo(){actions.push('update');},notify(message){actions.push(message);},showPanel(){actions.push('tasks');},
+    updateMediaInfo(){actions.push('update');},notify(message){actions.push(message);},showPanel(name){actions.push(name);context.panel=name;},
     window:{collector:{call:async method=>{actions.push(method);if(method==='login')return;
       if(fail)throw new Error('fixture failure');if(retryLogin&&!actions.includes('login'))throw Object.assign(new Error('auth'),{code:'YOUTUBE_AUTH_REQUIRED'});return 'task-id';}},
-      collectorDownloadFeedback:{fly:async(rect,tab)=>{assert.equal(rect,origin);assert.equal(tab,target);actions.push('fly');if(switchPanel)context.panelRevision++;if(changeReceipt)context.state.inspectionId='new';}}},};
+      collectorDownloadFeedback:{fly:async(rect,tab)=>{assert.equal(rect,origin);assert.equal(tab,target);actions.push('fly');if(switchPanel)context.panel='settings';if(changeReceipt)context.state.inspectionId='new';}}},};
   return {context,actions,button,run:()=>vm.runInNewContext('(async()=>{'+source.slice(start,end)+'})()',context)};
 }
 test('actual download handler captures origin before awaiting and flies only after successful queue receipt', async () => {
   for(const single of [false,true]) {
     const f=clickFixture({single});await f.run();assert.ok(f.actions.indexOf('origin')<f.actions.indexOf('download'));
-    assert.ok(f.actions.indexOf('download')<f.actions.indexOf('fly'));assert.equal(f.actions.includes('tasks'),!single);assert.equal(f.context.pendingDownloads.size,0);
+    assert.ok(f.actions.indexOf('download')<f.actions.indexOf('fly'));assert.equal(f.actions.includes('tasks'),false);assert.equal(f.context.panel,'resources');assert.equal(f.context.pendingDownloads.size,0);
   }
   const failed=clickFixture({fail:true});await failed.run();assert.equal(failed.actions.includes('fly'),false);assert.ok(failed.actions.includes('fixture failure'));
   const auth=clickFixture({retryLogin:true});await auth.run();assert.equal(auth.actions.filter(a=>a==='fly').length,1);assert.ok(auth.actions.includes('login'));
 });
 test('actual download handler never steals tab after user navigation and suppresses duplicate requests', async () => {
-  for(const setting of [{switchPanel:true},{changeReceipt:true}]) {const f=clickFixture(setting);await f.run();assert.equal(f.actions.includes('tasks'),false);}
+  for(const setting of [{switchPanel:true},{changeReceipt:true}]) {const f=clickFixture(setting);await f.run();assert.equal(f.actions.includes('tasks'),false);assert.equal(f.context.panel,setting.switchPanel?'settings':'resources');}
   const f=clickFixture();f.context.pendingDownloads.set(JSON.stringify(['receipt',0,null]),{});await f.run();assert.equal(f.actions.includes('download'),false);assert.equal(f.actions.includes('fly'),false);
 });
 

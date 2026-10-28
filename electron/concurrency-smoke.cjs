@@ -40,12 +40,15 @@ async function run(collector, check, until, wait, profile) {
     assert.ok(bili,'existing local Bilibili fixture required');collector.activateTab(bili.id);
     const receipt=bili.state.inspectionId;
     const clickDownload=async()=>{
+      const before=queue.tasks.length;
       await ui("document.getElementById('resources-tab').click();document.getElementById('download').click()");
-      await until(()=>ui("!document.getElementById('tasks-panel').hidden"),'download click was not accepted');
+      await until(()=>queue.tasks.length===before+1,'download click was not accepted');
       await until(()=>ui("!document.getElementById('download').disabled"),'download control stayed disabled after enqueue');
+      await until(()=>ui("!document.querySelector('.download-flight')"),'download flight did not finish');
     };
     await clickDownload();await until(()=>jobs.length===1,'first download did not reach its worker');
     await clickDownload();await clickDownload();
+    check('video downloads remain on resources after successful queue receipts and flights',await ui("!document.getElementById('resources-panel').hidden"));
     check('downloads beyond the single-site allowance remain clickable and enter the queue',queue.tasks.length===3&&queue.tasks.filter(t=>t.status==='queued').length===2&&jobs.length===1&&bili.state.inspectionId===receipt);
     const spec=(url)=>({command:'download',url,kind:'video',settings:{...collector.settings}});
     const vimeo=queue.add(spec('https://vimeo.com/246801'),'本地并发 Vimeo');

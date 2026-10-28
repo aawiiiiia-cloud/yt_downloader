@@ -52,7 +52,7 @@ async function run(collector, check, until, wait, assetRequests) {
       check('single SKU download freezes its category and original product: '+host,spec.context.itemId===id&&spec.indices.length===1&&title.includes('SKU 图')&&title.endsWith('图片 02'));
       await until(()=>ui("!document.querySelector('[data-download-image=\"2\"]').disabled"),'single-image control remained busy');
       await ui("document.querySelector('[data-image-category=\"2\"]').click();document.getElementById('download').click()");
-      await until(()=>spec?.mediaId==='detail'&&ui("!document.getElementById('tasks-panel').hidden"),'detail batch did not reach the queue');
+      await until(()=>spec?.mediaId==='detail'&&ui("!document.getElementById('download').disabled"),'detail batch did not reach the queue');
       check('detail batch contains only that category and retains source host/SKU: '+host,spec.indices.join(',')==='1,2'&&spec.url.includes(host)&&spec.url.includes('skuId='+sku));
       await ui("document.getElementById('resources-tab').click();document.querySelector('[data-image-category=\"0\"]').click()");
       check('category round trips preserve independent image selections: '+host,await ui("!document.querySelector('[data-image=\"1\"]').checked && document.querySelector('[data-image=\"2\"]').checked"));

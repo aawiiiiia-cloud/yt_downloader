@@ -35,7 +35,9 @@ async function run(collector, check, until, wait) {
     check('a failed single-image submission exposes its error and allows another attempt',await ui("!document.getElementById('resources-panel').hidden && document.querySelector('[data-image=\"2\"]').checked"));
     collector.queue.add=(value,title)=>{spec=value;taskTitle=title;return 'controlled-image-batch';};
     await ui("document.getElementById('select-all').click();document.getElementById('download').click()");
-    await until(()=>ui("!document.getElementById('tasks-panel').hidden"),'batch download no longer opened the tasks panel');
+    await until(()=>spec?.indices.join(',')==='1,2'&&ui("!document.getElementById('download').disabled"),'batch download did not enter the queue');
+    await until(()=>ui("!document.querySelector('.download-flight')"),'batch flight did not finish');
+    check('batch download stays on resources after its flight finishes',await ui("!document.getElementById('resources-panel').hidden"));
     check('batch download still submits all checked images after using single-image buttons',spec.indices.join(',')==='1,2'&&!taskTitle.endsWith('图片 01'));
     await ui("document.getElementById('resources-tab').click()");
     await ui("document.querySelector('.image-grid').scrollIntoView({block:'center'})");await wait(150);

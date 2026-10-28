@@ -3,29 +3,14 @@
   // A receipt is visual feedback only: the caller must confirm queue acceptance first.
   function createDownloadFeedback(host) {
     const flights = new Set();
-    const pulses = new Map();
     const reduced = () => host.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    function pulse(target) {
-      if (!target?.isConnected) return;
-      host.clearTimeout(pulses.get(target));
-      target.classList.remove('download-arrived');
-      void target.offsetWidth;
-      target.classList.add('download-arrived');
-      pulses.set(target, host.setTimeout(() => {
-        target.classList.remove('download-arrived'); pulses.delete(target);
-      }, 700));
-    }
     function clear() {
       for (const stop of [...flights]) stop();
-      for (const [target, timer] of pulses) {
-        host.clearTimeout(timer); target.classList.remove('download-arrived');
-      }
-      pulses.clear();
     }
     function fly(origin, target) {
       if (!target?.isConnected) return Promise.resolve();
       if (!origin || reduced() || !host.document.body.animate) {
-        pulse(target); return Promise.resolve();
+        return Promise.resolve();
       }
       while (flights.size >= 3) flights.values().next().value();
       return new Promise(resolve => {
@@ -56,8 +41,8 @@
             { transform: transform(clampX((x + tx) / 2 + 24), clampY((y + ty) / 2 - 32), .85), opacity: 1, offset: .65 },
             { transform: transform(tx, ty, .3), opacity: .1, offset: 1 },
           ], { duration: 780, easing: 'cubic-bezier(.3,.05,.45,1)', fill: 'forwards' });
-          animation.finished.then(() => { if (!stopped) pulse(target); stop(); }, stop);
-        } catch { pulse(target); stop(); }
+          animation.finished.then(stop, stop);
+        } catch { stop(); }
       });
     }
     host.addEventListener('pagehide', clear);
