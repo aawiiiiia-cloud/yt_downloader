@@ -25,7 +25,7 @@ async function run(collector, check, until, wait) {
     await until(()=>!!finishDownload,'single-image button did not submit a download');
     check('single-image download submits exactly the clicked original index regardless of checkboxes',spec.indices.join(',')==='1'&&spec.context.projectId==='123'&&taskTitle.endsWith('图片 01'));
     await ui("document.querySelector('[data-download-image=\"1\"]').click()");await wait(80);
-    check('pending single-image submissions cannot be duplicated',submitted===1&&await ui("document.querySelector('[data-download-image=\"1\"]').disabled && document.getElementById('download').disabled"));
+    check('pending single-image submissions cannot be duplicated and leave other actions available',submitted===1&&await ui("document.querySelector('[data-download-image=\"1\"]').disabled && !document.querySelector('[data-download-image=\"2\"]').disabled && !document.getElementById('download').disabled"));
     finishDownload('controlled-single-image');
     await until(()=>ui("!document.querySelector('[data-download-image=\"1\"]').disabled && document.getElementById('notice').textContent.includes('第 1 张图片已加入')"),'single-image submission did not finish');
     check('single-image download keeps the resources visible and does not change selections',await ui("!document.getElementById('resources-panel').hidden && !document.querySelector('[data-image=\"1\"]').checked && document.querySelector('[data-image=\"2\"]').checked"));
