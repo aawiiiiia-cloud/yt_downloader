@@ -76,6 +76,8 @@ const linkScript = `(() => {
     if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     const anchor = event.composedPath().find(node => node?.tagName === 'A' && node.href);
     if (!anchor || anchor.hasAttribute('download') || !contentKey(anchor.href) || contentKey(anchor.href) === contentKey(location.href)) return;
+    // Xiaohongshu owns the click: its SPA opens a note overlay over the feed.
+    if (siteForUrl(location.href) === 'xiaohongshu' && siteForUrl(anchor.href) === 'xiaohongshu') return;
     // A part selector within the same Bilibili video remains in its current tab.
     const current = contentKey(location.href), next = contentKey(anchor.href);
     if (current?.startsWith('bilibili:') && current.split(':')[1] === next.split(':')[1]) return;

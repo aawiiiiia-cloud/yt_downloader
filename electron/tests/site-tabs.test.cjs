@@ -1,7 +1,53 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const vm = require('node:vm');
 const { SiteTabs, MAX_TABS, linkScript } = require('../site-tabs.cjs');
+
+function detailClick(source, target, modifiers = {}) {
+  let handler; const opened = [];
+  const event = { button: 0, ...modifiers, prevented: false, stopped: false,
+    composedPath: () => [{ tagName: 'A', href: target, hasAttribute: () => false }],
+    preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+  vm.runInNewContext(linkScript, { URL, location: { href: source },
+    window: { addEventListener(name, callback) { if (name === 'click') handler = callback; }, open(url) { opened.push(url); } },
+    document: { addEventListener() {} } });
+  handler(event); return { event, opened };
+}
+
+test('Xiaohongshu feed, search and profile clicks reach the native note overlay router', () => {
+  const target = 'https://www.xiaohongshu.com/explore/0123456789abcdef01234567?xsec_source=pc_feed';
+  for (const source of ['https://www.xiaohongshu.com/explore', 'https://www.xiaohongshu.com/search_result?keyword=test',
+    'https://www.xiaohongshu.com/user/profile/1123456789abcdef01234567']) {
+    const { event, opened } = detailClick(source, target);
+    assert.equal(event.prevented, false); assert.equal(event.stopped, false); assert.deepEqual(opened, []);
+  }
+});
+
+test('Xiaohongshu related-note clicks can replace the current note overlay', () => {
+  const { event, opened } = detailClick('https://www.xiaohongshu.com/explore/1123456789abcdef01234567',
+    'https://www.xiaohongshu.com/explore/0123456789abcdef01234567');
+  assert.equal(event.stopped, false); assert.deepEqual(opened, []);
+});
+
+test('YouTube detail links and cross-site links still open in their own group', () => {
+  for (const [source, target] of [
+    ['https://www.youtube.com/', 'https://www.youtube.com/watch?v=fixture'],
+    ['https://www.xiaohongshu.com/explore', 'https://www.youtube.com/watch?v=fixture'],
+    ['https://www.youtube.com/', 'https://www.xiaohongshu.com/explore/0123456789abcdef01234567'],
+  ]) {
+    const { event, opened } = detailClick(source, target);
+    assert.equal(event.prevented, true); assert.equal(event.stopped, true); assert.deepEqual(opened, [target]);
+  }
+});
+
+test('modified clicks and Bilibili part changes retain their existing browser behavior', () => {
+  for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+    assert.equal(detailClick('https://www.youtube.com/', 'https://www.youtube.com/watch?v=fixture', modifiers).event.prevented, false);
+  }
+  const { event, opened } = detailClick('https://www.bilibili.com/video/BVfixture?p=1', 'https://www.bilibili.com/video/BVfixture?p=2');
+  assert.equal(event.prevented, false); assert.deepEqual(opened, []);
+});
 
 test('site groups remember their own last active tab', () => {
   const tabs = new SiteTabs(); const home = tabs.active;

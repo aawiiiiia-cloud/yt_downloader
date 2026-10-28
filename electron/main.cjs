@@ -207,7 +207,8 @@ class CollectorApp {
         const next = navigationUrl(typeof details === 'string' ? details : details.url), group = siteForUrl(next);
         const key = contentKey(next), current = contentKey(tab.state.url);
         const sameBiliVideo = current?.startsWith('bilibili:') && current.split(':')[1] === key?.split(':')[1];
-        if ((group && group !== tab.group) || (key && key !== current && !sameBiliVideo)) {
+        const sameXhsSite = group === 'xiaohongshu' && tab.group === group && siteForUrl(tab.state.url) === group;
+        if ((group && group !== tab.group) || (key && key !== current && !sameBiliVideo && !sameXhsSite)) {
           event.preventDefault(); tab.state.loading = false;
           setImmediate(() => {
             if (this.closing || tab.closed) return;

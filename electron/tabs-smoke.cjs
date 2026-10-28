@@ -57,6 +57,33 @@ async function run(collector, check, until, wait) {
   check('image checkboxes and right-panel position survive switching sites', await ui(`document.querySelector('[data-image="1"]').checked && !document.querySelector('[data-image="2"]').checked && document.getElementById('resources-panel').scrollTop === ${resourceScroll}`));
   check('the original document and left-page scroll position survive switching sites', await xhs.view.webContents.executeJavaScript(`window.savedPageMarker==='still-here' && window.scrollY === ${leftScroll}`));
 
+  const xhsCount = collector.tabs.rows.length, feedUrl = xhs.url;
+  const noteUrl = 'https://www.xiaohongshu.com/explore/0123456789abcdef01234567?collector_overlay=1';
+  await xhs.view.webContents.executeJavaScript(`(() => {
+    const a=document.createElement('a');a.href=${JSON.stringify(noteUrl)};a.target='_blank';a.id='xhs-overlay-link';
+    a.addEventListener('click',event=>{event.preventDefault();history.pushState({},'',a.href);const modal=document.createElement('div');modal.id='xhs-note-overlay';modal.textContent='本地帖子弹层';document.body.append(modal);});
+    document.body.append(a);a.click();
+  })()`, true);
+  await until(()=>xhs.url===noteUrl,'Xiaohongshu native overlay router did not run');
+  check('a normal Xiaohongshu note click reaches its overlay without creating or replacing a tab',
+    collector.tabs.active===xhs&&collector.tabs.rows.length===xhsCount&&await xhs.view.webContents.executeJavaScript("!!document.getElementById('xhs-note-overlay')&&window.savedPageMarker==='still-here'"));
+  check('manual parsing preserves its previous resources while an XHS overlay is open',collector.state.inspectionId===originalReceipt);
+  await xhs.view.webContents.executeJavaScript("document.getElementById('xhs-note-overlay').remove();document.getElementById('xhs-overlay-link').remove();history.back()");
+  await until(()=>xhs.url===feedUrl,'closing the note overlay did not return to its feed');
+  check('closing an XHS overlay keeps the feed document and scroll position',await xhs.view.webContents.executeJavaScript(`window.savedPageMarker==='still-here'&&window.scrollY===${leftScroll}`));
+
+  await ui('document.getElementById("new-tab").click()');
+  await until(()=>collector.tabs.active!==xhs&&loaded(collector.tabs.active),'manual XHS plus did not open');
+  const extraXhs=collector.tabs.active, extraWeb=extraXhs.view.webContents;
+  check('manual plus still creates an independent Xiaohongshu homepage',extraXhs.group==='xiaohongshu'&&extraXhs.url==='https://www.xiaohongshu.com/explore');
+  const toolbar=await ui('(()=>{const r=document.querySelector(".browser-tabbar").getBoundingClientRect();return{x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}})()');
+  require('node:fs').writeFileSync(require('node:path').join(__dirname,'..','electron-artifacts','new-tab-style.png'),(await collector.window.webContents.capturePage(toolbar)).toPNG());
+  await until(()=>extraWeb.executeJavaScript('!!window.__collectorLinksInstalled'),'fallback link handler not ready');
+  await extraWeb.executeJavaScript(`(()=>{const a=document.createElement('a');a.href=${JSON.stringify(noteUrl)};a.target='_self';document.body.append(a);a.click()})()`,true);
+  await until(()=>extraXhs.url===noteUrl&&loaded(extraXhs),'same-tab XHS document navigation did not finish');
+  check('XHS document navigation without a SPA router stays in its original native view',collector.tabs.active===extraXhs&&collector.tabs.rows.length===xhsCount+1&&extraXhs.view.webContents===extraWeb);
+  collector.closeTab(extraXhs.id);collector.activateTab(xhs.id);
+
   // Let an inspection finish after switching away; it must update only its owner.
   const runner = collector.withCookies, result = collector.state.result;
   let complete;
