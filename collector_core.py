@@ -553,7 +553,10 @@ class Collector:
         return {"folder": str(folder), "count": 1}
 
     def configure_extractors(self, ydl, url):
-        if site_for_url(url) == 'vimeo':
+        if site_for_url(url) == 'youtube':
+            from youtube_extractor import LoggedYoutubeIE
+            ydl.add_info_extractor(LoggedYoutubeIE(ydl))
+        elif site_for_url(url) == 'vimeo':
             from vimeo_extractor import ParallelVimeoIE
             ydl.add_info_extractor(ParallelVimeoIE(ydl, self.check_cancel))
 
