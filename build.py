@@ -469,7 +469,7 @@ def _validate_stage() -> None:
     provider_messages: list[str] = []
     manager = PotProviderManager(provider)
     try:
-        if not manager.ensure_started(provider_messages.append, timeout=20):
+        if not manager.ensure_started(provider_messages.append, timeout=80):
             detail = "\n".join(provider_messages[-10:])
             raise RuntimeError(f"暂存产物中的 PO Token provider 无法启动:\n{detail}")
     finally:

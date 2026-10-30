@@ -9,7 +9,7 @@ function providerUrl(value) {
 // The application owns this service. Cancelling one extraction must not stop it
 // underneath another extraction or download.
 class YouTubeProvider {
-  constructor({ task = pythonTask, track = handle => handle, startupTimeout = 25000 } = {}) {
+  constructor({ task = pythonTask, track = handle => handle, startupTimeout = 90000 } = {}) {
     this.makeTask = task; this.track = track; this.startupTimeout = startupTimeout;
     this.instance = null; this.listeners = new Set(); this.closed = false;
   }

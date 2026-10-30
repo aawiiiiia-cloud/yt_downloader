@@ -344,7 +344,7 @@ class Collector:
             if 'providerUrl' in self.request:
                 ready = bool(self.request['providerUrl']) and self.provider.connect(self.request['providerUrl'])
             else:
-                ready = self.provider.ensure_started(self.log, self.cancel, timeout=20)
+                ready = self.provider.ensure_started(self.log, self.cancel, timeout=80)
             if ready:
                 self.provider.apply_to_opts(options)
             else:

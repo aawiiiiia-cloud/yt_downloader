@@ -15,7 +15,7 @@ def run_provider(emit, cancel):
     from pot_provider import PotProviderManager
     manager = PotProviderManager()
     try:
-        if not manager.ensure_started(lambda text: emit('log', text), cancel, timeout=20):
+        if not manager.ensure_started(lambda text: emit('log', text), cancel, timeout=80):
             emit('provider-ready', {'url': None})
             return {'stopped': True}
         emit('provider-ready', {'url': manager.url})
