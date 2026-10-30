@@ -37,6 +37,7 @@ const metricsScript = `(() => {
 async function run(collector, check, until, wait, warnings = []) {
   const source = collector.tabs.active, size = collector.window.getSize(), width = collector.settings.panelWidth;
   const wasVisible = collector.window.isVisible();
+  const backgroundThrottling = collector.window.webContents.getBackgroundThrottling();
   const ui = code => collector.window.webContents.executeJavaScript(code);
   const directory = path.join(__dirname, '..', 'electron-artifacts', 'taobao-horizontal-2026-10-28');
   fs.mkdirSync(directory, { recursive: true });
@@ -60,7 +61,12 @@ async function run(collector, check, until, wait, warnings = []) {
     // Native scrollbar hit testing and compositor captures need a visible
     // window; earlier smoke stages deliberately hide their test window.
     collector.window.show();
+    // Keep compositor-driven ResizeObserver updates active when another app
+    // occludes this isolated test window. Otherwise DOM/native viewport sizes
+    // can remain stale during the scripted wide/narrow resize assertions.
+    collector.window.webContents.setBackgroundThrottling(false);
     tab = collector.openTab('https://www.taobao.com/?collector-scroll-fixture=1', { group: 'taobao' });
+    tab.view.webContents.setBackgroundThrottling(false);
     const web = tab.view.webContents, measure = () => web.mainFrame.executeJavaScript(metricsScript);
     await until(() => web.mainFrame.executeJavaScript('!!document.querySelector("[data-scroll-fixture]")'), 'home scroll fixture did not load');
     await tab.homeScroll.pending;
@@ -141,6 +147,7 @@ async function run(collector, check, until, wait, warnings = []) {
     if (tab && !tab.closed) collector.closeTab(tab.id);
     if (!wasVisible) collector.window.hide();
     await wait(150);
+    if (!collector.window.webContents.isDestroyed()) collector.window.webContents.setBackgroundThrottling(backgroundThrottling);
   }
 }
 module.exports = { fixture, run, metricsScript };
