@@ -41,6 +41,10 @@ test('an exited service restarts on the next request', async t => {
   const second = provider.ensure(); assert.equal(calls.length, 2);
   calls[1].emit('provider-ready', { url: 'http://127.0.0.1:45002' }); assert.equal(await second, 'http://127.0.0.1:45002');
 });
+test('default startup window accommodates a cold provider module scan', () => {
+  const { provider } = fixture();
+  assert.ok(provider.startupTimeout >= 80000); provider.close();
+});
 test('startup timeout releases callers and stops the failed child', async () => {
   const { provider, calls } = fixture({ startupTimeout: 10 });
   const [url] = await Promise.all([provider.ensure(), wait(25)]);

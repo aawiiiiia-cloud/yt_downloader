@@ -88,6 +88,43 @@ def runtime_health() -> dict:
             "provider": find_provider() is not None}
 
 
+def _video_thumbnail(info: dict, source_url: str):
+    """Pick a real cover, avoiding XHS's aggressively quantized preview variant."""
+    primary = info.get("thumbnail")
+    thumbnails = [row for row in (info.get("thumbnails") or [])
+                  if isinstance(row, dict) and row.get("url")]
+    if site_for_url(source_url) != "xiaohongshu":
+        return primary or next((row["url"] for row in reversed(thumbnails)), None)
+
+    candidates = list(thumbnails)
+    if primary and not any(row["url"] == primary for row in candidates):
+        candidates.append({"url": primary})
+    if not candidates:
+        return primary
+
+    def score(entry):
+        url = str(entry.get("url") or "")
+        path = urlparse(url).path.lower()
+        # nd_prv can have full-size dimensions but only a few dozen KiB and
+        # severe posterization. An untransformed original is best; nd_dft is
+        # the normal display-quality cover. Preserve later-order tie breaking.
+        if "!nd_prv_" in path:
+            quality = 0
+        elif "!nd_dft_" in path:
+            quality = 2
+        elif "!" not in path:
+            quality = 3
+        else:
+            quality = 1
+        try:
+            area = max(0, int(entry.get("width") or 0)) * max(0, int(entry.get("height") or 0))
+        except (TypeError, ValueError):
+            area = 0
+        return quality, area, candidates.index(entry)
+
+    return max(candidates, key=score)["url"]
+
+
 def normalise_video(info: dict, source_url: str) -> dict:
     formats = []
     for item in info.get("formats") or []:
@@ -107,8 +144,8 @@ def normalise_video(info: dict, source_url: str) -> dict:
                         "sizeEstimated": not bool(item.get("filesize")), "bitrate": item.get("tbr"),
                         "note": str(item.get("format_note") or "")[:100]})
     return {"id": str(info.get("id") or ""), "kind": "video", "url": source_url,
-            "title": str(info.get("title") or "未命名视频"), "thumbnail": info.get("thumbnail") or next(
-                (thumb.get('url') for thumb in reversed(info.get('thumbnails') or []) if thumb.get('url')), None),
+            "title": str(info.get("title") or "未命名视频"),
+            "thumbnail": _video_thumbnail(info, source_url),
             "author": info.get("uploader") or info.get("channel") or "",
             "duration": info.get("duration"), "formats": formats,
             "subtitles": list((info.get("subtitles") or {}).keys()),
@@ -307,7 +344,7 @@ class Collector:
             if 'providerUrl' in self.request:
                 ready = bool(self.request['providerUrl']) and self.provider.connect(self.request['providerUrl'])
             else:
-                ready = self.provider.ensure_started(self.log, self.cancel, timeout=20)
+                ready = self.provider.ensure_started(self.log, self.cancel, timeout=80)
             if ready:
                 self.provider.apply_to_opts(options)
             else:

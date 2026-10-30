@@ -149,6 +149,44 @@ class TestPotProvider(unittest.TestCase):
             self.assertTrue(fake.terminated)
             self.assertIsNone(manager.url)
 
+    def test_cold_start_gets_most_of_the_total_timeout_budget(self) -> None:
+        class FakeProcess:
+            returncode = None
+            stdout = None
+            def poll(self): return None
+            def terminate(self): self.terminated = True
+            def wait(self, timeout): return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = Path(tmp)
+            _make_valid_provider(provider)
+            clock = [0.0]
+            starts = []
+            processes = []
+
+            def popen(*_args, **_kwargs):
+                starts.append(clock[0])
+                process = FakeProcess(); processes.append(process); return process
+
+            def ping(_url):
+                return ({"version": pot_provider.PROVIDER_VERSION}
+                        if starts and clock[0] - starts[-1] >= 42 else None)
+
+            manager = pot_provider.PotProviderManager(provider)
+            messages = []
+            with (
+                mock.patch("pot_provider.shutil.which", return_value="C:/tools/node.exe"),
+                mock.patch("pot_provider.subprocess.Popen", side_effect=popen),
+                mock.patch.object(manager, "_ping", side_effect=ping),
+                mock.patch("pot_provider.time.monotonic", side_effect=lambda: clock[0]),
+                mock.patch("pot_provider.time.sleep", side_effect=lambda value: clock.__setitem__(0, clock[0] + value)),
+            ):
+                self.assertTrue(manager.ensure_started(messages.append, timeout=80))
+                self.assertEqual(len(processes), 1)
+                self.assertGreaterEqual(clock[0], 42)
+                self.assertTrue(any("首次冷启动" in message for message in messages))
+                manager.stop()
+
     def test_stop_can_interrupt_provider_startup_wait(self) -> None:
         class FakeProcess:
             returncode = None

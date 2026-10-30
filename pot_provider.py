@@ -442,7 +442,7 @@ class PotProviderManager:
         self,
         progress: Progress = print,
         cancel_event: threading.Event | None = None,
-        timeout: float = 35.0,
+        timeout: float = 80.0,
     ) -> bool:
         """Start and health-check the provider, retrying three fresh ports."""
         with self._lock:
@@ -508,9 +508,15 @@ class PotProviderManager:
                 self._capture = capture
                 self._job = job
 
-            attempts_left = 4 - attempt
-            attempt_budget = max(0.3, remaining / attempts_left)
+            # A cold Windows start can spend tens of seconds loading and being
+            # scanned across the provider's large Node dependency tree. Give the
+            # first process most of the total budget instead of killing three
+            # healthy cold starts after equally short slices. Later attempts are
+            # retained for an actual bind/process failure.
+            weights = (0.75, 0.15, 0.10)
+            attempt_budget = max(0.3, timeout * weights[attempt - 1])
             attempt_deadline = min(total_deadline, time.monotonic() + attempt_budget)
+            slow_notice_at = time.monotonic() + 8 if attempt == 1 else float("inf")
             failure_message = f"第 {attempt}/3 次服务启动超时"
             while time.monotonic() < attempt_deadline:
                 if cancel_event is not None and cancel_event.is_set():
@@ -522,6 +528,10 @@ class PotProviderManager:
                 if proc.poll() is not None:
                     failure_message = f"第 {attempt}/3 次服务意外退出(returncode={proc.returncode})"
                     break
+                now = time.monotonic()
+                if now >= slow_notice_at:
+                    progress("[PO Token] 首次冷启动正在加载模块，可能受系统安全扫描影响，继续等待…")
+                    slow_notice_at = float("inf")
                 if info := self._ping(url):
                     version = info.get("version", "未知")
                     if str(version) != PROVIDER_VERSION:

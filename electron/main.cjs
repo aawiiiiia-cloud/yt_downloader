@@ -169,6 +169,9 @@ class CollectorApp {
     this.activateTab(this.tabs.activeId);
     await this.window.loadFile(path.join(__dirname, 'ui', 'index.html'));
     await this.updateLogin();
+    // Warm the large Node provider in the background. On a cold Windows cache
+    // this can take tens of seconds, but it must not block the application UI.
+    this.youtubeProvider.start();
     this.healthTask = this.track(pythonTask({ command: 'health' }));
     this.healthTask.promise.then(health => { this.state.health = health; this.publish(); }, error => { this.state.error = error.message; this.publish(); });
     return this;

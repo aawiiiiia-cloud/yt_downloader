@@ -10,7 +10,7 @@ async function run(collector, check, until, wait) {
   check('Behance source variants and original GIF are preserved',collector.state.result.items[0].images[0].url.includes('/source/')&&collector.state.result.items[0].images[1].url.endsWith('.gif'));
   await until(()=>ui("document.querySelector('[data-preview-image]')?.naturalWidth>0 && document.querySelector('[data-image-size]')?.textContent.includes('0.34MB')"),'Behance preview or source size did not render');
   check('Behance previews and original source sizes reach the right panel',true);
-  check('Behance avoids claiming Adobe login from anonymous cookies',await ui("document.getElementById('login-state').textContent.includes('公开作品') && document.getElementById('edge-login').hidden && !document.getElementById('web-login').hidden"));
+  check('Behance avoids claiming Adobe login from anonymous cookies',await ui("document.getElementById('login-state').textContent.includes('未检测到登录凭据') && !document.getElementById('login-state').classList.contains('login-success') && document.getElementById('edge-login').hidden && !document.getElementById('web-login').hidden"));
   const add = collector.queue.add; let spec, taskTitle;
   collector.queue.add = (value,title)=>{spec=value;taskTitle=title;return 'controlled-behance-task'};
   try { await collector.download({inspectionId:collector.state.inspectionId,itemIndex:0,indices:[2]}); }
