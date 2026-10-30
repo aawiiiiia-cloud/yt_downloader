@@ -15,6 +15,19 @@ from distribution import launcher
 from distribution.build_source_bundle import command_file
 
 
+def make_windows_python_fixture(directory: Path, *, system_site_packages: bool) -> None:
+    import sys
+    import venv
+    # A base python.exe needs its adjacent DLLs; copying only that executable
+    # works accidentally when the test runner is already a venv redirector.
+    # Use the standard-library redirector in both source and portable runtimes.
+    scripts = Path(venv.__file__).parent / 'scripts' / 'nt'
+    redirector = next(path for path in (scripts / 'venvlauncher.exe', scripts / 'python.exe') if path.is_file())
+    shutil.copy2(redirector, directory / 'python.exe')
+    (directory / 'pyvenv.cfg').write_text(
+        f'home = {sys.base_prefix}\ninclude-system-site-packages = {str(system_site_packages).lower()}\n')
+
+
 class RuntimeSetupTests(unittest.TestCase):
     def test_working_packages_are_never_reinstalled_or_upgraded(self):
         with mock.patch.object(runtime, 'package_state', return_value={}), mock.patch.object(runtime.subprocess, 'run') as install:
@@ -277,9 +290,7 @@ class RuntimeSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='media dl 通用 (测试) ') as name:
             root=Path(name);code=root/'代码';scripts=code/'distribution';scripts.mkdir(parents=True)
             startup=root/'启动程序';startup.mkdir();tools=root/'依赖工具';python=tools/'python';python.mkdir(parents=True)
-            shutil.copy2(Path(sys.executable),python/'python.exe')
-            # A small isolated venv stub reuses only the base standard library for routing tests.
-            (python/'pyvenv.cfg').write_text(f'home = {sys.base_prefix}\ninclude-system-site-packages = false\n')
+            make_windows_python_fixture(python, system_site_packages=False)
             source=Path(__file__).resolve().parent
             shutil.copy2(source/'distribution/start-runtime.cmd',scripts/'start-runtime.cmd')
             stub="import json,sys\nprint(json.dumps({'python':sys.executable,'args':sys.argv[1:]},ensure_ascii=False))\n"
@@ -300,8 +311,7 @@ class RuntimeSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='media dl 双击 ') as name:
             root=Path(name);code=root/'代码';scripts=code/'distribution';scripts.mkdir(parents=True)
             startup=root/'启动程序';startup.mkdir();python=root/'依赖工具/python';python.mkdir(parents=True)
-            shutil.copy2(Path(sys.executable),python/'python.exe')
-            (python/'pyvenv.cfg').write_text(f'home = {sys.base_prefix}\ninclude-system-site-packages = true\n')
+            make_windows_python_fixture(python, system_site_packages=True)
             source=Path(__file__).resolve().parent
             for file in (scripts/'launcher.py',startup/'启动.py'):
                 shutil.copy2(source/'distribution/launcher.py',file)
