@@ -22,9 +22,9 @@ async function loginChecks(collector, check, until) {
   await ui("document.querySelector('[data-image=\"1\"]').checked=false");
   const set = (name, value) => collector.browserSession.cookies.set({ url: 'https://www.zcool.com.cn/', domain: '.zcool.com.cn',
     path: '/', name, value, secure: true, httpOnly: true, expirationDate: Date.now() / 1000 + 3600 });
-  const signedIn = () => ui("document.getElementById('login-state').textContent==='站酷 · 已登录' && !document.getElementById('login-state').classList.contains('login-warning')");
-  const signedOut = () => ui("document.getElementById('login-state').textContent.includes('未登录（建议登录）') && document.getElementById('login-state').classList.contains('login-warning')");
-  const expired = () => ui("document.getElementById('login-state').textContent.includes('登录凭证已失效/过期') && document.getElementById('login-state').classList.contains('login-warning')");
+  const signedIn = () => ui("document.getElementById('login-state').textContent.includes('【已检测到登录凭据】如左侧网页显示未登录，请重新登录') && !document.getElementById('login-state').classList.contains('login-warning') && !document.getElementById('login-state').classList.contains('login-success')");
+  const signedOut = () => ui("document.getElementById('login-state').textContent.includes('【未检测到登录凭据】建议登录') && document.getElementById('login-state').classList.contains('login-warning')");
+  const expired = () => ui("document.getElementById('login-state').textContent.includes('【已检测到登录凭据】如左侧网页显示未登录，请重新登录') && document.getElementById('login-state').classList.contains('login-warning')");
   await set('JSESSIONID', 'zcool-fixture-visitor'); await collector.updateLogin();
   await until(signedOut, 'anonymous ZCOOL cookies incorrectly logged in');
   check('ZCOOL anonymous sessions show a red sign-in suggestion', !collector.state.login.zcool);

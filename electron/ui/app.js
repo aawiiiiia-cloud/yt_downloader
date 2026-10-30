@@ -229,16 +229,11 @@ function render(next) {
   setLoading($('parse'), state.parsing);
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
   const expired = state.loginExpired?.[selectedSite] || (selectedSite === 'youtube' && state.youtubeAuth === 'expired');
-  const needsLogin = expired || !state.login[selectedSite];
-  $('login-state').textContent = `${names[selectedSite]} · ${expired ? '登录凭证已失效/过期，请重新登录' : needsLogin ? '未登录（建议登录）' : '已登录'}`;
-  $('login-state').classList.toggle('login-warning', needsLogin);
-  $('login-state').classList.toggle('login-success', !needsLogin && selectedSite !== 'behance');
-  $('login-state').title = expired ? '请重新登录或导入新的 Cookies，旧凭证不会因再次检测到而恢复。' : needsLogin ? (selectedSite === 'youtube' ? '下载 YouTube 视频前必须登录，请通过 Edge 登录或导入 Cookies。' : '尚未检测到本站登录凭据，建议先登录。') : (selectedSite === 'youtube' ? '已读取登录凭证，下载前仍会自动确认是否有效。' : '已读取登录凭证，实际可用性由网站请求结果确认。');
-  if (selectedSite === 'behance') {
-    $('login-state').textContent = 'Behance · 公开作品可直接解析';
-    $('login-state').classList.remove('login-warning', 'login-success');
-    $('login-state').title = 'Behance 使用 Adobe 登录，账号状态以左侧网页为准。';
-  }
+  const account = loginStatus.display(selectedSite, names[selectedSite], !!state.login[selectedSite], expired, state.youtubeAuth);
+  $('login-state').textContent = account.text;
+  $('login-state').classList.toggle('login-warning', account.warning);
+  $('login-state').classList.toggle('login-success', account.success);
+  $('login-state').title = account.title;
   const loginBusy = !!state.loginRunning || !!state.importingCookies || !!state.openingWebLogin;
   const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
   $('web-login').hidden = externalLoginOnly;
@@ -247,9 +242,9 @@ function render(next) {
   $('web-login').disabled = loginBusy;
   $('web-login').textContent = state.openingWebLogin === selectedSite ? '正在打开…' : '登录';
   setLoading($('web-login'), state.openingWebLogin === selectedSite);
-  document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : externalLoginOnly ? '通过 Edge 登录。' : '可在左侧网页登录，或通过 Edge 登录。') + '导入请选择本站点的 Netscape 格式 Cookies 文件（.txt）。';
-  if (selectedSite === 'behance') document.querySelector('.login-help').textContent = '需要登录的作品请先在左侧完成 Adobe 登录；也可导入 Behance Cookies。账号状态以网页为准。';
-  if (selectedSite === 'zcool') document.querySelector('.login-help').textContent = '高清图片请先在左侧登录站酷，再刷新作品页并重新解析；也可导入本站 Cookies。登录及网站验证需手动完成。';
+  document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : externalLoginOnly ? '通过 Edge 登录。' : '可在左侧网页登录，或通过 Edge 登录。') + '也可选择本站的 Netscape 格式 Cookies 文件（.txt）。右侧显示的是凭据状态，网页是否已登录请以左侧为准。';
+  if (selectedSite === 'behance') document.querySelector('.login-help').textContent = '需要登录的作品，请在左侧完成 Adobe 登录；也可导入 Behance Cookies。账号状态以左侧网页为准。';
+  if (selectedSite === 'zcool') document.querySelector('.login-help').textContent = '高清图片建议先登录站酷，再刷新作品页并重新解析；也可导入本站 Cookies。右侧只确认凭据存在，是否有效以左侧网页和站酷验证为准。';
   $('edge-login').disabled = loginBusy; $('cancel-login').hidden = !state.loginRunning;
   $('import-login').disabled = loginBusy;
   $('import-login').textContent = state.importingCookies ? '正在导入…' : '导入Cookies';
