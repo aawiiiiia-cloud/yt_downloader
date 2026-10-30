@@ -279,7 +279,9 @@ def _same_image_format(source_extension: str, target_format: str) -> bool:
     )
 
 
-def _detected_image_extension(path: Path, fallback: str, strict: bool = False) -> str:
+def _detected_image_extension(
+    path: Path, fallback: str, strict: bool = False, *, load_pixels: bool = True,
+) -> str:
     """依据文件头确认真实编码；CDN 的 Content-Type/URL 可能没有扩展信息。"""
     from PIL import Image
 
@@ -304,14 +306,23 @@ def _detected_image_extension(path: Path, fallback: str, strict: bool = False) -
         with Image.open(path) as image:
             extension = formats.get(str(image.format or "").upper(), fallback)
             image.verify()
-        # 文件头和 Content-Length 都可能正常，但像素数据仍然被截断。
-        with Image.open(path) as image:
-            image.load()
+        # 原格式保存时仍完整解码；需要转换时由转换步骤完成唯一一次完整解码。
+        if load_pixels:
+            with Image.open(path) as image:
+                image.load()
         return extension
     except Exception as exc:
         if strict:
             raise XhsDownloadError("服务器返回内容无法识别为有效图片") from exc
         return fallback
+
+
+def _validate_image_pixels(path: Path) -> None:
+    """Fully decode a file once before publishing it without conversion."""
+    from PIL import Image
+
+    with Image.open(path) as image:
+        image.load()
 
 
 def _convert_image(source: Path, target: Path, output_format: str, quality: int) -> None:
@@ -365,7 +376,10 @@ def _convert_image(source: Path, target: Path, output_format: str, quality: int)
                     image = image.convert("RGB")
                     # RGB 结果不能继续使用源图片的 CMYK 色彩配置。
                     save_options.pop("icc_profile", None)
-                save_options.update(optimize=True, compress_level=6)
+                # Pillow's optimize=True performs an expensive exhaustive pass and
+                # effectively forces maximum compression. Level 3 remains lossless,
+                # preserves every pixel, and is several times faster on large photos.
+                save_options.update(optimize=False, compress_level=3)
             elif pillow_format == "WEBP":
                 save_options.update(quality=quality, method=6)
             with temporary.open("wb") as output:
@@ -620,19 +634,29 @@ class XhsImageDownloader:
                                   f"{elapsed:.1f} 秒 · 平均 {average / 1024:.1f} KB/s")
                     self._transfer(post, image, "image-validating", received, expected)
                     self.progress(f"[校验] 图片 {image.index} 接收完成，检查完整性")
-                    extension = _detected_image_extension(temp_path, extension, strict=True)
+                    extension = _detected_image_extension(
+                        temp_path, extension, strict=True, load_pixels=False,
+                    )
                     self._validate_download(temp_path, image)
                     target_extension = extension if self.image_format == "original" else IMAGE_OUTPUT_FORMATS[self.image_format][0]
                     target = folder / f"{image.index:02d}{target_extension}"
                     converted = False
                     if self.image_format == "original" or _same_image_format(extension, self.image_format):
+                        # Header verification above is cheap; this is the sole full
+                        # decode when original bytes are published unchanged.
+                        _validate_image_pixels(temp_path)
                         os.replace(temp_path, target)
                     else:
                         self._transfer(post, image, "image-converting", received, expected)
                         self.progress(f"[转换] 图片 {image.index} 正在转换为 {self.image_format.upper()}")
+                        conversion_started = time.monotonic()
                         _convert_image(temp_path, target, self.image_format, self.image_quality)
                         temp_path.unlink(missing_ok=True)
                         converted = True
+                        self.progress(
+                            f"[转换完成] 图片 {image.index} 已转为 {self.image_format.upper()} · "
+                            f"用时 {time.monotonic() - conversion_started:.1f} 秒"
+                        )
                     if is_original:
                         self._origin_health[host] = (0 if average >= policy.minimum_rate else 1, average)
                     source_label = self._source_label(image, candidate_index, len(candidates))

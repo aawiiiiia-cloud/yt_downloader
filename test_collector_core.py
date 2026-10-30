@@ -66,6 +66,44 @@ class TestCollectorAdapters(unittest.TestCase):
         self.assertEqual([item['id'] for item in result['formats']], ['137'])
         self.assertNotIn('signature', json.dumps(result))
 
+    def test_xhs_video_prefers_display_cover_over_quantized_preview(self):
+        preview = (
+            'https://sns-webpic-qc.xhscdn.com/hash/resource'
+            '!nd_prv_wlteh_jpg_3'
+        )
+        display = (
+            'https://sns-webpic-qc.xhscdn.com/hash/resource'
+            '!nd_dft_wlteh_jpg_3'
+        )
+        result = normalise_video({
+            'id': 'video', 'thumbnail': preview,
+            # The live endpoint can change the candidate order between requests.
+            'thumbnails': [
+                {'url': display, 'width': 1920, 'height': 2560},
+                {'url': preview, 'width': 1920, 'height': 2560},
+            ],
+        }, URL)
+        self.assertEqual(result['thumbnail'], display)
+
+    def test_xhs_video_keeps_preview_when_it_is_the_only_cover(self):
+        preview = (
+            'https://sns-webpic-qc.xhscdn.com/hash/resource'
+            '!nd_prv_wlteh_jpg_3'
+        )
+        result = normalise_video({
+            'id': 'video', 'thumbnail': preview,
+            'thumbnails': [{'url': preview, 'width': 1080, 'height': 1440}],
+        }, URL)
+        self.assertEqual(result['thumbnail'], preview)
+
+    def test_other_video_sites_keep_explicit_primary_thumbnail(self):
+        primary = 'https://i.ytimg.com/primary.jpg'
+        result = normalise_video({
+            'id': 'video', 'thumbnail': primary,
+            'thumbnails': [{'url': 'https://i.ytimg.com/later.jpg', 'width': 1920, 'height': 1080}],
+        }, 'https://www.youtube.com/watch?v=abcdefghijk')
+        self.assertEqual(result['thumbnail'], primary)
+
     def test_xhs_inspection_uses_loaded_browser_note_without_network(self):
         service = Collector({'url': URL, 'context': context()}, lambda *_args: None)
         with mock.patch('yt_dlp.YoutubeDL', side_effect=AssertionError('unexpected network')):

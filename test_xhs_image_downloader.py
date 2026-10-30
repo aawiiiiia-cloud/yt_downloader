@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from edge_login import SITE_CONFIGS, has_site_auth_cookie
 from xhs_image_downloader import (
@@ -217,17 +218,63 @@ class TestXhsDownload(unittest.TestCase):
         self.assertFalse((self.folder / ".01.png.convert.part").exists())
         self.assertTrue(any("已转换为 PNG" in line for line in logs))
 
+    def test_png_conversion_uses_fast_lossless_compression(self) -> None:
+        from PIL import Image
+
+        source = self.folder / "source.jpg"
+        target = self.folder / "target.png"
+        Image.new("RGB", (64, 48), "navy").save(source, format="JPEG")
+        original_save = Image.Image.save
+        png_options = []
+
+        def record_save(image, fp, format=None, **params):
+            if format == "PNG":
+                png_options.append(dict(params))
+            return original_save(image, fp, format=format, **params)
+
+        with mock.patch.object(Image.Image, "save", new=record_save):
+            _convert_image(source, target, "png", 95)
+        self.assertEqual(len(png_options), 1)
+        self.assertFalse(png_options[0]["optimize"])
+        self.assertEqual(png_options[0]["compress_level"], 3)
+        with Image.open(target) as converted:
+            converted.load()
+            self.assertEqual(converted.size, (64, 48))
+
+    def test_converting_download_defers_full_decode_to_converter(self) -> None:
+        data = _image_data("JPEG")
+        downloader = XhsImageDownloader(progress=lambda _msg: None, image_format="png")
+        with mock.patch(
+            "xhs_image_downloader._detected_image_extension",
+            wraps=__import__("xhs_image_downloader")._detected_image_extension,
+        ) as detected, mock.patch(
+            "xhs_image_downloader._validate_image_pixels",
+            wraps=__import__("xhs_image_downloader")._validate_image_pixels,
+        ) as full_decode:
+            target = downloader._download_one(
+                _Ydl(lambda: _Response(data, len(data), "image/jpeg")),
+                self.post, self.post.images[0], self.folder,
+            )
+        self.assertEqual(target.suffix, ".png")
+        self.assertFalse(detected.call_args.kwargs["load_pixels"])
+        full_decode.assert_not_called()
+
     def test_matching_target_format_preserves_original_bytes(self) -> None:
         data = _image_data("WEBP")
         downloader = XhsImageDownloader(
             progress=lambda _msg: None, image_format="webp", image_quality=75,
         )
-        target = downloader._download_one(
-            _Ydl(lambda: _Response(data, len(data), "image/webp")),
-            self.post, self.post.images[0], self.folder,
-        )
+        with mock.patch(
+            "xhs_image_downloader._validate_image_pixels",
+            wraps=__import__("xhs_image_downloader")._validate_image_pixels,
+        ) as full_decode:
+            target = downloader._download_one(
+                _Ydl(lambda: _Response(data, len(data), "image/webp")),
+                self.post, self.post.images[0], self.folder,
+            )
         self.assertEqual(target.name, "01.webp")
         self.assertEqual(target.read_bytes(), data)
+        full_decode.assert_called_once()
 
     def test_jpeg_conversion_flattens_transparency_to_white(self) -> None:
         from PIL import Image
@@ -314,6 +361,24 @@ class TestXhsDownload(unittest.TestCase):
             converted.load()
             self.assertEqual(converted.format, "JPEG")
             self.assertEqual(converted.size, (32, 24))
+
+    def test_heif_download_converts_to_png(self) -> None:
+        import pillow_heif
+        from PIL import Image
+
+        pillow_heif.register_heif_opener()
+        data = _image_data("HEIF")
+        logs = []
+        downloader = XhsImageDownloader(progress=logs.append, image_format="png")
+        target = downloader._download_one(
+            _Ydl(lambda: _Response(data, len(data), "image/heic")),
+            self.post, self.post.images[0], self.folder,
+        )
+        with Image.open(target) as converted:
+            converted.load()
+            self.assertEqual(converted.format, "PNG")
+            self.assertEqual(converted.size, (32, 24))
+        self.assertTrue(any("[转换完成]" in line for line in logs))
 
     def test_cancel_does_not_leave_partial_file(self) -> None:
         cancel = threading.Event()
