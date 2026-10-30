@@ -14,6 +14,7 @@ import ctypes
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import shutil
@@ -221,6 +222,67 @@ def provider_is_installed() -> bool:
     return find_provider() is not None
 
 
+def provider_runtime_entry(root: Path, progress: Progress = print) -> Path:
+    """Use an optional prebuilt bundle only when every artifact is verified."""
+    original = root / 'server/build/main.js'
+    metadata_path = root / 'server/build/media-dl-bundle.json'
+    if not metadata_path.is_file():
+        return original
+    try:
+        manifest = json.loads((root / PROVIDER_MANIFEST).read_text(encoding='utf-8'))['files']
+        if metadata_path.is_symlink() or not hmac.compare_digest(
+            _sha256(metadata_path), manifest['server/build/media-dl-bundle.json'],
+        ):
+            raise ValueError('bundle metadata digest')
+        metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+        if (not isinstance(metadata, dict) or metadata.get('format') != 1 or metadata.get('providerVersion') != PROVIDER_VERSION
+                or metadata.get('providerCommit') != PROVIDER_COMMIT):
+            raise ValueError('bundle version')
+        artifacts = metadata['artifacts']
+        inputs = metadata.get('inputs')
+        if not isinstance(inputs, dict) or 'server/build/main.js' not in inputs or any(
+            expected != manifest.get(name) for name, expected in inputs.items()
+        ):
+            raise ValueError('bundle inputs changed')
+        allowed = {'server/build/media-dl-provider.mjs', 'server/build/media-dl-provider.mjs.LEGAL.txt'}
+        if not isinstance(artifacts, dict) or set(artifacts) != allowed:
+            raise ValueError('bundle artifact paths')
+        for name, expected in artifacts.items():
+            file = root / name
+            if (file.is_symlink() or not file.is_file() or expected != manifest.get(name)
+                    or not hmac.compare_digest(_sha256(file), expected)):
+                raise ValueError('bundle artifact digest')
+        return root / 'server/build/media-dl-provider.mjs'
+    except (OSError, ValueError, TypeError, KeyError):
+        progress('[PO Token] 合并组件不可用，自动使用原版组件')
+        return original
+
+
+def _runtime_timing(line: str) -> dict | None:
+    prefix = 'MEDIA_DL_PROVIDER_TIMING '
+    if not line.startswith(prefix) or len(line) > 2048:
+        return None
+    try:
+        row = json.loads(line[len(prefix):])
+        if row.get('stage') not in {'node-ready', 'token'}:
+            return None
+        seconds = row.get('seconds')
+        if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 <= seconds <= 3600:
+            return None
+        result = {'stage': row['stage'], 'seconds': round(seconds, 4)}
+        cpu = row.get('cpuSeconds')
+        if type(cpu) in (int, float) and math.isfinite(cpu) and 0 <= cpu <= 3600:
+            result['cpuSeconds'] = round(cpu, 4)
+        if row['stage'] == 'token':
+            status = row.get('status')
+            if type(status) is not int or not 100 <= status <= 599:
+                return None
+            result['status'] = status
+        return result
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def _free_local_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -230,23 +292,34 @@ def _free_local_port() -> int:
 class _BoundedOutput:
     """Continuously drain a child pipe while retaining only its newest bytes."""
 
-    def __init__(self, limit: int = _MAX_CAPTURE_BYTES) -> None:
+    def __init__(self, limit: int = _MAX_CAPTURE_BYTES, on_line: Callable[[str], None] | None = None) -> None:
         self._limit = limit
         self._buffer = bytearray()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._on_line = on_line
 
     def start(self, stream: BinaryIO | None) -> None:
         if stream is None:
             return
 
         def drain() -> None:
+            pending = b''
             try:
-                while chunk := stream.read(4096):
+                read = getattr(stream, 'read1', stream.read)
+                while chunk := read(4096):
                     with self._lock:
                         self._buffer.extend(chunk)
                         if len(self._buffer) > self._limit:
                             del self._buffer[:-self._limit]
+                    if self._on_line:
+                        pending += chunk
+                        while b'\n' in pending:
+                            line, pending = pending.split(b'\n', 1)
+                            if len(line) <= 2048:
+                                try: self._on_line(line.decode('utf-8', errors='replace'))
+                                except Exception: pass
+                        pending = pending[-4096:]
             except (OSError, ValueError):
                 pass
             finally:
@@ -389,13 +462,21 @@ class _WindowsKillJob:
 class PotProviderManager:
     """Own at most one validated provider process and never kill an external one."""
 
-    def __init__(self, provider_root: Path | None = None) -> None:
+    def __init__(self, provider_root: Path | None = None, *, use_bundle: bool = True,
+                 timing: Callable[[dict], None] | None = None) -> None:
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[bytes] | None = None
         self._url: str | None = None
         self._provider_root = provider_root.resolve() if provider_root else None
         self._capture: _BoundedOutput | None = None
         self._job: _WindowsKillJob | None = None
+        self._use_bundle = use_bundle
+        self._timing = timing
+
+    def _record_timing(self, row: dict) -> None:
+        if self._timing:
+            try: self._timing(dict(row))
+            except Exception: pass
 
     @property
     def url(self) -> str | None:
@@ -445,6 +526,7 @@ class PotProviderManager:
         timeout: float = 80.0,
     ) -> bool:
         """Start and health-check the provider, retrying three fresh ports."""
+        started = time.monotonic()
         with self._lock:
             if self._url and self._ping(self._url):
                 return True
@@ -462,7 +544,15 @@ class PotProviderManager:
                 progress("[PO Token] 找不到 Node.js，无法启动 token 生成服务")
                 return False
 
+        original_entry = provider / 'server/build/main.js'
+        entry = provider_runtime_entry(provider, progress) if self._use_bundle else original_entry
+        validation_seconds = time.monotonic() - started
+        self._record_timing({'stage': 'validation', 'seconds': round(validation_seconds, 4)})
+        progress(f'[PO Token] 组件核验 {validation_seconds:.2f} 秒 · '
+                 f'{"合并加载" if entry != original_entry else "标准加载"}')
+
         total_deadline = time.monotonic() + max(timeout, 0.3)
+        entry_attempt = 0
         for attempt in range(1, 4):
             if cancel_event is not None and cancel_event.is_set():
                 self.stop()
@@ -473,7 +563,7 @@ class PotProviderManager:
             port = _free_local_port()
             url = f"http://127.0.0.1:{port}"
             server = provider / "server"
-            entry = server / "build" / "main.js"
+            entry_attempt += 1
             creationflags = 0
             startupinfo = None
             if os.name == "nt":
@@ -481,10 +571,23 @@ class PotProviderManager:
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-            capture = _BoundedOutput()
+            def timing_line(line):
+                row = _runtime_timing(line)
+                if row:
+                    self._record_timing(row)
+                    label = 'Node 模块加载' if row['stage'] == 'node-ready' else 'Token 生成'
+                    progress(f"[PO Token] {label}耗时 {row['seconds']:.2f} 秒")
+
+            capture = _BoundedOutput(on_line=timing_line)
+            preload = Path(__file__).with_name('provider_runtime.cjs')
+            command = [node]
+            if preload.is_file():
+                command.extend(['--require', str(preload)])
+            command.extend([str(entry), '--port', str(port)])
+            process_started = time.monotonic()
             try:
                 proc = subprocess.Popen(
-                    [node, str(entry), "--port", str(port)],
+                    command,
                     cwd=str(server),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
@@ -514,7 +617,7 @@ class PotProviderManager:
             # healthy cold starts after equally short slices. Later attempts are
             # retained for an actual bind/process failure.
             weights = (0.75, 0.15, 0.10)
-            attempt_budget = max(0.3, timeout * weights[attempt - 1])
+            attempt_budget = max(0.3, timeout * weights[min(entry_attempt - 1, 2)])
             attempt_deadline = min(total_deadline, time.monotonic() + attempt_budget)
             slow_notice_at = time.monotonic() + 8 if attempt == 1 else float("inf")
             failure_message = f"第 {attempt}/3 次服务启动超时"
@@ -541,12 +644,21 @@ class PotProviderManager:
                         )
                         break
                     progress(f"[PO Token] 本地生成服务已启动 v{version} ({url})")
+                    total = time.monotonic() - started
+                    self._record_timing({'stage': 'service-ready', 'seconds': round(total, 4),
+                        'nodeSeconds': round(time.monotonic() - process_started, 4),
+                        'optimized': entry != original_entry, 'attempt': attempt})
+                    progress(f'[PO Token] 服务准备总耗时 {total:.2f} 秒')
                     return True
                 time.sleep(0.2)
 
             progress(f"[PO Token] {failure_message}")
             self.stop()
             self._report_capture(progress, capture)
+            if entry != original_entry:
+                entry = original_entry
+                entry_attempt = 0
+                progress('[PO Token] 合并组件未能启动，改用原版组件重试')
 
         progress("[PO Token] 三次启动均失败，继续尝试普通格式（4K 可能不可用）")
         return False

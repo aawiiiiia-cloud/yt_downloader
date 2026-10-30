@@ -340,6 +340,7 @@ def _run_pyinstaller() -> None:
         # 加 hidden-import 确保被打进包;websocket 是它的纯 Python 依赖,自动收集
         "--hidden-import", "edge_login",
         "--hidden-import", "pot_provider",
+        "--add-data", str(BUILD_DIR / 'provider_runtime.cjs') + os.pathsep + '.',
         # 小红书图文下载器由 URL 路由按需导入。
         "--hidden-import", "xhs_image_downloader",
         # 图片/视频批处理窗口及按需导入的图片库。

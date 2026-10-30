@@ -5,15 +5,18 @@ import contextlib
 import json
 import sys
 import threading
+import time
 
+_WORKER_STARTED = time.monotonic()
 from collector_core import Cancelled, Collector, prepare_runtime, runtime_health
 from collector_errors import error_payload
+_IMPORT_SECONDS = time.monotonic() - _WORKER_STARTED
 
 
 def run_provider(emit, cancel):
     """Keep one owned provider alive until Electron closes its control pipe."""
     from pot_provider import PotProviderManager
-    manager = PotProviderManager()
+    manager = PotProviderManager(timing=lambda row: emit('provider-timing', row))
     try:
         if not manager.ensure_started(lambda text: emit('log', text), cancel, timeout=80):
             emit('provider-ready', {'url': None})
@@ -55,7 +58,12 @@ def main() -> int:
         with contextlib.redirect_stdout(sys.stderr):
             if request.get("command") == "download":
                 emit("log", "下载器已启动，正在准备运行环境…")
+            preparation_started = time.monotonic()
             prepare_runtime()
+            if request.get('command') == 'provider':
+                emit('provider-timing', {'stage': 'worker-ready', 'seconds': round(time.monotonic() - _WORKER_STARTED, 4),
+                    'importSeconds': round(_IMPORT_SECONDS, 4),
+                    'prepareSeconds': round(time.monotonic() - preparation_started, 4)})
             if request.get("command") == "download":
                 emit("log", "运行环境已就绪，开始处理下载任务")
             command = request.get("command")

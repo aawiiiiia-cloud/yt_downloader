@@ -86,7 +86,11 @@ class CollectorApp {
     this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
     this.tabs.rows.forEach(tab => this.initializeTab(tab));
     this.handles = new Set(); this.cache = new Map(); this.popups = new Map(); this.closing = false;
-    this.youtubeProvider = new YouTubeProvider({ track: handle => this.track(handle) });
+    this.providerTimings = [];
+    this.youtubeProvider = new YouTubeProvider({ track: handle => this.track(handle), onTiming: row => {
+      this.providerTimings = [...this.providerTimings, { at: new Date().toISOString(), ...row }].slice(-30);
+      try { writeJson(path.join(profile, 'provider-timings.json'), { timings: this.providerTimings }); } catch {}
+    } });
     this.runTask = pythonTask;
     this.externalTasks = new WeakMap();
     this.youtubeAuth = new YouTubeAuth(() => this.browserSession.cookies.get({}), () => this.verifyYouTube(), () => this.publish());

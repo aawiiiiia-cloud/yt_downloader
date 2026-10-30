@@ -59,3 +59,26 @@ test('a spawn error degrades to ordinary extraction without leaving waiters', as
   const provider = new YouTubeProvider({ task() { throw new Error('spawn failed'); } });
   assert.equal(await provider.ensure(), null); assert.equal(provider.instance, null); provider.close();
 });
+
+test('background warmup is idempotent and an application close prevents direct restarts', async () => {
+  const {provider,calls}=fixture();const instance=provider.start();
+  assert.equal(provider.start(),instance);assert.equal(calls.length,1);
+  const waiting=provider.ensure();provider.close();assert.equal(await waiting,null);
+  assert.equal(provider.start(),null);assert.equal(calls.length,1);
+});
+
+test('a parse joining background warmup receives bounded startup progress', async t => {
+  const {provider,calls}=fixture();t.after(()=>provider.close());provider.start();
+  calls[0].emit('log','preparing modules');const logs=[];
+  const ready=provider.ensure((type,text)=>logs.push([type,text]));
+  calls[0].emit('provider-ready',{url:'http://127.0.0.1:45001'});
+  assert.ok(await ready);assert.deepEqual(logs,[['log','preparing modules']]);
+});
+
+test('timing diagnostics keep numeric stages without saving tokens or binding values', async t => {
+  const timings=[];const {provider,calls}=fixture({onTiming:row=>timings.push(row)});t.after(()=>provider.close());
+  provider.start();calls[0].emit('provider-timing',{stage:'token',seconds:2,status:200,cookie:'secret',poToken:'secret'});
+  calls[0].emit('provider-timing',{stage:'token',seconds:NaN,status:200});
+  calls[0].emit('provider-timing',{stage:'private-stage',seconds:1});
+  assert.deepEqual(timings,[{stage:'token',seconds:2,status:200}]);
+});
