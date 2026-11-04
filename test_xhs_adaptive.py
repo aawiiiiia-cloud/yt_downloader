@@ -81,6 +81,31 @@ class AdaptiveTests(unittest.TestCase):
     def test_fast_image_has_no_extra_request(self):
         target,ydl=self.download(lambda r:self.response())
         self.assertEqual(len(ydl.requests),1);self.assertEqual(target.read_bytes(),self.data)
+    def test_large_38_to_80_kib_streams_switch_without_changing_original_bytes(self):
+        out=io.BytesIO();Image.new('RGB',(1024,1024),(42,104,208)).save(out,format='BMP')
+        self.data=out.getvalue()
+        for rate in (38,60,80):
+            with self.subTest(rate=rate):
+                self.clock.now=0;self.writer._origin_health.clear()
+                target,ydl=self.download(lambda r:self.response(rate*1024 if r.url.startswith(ORIGINS[0]) else 2*1024*1024))
+                self.assertEqual(target.read_bytes(),self.data)
+                self.assertEqual([r.url for r in ydl.requests],[ORIGINS[0]+'/resource',ORIGINS[1]+'/resource'])
+                self.assertLess(self.clock.now,15)
+                self.assertNotIn(PREVIEW,[r.url for r in ydl.requests])
+    def test_moderate_stream_that_is_almost_done_does_not_restart(self):
+        target,ydl=self.download(lambda r:self.response(48*1024))
+        self.assertEqual(target.read_bytes(),self.data)
+        self.assertEqual(len(ydl.requests),1)
+    def test_96_kib_stream_does_not_switch_at_the_threshold(self):
+        out=io.BytesIO();Image.new('RGB',(1024,1024)).save(out,format='BMP');self.data=out.getvalue()
+        target,ydl=self.download(lambda r:self.response(96*1024))
+        self.assertEqual(target.read_bytes(),self.data);self.assertEqual(len(ydl.requests),1)
+    def test_all_moderate_sources_are_bounded_and_restore_the_fastest_original(self):
+        out=io.BytesIO();Image.new('RGB',(1024,1024)).save(out,format='BMP');self.data=out.getvalue()
+        rates=dict(zip(ORIGINS,[38*1024,60*1024,48*1024]))
+        target,ydl=self.download(lambda r:self.response(rates[next(host for host in ORIGINS if r.url.startswith(host))]))
+        self.assertEqual(target.read_bytes(),self.data)
+        self.assertEqual([r.url for r in ydl.requests],[host+'/resource' for host in [ORIGINS[0],ORIGINS[1],ORIGINS[2],ORIGINS[1]]])
     def test_small_slow_image_does_not_switch(self):
         b=io.BytesIO();Image.new('RGB',(32,24)).save(b,format='BMP');self.data=b.getvalue()
         target,ydl=self.download(lambda r:self.response(2*1024))
@@ -127,5 +152,64 @@ class AdaptiveTests(unittest.TestCase):
     def test_last_original_is_not_mislabelled_as_web_preview(self):
         image=replace(self.post.images[0],fallback_urls=(ORIGINS[1]+'/resource',))
         self.assertEqual(self.writer._source_label(image,1,2),'原始素材 CDN')
+
+class OriginalSelectionTests(unittest.TestCase):
+    download = AdaptiveTests.download
+    response = AdaptiveTests.response
+
+    def setUp(self):
+        AdaptiveTests.setUp(self)
+        out=io.BytesIO();Image.new('RGB',(1800,1800),(42,104,208)).save(out,format='BMP')
+        self.data=out.getvalue()
+
+    def test_large_moderate_original_reuses_selected_response_without_mixing_bytes(self):
+        other=io.BytesIO();Image.new('RGB',(1800,1800),(80,20,10)).save(other,format='BMP')
+        alternate=other.getvalue()
+        responses=[]
+        def factory(request):
+            body=self.data if request.url.startswith(ORIGINS[0]) else alternate
+            response=TimedResponse(body,self.clock,160*1024 if request.url.startswith(ORIGINS[0]) else 2*1024*1024)
+            responses.append(response)
+            return response
+        target,ydl=self.download(factory)
+        self.assertEqual(target.read_bytes(),alternate)
+        self.assertEqual([r.url for r in ydl.requests],[ORIGINS[0]+'/resource',ORIGINS[1]+'/resource'])
+        self.assertLess(self.clock.now,10)
+        self.assertTrue(all(response.closed for response in responses))
+        self.assertEqual(len([e for e in self.events if e['status']=='image-connecting']),2)
+
+    def test_large_fast_original_does_not_probe(self):
+        target,ydl=self.download(lambda r:self.response(4*1024*1024))
+        self.assertEqual(target.read_bytes(),self.data)
+        self.assertEqual(len(ydl.requests),1)
+
+    def test_unhelpful_samples_are_bounded_and_keep_primary_connection(self):
+        target,ydl=self.download(lambda r:self.response(160*1024))
+        self.assertEqual(target.read_bytes(),self.data)
+        self.assertEqual(len(ydl.requests),3)
+        self.assertEqual(ydl.requests[0].url,ORIGINS[0]+'/resource')
+        self.assertEqual(len([e for e in self.events if e['status']=='image-connecting']),1)
+
+    def test_reachable_exact_original_hint_changes_only_trusted_candidate_order(self):
+        self.writer._preferred_urls={ORIGINS[1]+'/resource',PREVIEW,ORIGINS[0]+'/other'}
+        target,ydl=self.download(lambda r:self.response())
+        self.assertEqual(ydl.requests[0].url,ORIGINS[1]+'/resource')
+        self.assertEqual(target.read_bytes(),self.data)
+
+    def test_cancel_during_probe_closes_both_connections_and_keeps_existing_output(self):
+        import threading
+        self.writer.cancel_event=threading.Event()
+        existing=self.folder/'10.bmp';existing.write_bytes(b'old-complete')
+        responses=[]
+        def factory(request):
+            response=self.response(160*1024)
+            responses.append(response)
+            if len(responses)>1:self.writer.cancel_event.set()
+            return response
+        with self.assertRaises(XhsCancelled):self.download(factory)
+        self.assertTrue(all(response.closed for response in responses))
+        self.assertEqual(existing.read_bytes(),b'old-complete')
+        self.assertFalse((self.folder/'.10.part').exists())
+
 
 if __name__=='__main__':unittest.main()

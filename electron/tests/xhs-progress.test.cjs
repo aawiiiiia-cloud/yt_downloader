@@ -96,6 +96,95 @@ test('actual cookie snapshot does not write a late file after cancellation', asy
   finish([]);await tick();
 });
 
+const noteContext={noteId:'6a8fbc2400000000070063fc',note:{imageList:[{fileId:'resource'}]}};
+function inspectionFixture(readPage) {
+  const tab={state:{},sequence:0,closed:false,assetsAbort:new AbortController(),
+    view:{webContents:{getURL:()=>`https://www.xiaohongshu.com/explore/${noteContext.noteId}`}}};
+  const requests=[],logs=[],result={site:'xiaohongshu',items:[]};
+  const app=fixture({tabs:{active:tab},cache:new Map(),closing:false,
+    invalidate(){},publish(){},log:text=>logs.push(text),readPage,
+    withCookies:request=>{requests.push(request);return {promise:Promise.resolve(result),cancel(){}};},
+  });
+  return {app,tab,requests,logs,result};
+}
+test('XHS ready-page parsing reads once and passes the existing note to Python',async()=>{
+  let reads=0;
+  const {app,tab,requests,result}=inspectionFixture(async(_script,_tab,_wait,signal)=>{
+    reads++;assert.equal(signal,tab.assetsAbort.signal);return noteContext;
+  });
+  await app.inspect(tab);
+  assert.equal(reads,1);assert.equal(requests[0].context,noteContext);
+  assert.equal(tab.state.result,result);assert.equal(tab.state.parsing,false);
+});
+test('XHS a briefly empty page is polled rather than immediately fetched again',async()=>{
+  let reads=0;
+  const {app,tab,requests}=inspectionFixture(async()=>++reads===1?null:noteContext);
+  await app.inspect(tab);
+  assert.equal(reads,2);assert.equal(requests.length,1);assert.equal(requests[0].context,noteContext);
+});
+test('XHS a page that stays empty falls back after a bounded wait',async()=>{
+  let reads=0;
+  const {app,tab,requests}=inspectionFixture(async()=>{reads++;return null;});
+  const started=Date.now();await app.inspect(tab);
+  assert.ok(Date.now()-started<2000);assert.ok(reads<=10);
+  assert.equal(requests.length,1);assert.equal(requests[0].context,null);
+});
+test('XHS navigation during the page grace does not launch a stale worker',async()=>{
+  const {app,tab,requests}=inspectionFixture(async()=>{tab.sequence++;return null;});
+  await app.inspect(tab);
+  assert.equal(requests.length,0);assert.equal(tab.state.result,null);
+});
+test('XHS video context does not wait for an image list',async()=>{
+  let reads=0;const context={...noteContext,note:{type:'video',video:{present:true},imageList:[]}};
+  const {app,tab,requests}=inspectionFixture(async()=>{reads++;return context;});
+  await app.inspect(tab);assert.equal(reads,1);assert.equal(requests[0].context,context);
+});
+
+test('actual page reader has a bounded fallback even if frame execution never settles',async()=>{
+  let timerCount=0;
+  const {app,tab}=inspectionFixture();
+  tab.view.webContents.isDestroyed=()=>false;
+  tab.view.webContents.mainFrame={executeJavaScript:()=>{timerCount++;return new Promise(()=>{});}};
+  const started=Date.now();
+  const result=await CollectorApp.prototype.readPage.call(app,'null',tab,true,tab.assetsAbort.signal,
+    {timeoutMs:25,fallback:true});
+  assert.equal(result,null);assert.equal(timerCount,1);assert.ok(Date.now()-started<500);
+});
+test('page fallback cannot swallow navigation cancellation',async()=>{
+  const {app,tab}=inspectionFixture();
+  tab.view.webContents.isDestroyed=()=>false;
+  tab.view.webContents.mainFrame={executeJavaScript:()=>new Promise(()=>{})};
+  const result=CollectorApp.prototype.readPage.call(app,'null',tab,true,tab.assetsAbort.signal,
+    {timeoutMs:1000,fallback:true});
+  tab.assetsAbort.abort();
+  await assert.rejects(result,error=>error.cancelled);
+});
+test('Bilibili passes ready browser data and uses a short fallback budget for missing data',async()=>{
+  const loaded={videoId:'BV1234567890',part:1};
+  const {app,tab,requests}=inspectionFixture(async(_script,_tab,wait,signal,options)=>{
+    assert.equal(wait,true);assert.equal(signal,tab.assetsAbort.signal);
+    assert.equal(options.timeoutMs,1200);assert.equal(options.fallback,true);return loaded;
+  });
+  const url='https://www.bilibili.com/video/BV1234567890?p=1';
+  tab.view.webContents.getURL=()=>url;tab.documentKey='bilibili:BV1234567890:1';
+  await app.inspect(tab);
+  assert.equal(requests.length,1);assert.equal(requests[0].context,loaded);
+});
+test('direct Vimeo inspection reads the existing player and freezes it for download',async()=>{
+  const {app,tab,requests}=inspectionFixture();
+  const url='https://vimeo.com/456/abcdef', player='https://player.vimeo.com/video/456?h=abcdef';
+  let reads=0;
+  const frame={url:player,executeJavaScript:async()=>{
+    reads++;return {video:{id:'456'},request:{files:{progressive:[]}}};
+  }};
+  Object.assign(tab.view.webContents,{getURL:()=>url,isDestroyed:()=>false,
+    mainFrame:{executeJavaScript:async()=>1,framesInSubtree:[frame]}});
+  await app.inspect(tab);
+  assert.equal(reads,1);assert.equal(requests.length,1);
+  assert.equal(requests[0].context.vimeo.sourceUrl,url);
+  assert.equal(app.cache.get(tab.state.inspectionId).context,requests[0].context);
+});
+
 test('actual task renderer inserts stage, progress and task log without rebuilding old state', () => {
   const source=fs.readFileSync(path.resolve(__dirname,'../ui/app.js'),'utf8');
   const start=source.indexOf('function renderTasks() {'),end=source.indexOf('\nfunction render(next)',start);

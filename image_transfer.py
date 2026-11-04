@@ -14,18 +14,25 @@ class ImageTransferPolicy:
     slow_window: float = 4.0
     slow_windows: int = 2
     minimum_rate: float = 32 * 1024
+    minimum_remaining_time: float = 2.0
     max_slow_sources: int = 3
     original_idle_timeout: float = 15.0
     log_interval: float = 5.0
+    probe_minimum_size: int = 8 * 1024 * 1024
+    probe_remaining_time: float = 32.0
+    probe_sample_size: int = 64 * 1024
+    probe_timeout: float = 1.0
+    probe_budget: float = 3.0
+    probe_count: int = 2
 
 
 class ImageRateMeter:
     """Rate is recent, slow decisions require separate consecutive windows."""
 
-    def __init__(self, started: float, policy: ImageTransferPolicy):
+    def __init__(self, started: float, policy: ImageTransferPolicy, initial_bytes: int = 0):
         self.started = started
         self.policy = policy
-        self.samples = deque([(started, 0)])
+        self.samples = deque([(started, initial_bytes)])
         self.speed: float | None = None
         self.slow_count = 0
         self._slow_started: float | None = None
@@ -46,7 +53,7 @@ class ImageRateMeter:
                 self._slow_started, self._slow_bytes = now, received
         elif now - self._slow_started >= self.policy.slow_window:
             rate = (received - self._slow_bytes) / (now - self._slow_started)
-            self.slow_count = self.slow_count + 1 if rate < self.policy.minimum_rate else 0
+            self.slow_count = self.slow_count + 1 if rate < self.policy.minimum_rate * (1 - 1e-9) else 0
             self._slow_started, self._slow_bytes = now, received
         return self.speed
 
@@ -56,7 +63,7 @@ class ImageRateMeter:
         if expected is not None:
             remaining = expected - received
             # Do not throw away a complete or nearly complete image.
-            if remaining <= max(64 * 1024, (self.speed or 0) * 2):
+            if remaining <= max(64 * 1024, (self.speed or 0) * self.policy.minimum_remaining_time):
                 return False
         return True
 

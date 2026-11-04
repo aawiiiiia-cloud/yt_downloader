@@ -55,11 +55,16 @@ def browser_vimeo(url,context,ydl,check_cancel=lambda:None):
     data=(context or {}).get('vimeo')
     if not data:return None
     target=external_url(url)
+    if 'sourceUrl' in data and external_url(data['sourceUrl']) != target:
+        raise ValueError('Vimeo browser source does not match the requested video/access hash')
     if not target or target['provider']!='vimeo': raise ValueError('播放器身份不匹配，请重新解析')
     if len(json.dumps(data))>1_500_000: raise ValueError('播放器数据过大，请重新解析')
     if str(data.get('videoId'))!=target['id'] or str((data.get('config') or {}).get('video',{}).get('id'))!=target['id']:
         raise ValueError('播放器内容已变化，请重新解析')
     captured=data.get('capturedAt')
+    if ('sourceUrl' in data and (not isinstance(captured,(int,float))
+            or not -30_000<time.time()*1000-captured<300_000)):
+        return None
     if not isinstance(captured,(int,float)) or not -30_000<time.time()*1000-captured<300_000:
         raise ValueError('外部视频地址已过期，请回到作品页重新解析外部视频')
     config=copy.deepcopy(data['config']);files=config.get('request',{}).get('files') or config.get('video',{}).get('files') or {}

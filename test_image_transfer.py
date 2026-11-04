@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 import unittest
+from dataclasses import replace
 from image_transfer import ImageRateMeter, ImageTransferPolicy, OriginalSourcePlan
 
 class RateMeterTests(unittest.TestCase):
@@ -43,6 +44,19 @@ class RateMeterTests(unittest.TestCase):
         self.assertLessEqual(len(m.samples),33)
     def test_clock_with_no_elapsed_time_has_no_fake_infinite_rate(self):
         m=self.meter();self.assertIsNone(m.update(0,123))
+    def test_configurable_remaining_time_protects_a_moderate_stream_near_completion(self):
+        policy=replace(ImageTransferPolicy(),minimum_rate=96*1024,minimum_remaining_time=8)
+        m=ImageRateMeter(0,policy)
+        for second in range(1,12):m.update(second,second*64*1024)
+        received=11*64*1024
+        self.assertFalse(m.should_switch(received,received+7*64*1024))
+        self.assertTrue(m.should_switch(received,received+9*64*1024))
+        self.assertTrue(m.should_switch(received,None))
+    def test_just_below_the_boundary_is_still_slow(self):
+        policy=replace(ImageTransferPolicy(),minimum_rate=96*1024)
+        m=ImageRateMeter(0,policy)
+        for second in range(1,12):m.update(second,second*95*1024)
+        self.assertTrue(m.should_switch(11*95*1024,3*1024*1024))
 
 class SourcePlanTests(unittest.TestCase):
     def test_other_originals_precede_retry_and_preview(self):

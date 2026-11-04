@@ -148,6 +148,7 @@ class AdaptiveNetworkTests(unittest.TestCase):
                     self.send_header('Content-Length', str(len(owner.data)))
                 self.end_headers()
                 delays = {'/trickle': 0.06, '/unknown-trickle': 0.06,
+                          '/moderate-trickle': 0.016,
                           '/slow-a': 0.02, '/slow-b': 0.01, '/slow-c': 0.03}
                 delay = delays.get(self.path, 0)
                 try:
@@ -188,6 +189,7 @@ class AdaptiveNetworkTests(unittest.TestCase):
             self.writer.transfer_policy, read_size=1024, startup_grace=0.1,
             slow_window=0.15, rate_window=0.2, log_interval=0.15,
             original_idle_timeout=0.2,
+            minimum_remaining_time=0.15,
         )
 
     def close_server(self):
@@ -229,6 +231,14 @@ class AdaptiveNetworkTests(unittest.TestCase):
                    and event['totalBytes'] is None and event['downloadedBytes']]
         self.assertTrue(unknown)
         self.assertTrue(all(event['percent'] is None for event in unknown))
+
+    def test_continuous_moderate_rate_switches_using_real_transport(self):
+        start=time.monotonic()
+        target=self.download(('/moderate-trickle','/ok'))
+        self.assertLess(time.monotonic()-start,4)
+        self.assertEqual(self.calls,['/moderate-trickle','/ok'])
+        self.assertEqual(target.read_bytes(),self.data)
+        self.assertTrue(any('[\u4f4e\u901f]' in line for line in self.logs))
 
     def test_original_header_timeout_tries_other_original_before_same_url(self):
         target = self.download(('/timeout', '/ok'))

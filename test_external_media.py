@@ -57,4 +57,26 @@ class ExternalMediaTests(unittest.TestCase):
         with mock.patch.object(YoutubeDL,'urlopen',side_effect=AssertionError('unexpected network')):
             with self.assertRaisesRegex(ValueError,'通过 Edge 登录并验证'):worker.download()
 
+class DirectVimeoTests(unittest.TestCase):
+    def test_direct_loaded_player_is_reused_without_network(self):
+        data={'vimeo':context()['vimeo']}
+        data['vimeo']['sourceUrl']='https://vimeo.com/456/abcdef'
+        with mock.patch.object(YoutubeDL,'urlopen',side_effect=AssertionError('unexpected network')):
+            result=Collector({'url':TARGET,'context':data},lambda *_:None).inspect()
+        self.assertEqual(result['items'][0]['formats'][0]['height'],240)
+
+    def test_direct_context_binds_unlisted_access_hash(self):
+        data={'vimeo':context()['vimeo']}
+        data['vimeo']['sourceUrl']='https://vimeo.com/456/fedcba'
+        with self.assertRaisesRegex(ValueError,'access hash'):
+            browser_vimeo(TARGET,data,mock.Mock())
+
+    def test_expired_direct_player_falls_back_without_reusing_old_media_urls(self):
+        data={'vimeo':context()['vimeo']}
+        data['vimeo'].update(sourceUrl=TARGET,capturedAt=0)
+        with mock.patch('vimeo_extractor.ParallelVimeoIE._parse_config') as parse:
+            self.assertIsNone(browser_vimeo(TARGET,data,mock.Mock()))
+            parse.assert_not_called()
+
+
 if __name__=='__main__':unittest.main()

@@ -66,5 +66,22 @@ async function run(collector,check,until,wait){
     const refreshed=await collectVimeo(tab.view.webContents,queued.referrer,[collector.externalTasks.get(queued)],{timeout:3000,retryUnready:true});
     check('an unready player retries its own iframe without reloading the project or losing the receipt',refreshed.size===1&&tab.state.inspectionId===receipt&&tab.state.result===result);
   }finally{collector.ensureYouTube=originalEnsure;collector.runTask=originalRun;collector.queue.add=originalAdd;}
+  const directUrl='https://player.vimeo.com/video/123456';
+  collector.openTab(directUrl,{group:'vimeo'});
+  await until(()=>collector.browser.webContents.getURL()===directUrl&&!collector.browser.webContents.isLoadingMainFrame(),
+    'direct Vimeo fixture did not load');
+  await collector.inspect();
+  const directTab=collector.tabs.active,directRecord=collector.cache.get(directTab.state.inspectionId);
+  const directItem=directRecord?.result.items[0];
+  check('direct Vimeo reads the already-loaded root player through the real Python parser',
+    directItem?.kind==='video'&&directItem.formats[0].height===240&&directRecord.context.vimeo.sourceUrl===directUrl);
+  check('direct Vimeo keeps signed player configuration outside public state',
+    !JSON.stringify(collector.publicState()).includes('privateVimeoStream'));
+  let directSpec;
+  collector.queue.add=spec=>{directSpec=spec;return 'direct-vimeo-fixture';};
+  try{await collector.download({inspectionId:directTab.state.inspectionId,itemIndex:0,formatId:directItem.formats[0].id});}
+  finally{collector.queue.add=originalAdd;}
+  check('direct Vimeo queues the frozen browser context without requiring a Behance module',
+    directSpec.context===directRecord.context&&!directSpec.context.externalSource);
 }
 module.exports={run};

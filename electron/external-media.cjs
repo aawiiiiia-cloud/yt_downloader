@@ -52,17 +52,18 @@ async function collectVimeo(web,sourceUrl,entries,{signal,timeout=30000,refresh=
   check();
   const targets=entries.filter(row=>row.provider==='vimeo').slice(0,24);
   if(!targets.length)return found;
+  const started=Date.now(),deadline=started+timeout;
+  const within=promise=>bounded(promise,signal,Math.max(1,Math.min(1500,deadline-Date.now())));
   const throttling=web.getBackgroundThrottling?.();web.setBackgroundThrottling?.(false);
   try {
     // Eager loading uses the actual iframe URL already declared by the website.
     // It does not scroll, play media, inject new frames or guess access parameters.
-    const prepare=()=>bounded(web.mainFrame.executeJavaScript(`(()=>{const ids=${JSON.stringify(targets.map(row=>row.id))};let count=0;for(const frame of document.querySelectorAll('iframe')){try{const u=new URL(frame.src);if(u.hostname==='player.vimeo.com'&&ids.includes(u.pathname.split('/').pop())){frame.loading='eager';count++;}}catch{}}return count;})()`),signal).catch(error=>{if(error.cancelled)throw error;return 0;});
-    await prepare();
+    const prepare=()=>within(web.mainFrame.executeJavaScript(`(()=>{const ids=${JSON.stringify(targets.map(row=>row.id))};let count=0;for(const frame of document.querySelectorAll('iframe')){try{const u=new URL(frame.src);if(u.hostname==='player.vimeo.com'&&ids.includes(u.pathname.split('/').pop())){frame.loading='eager';count++;}}catch{}}return count;})()`)).catch(error=>{if(error.cancelled)throw error;return 0;});
     if(refresh)for(const frame of web.mainFrame.framesInSubtree){
       const entry=externalUrl(frame.url);
-      if(entry&&targets.some(row=>row.url===entry.url))await bounded(frame.executeJavaScript('location.reload()'),signal).catch(error=>{if(error.cancelled)throw error;});
+      if(entry&&targets.some(row=>row.url===entry.url))await within(frame.executeJavaScript('location.reload()')).catch(error=>{if(error.cancelled)throw error;});
     }
-    const started=Date.now(),deadline=started+timeout,reloaded=new Set();let previous=-1,totalBytes=0;
+    const reloaded=new Set();let previous=-1,totalBytes=0;
     do {
       check();
       const present=await prepare();
@@ -70,21 +71,21 @@ async function collectVimeo(web,sourceUrl,entries,{signal,timeout=30000,refresh=
         const frame=web.mainFrame.framesInSubtree.find(frame=>externalUrl(frame.url)?.url===row.url);
         if(!frame)return;
         try {
-          const config=await bounded(frame.executeJavaScript(vimeoConfigScript),signal);
+          const config=await within(frame.executeJavaScript(vimeoConfigScript));
           check();
           const bytes=config?JSON.stringify(config).length:0;
           if(String(config?.video?.id)===row.id && config.request?.files && totalBytes+bytes<=8000000){
             totalBytes+=bytes;found.set(row.key,{videoId:row.id,config,capturedAt:Date.now()});
           }
           if(!found.has(row.key)&&retryUnready&&!refresh&&!reloaded.has(row.url)&&Date.now()-started>=Math.min(8000,timeout/2)){
-            const blocked=await bounded(frame.executeJavaScript(`/(?:couldn.t verify the security|access to this content has been restricted|此视频不存在|this video does not exist)/i.test(document.body.innerText.slice(0,1000))`),signal);
-            if(blocked){reloaded.add(row.url);await bounded(frame.executeJavaScript('location.reload()'),signal).catch(error=>{if(error.cancelled)throw error;});}
+            const blocked=await within(frame.executeJavaScript(`/(?:couldn.t verify the security|access to this content has been restricted|此视频不存在|this video does not exist)/i.test(document.body.innerText.slice(0,1000))`));
+            if(blocked){reloaded.add(row.url);await within(frame.executeJavaScript('location.reload()')).catch(error=>{if(error.cancelled)throw error;});}
           }
         }catch(error){if(error.cancelled)throw error;}
       }));
       if(found.size!==previous){previous=found.size;onProgress(found.size,targets.length,present);}
       if(found.size===targets.length || Date.now()>=deadline)break;
-      await bounded(new Promise(resolve=>setTimeout(resolve,350)),signal,1000);
+      await bounded(new Promise(resolve=>setTimeout(resolve,Math.min(350,Math.max(0,deadline-Date.now())))),signal,1000);
     }while(Date.now()<deadline);
     check();return found;
   }finally{if(!web.isDestroyed()&&typeof throttling==='boolean')web.setBackgroundThrottling?.(throttling);}

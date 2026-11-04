@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from collector_errors import safe_error_text
 from image_transfer import ImageRateMeter, ImageTransferPolicy, OriginalSourcePlan
+from image_resume import OriginalResponse, Representation
 from image_summary import write_image_summary
 
 try:
@@ -48,6 +49,7 @@ IMAGE_OUTPUT_FORMATS = {
 XHS_ORIGINAL_IMAGE_ORIGINS = (
     "https://sns-na-i11.xhscdn.com",
     "https://sns-na-i10.xhscdn.com",
+    "https://sns-img-bd.xhscdn.com",
     "https://sns-na-i9.xhscdn.com",
     "https://sns-na-i8.xhscdn.com",
     "https://sns-na-i6.xhscdn.com",
@@ -56,7 +58,6 @@ XHS_ORIGINAL_IMAGE_ORIGINS = (
     "https://sns-na-i1.xhscdn.com",
     "https://sns-img-qc.xhscdn.com",
     "https://sns-img-ak.xhscdn.com",
-    "https://sns-img-bd.xhscdn.com",
     "https://sns-img-hw.xhscdn.com",
     "https://sns-img-qn.xhscdn.com",
 )
@@ -407,6 +408,7 @@ class XhsImageDownloader:
         image_quality: int = 95,
         user_agent: str | None = None,
         transfer_progress: Callable[[dict[str, Any]], None] | None = None,
+        preferred_urls: list[str] | None = None,
     ) -> None:
         self.cookie_file = cookie_file
         self.proxy = proxy.strip()
@@ -416,8 +418,13 @@ class XhsImageDownloader:
         self.item_progress = item_progress
         self.transfer_progress = transfer_progress
         self._completed_images = 0
-        self.transfer_policy = ImageTransferPolicy()
+        self.transfer_policy = ImageTransferPolicy(
+            minimum_rate=96 * 1024, minimum_remaining_time=8.0,
+        )
         self._origin_health: dict[str, tuple[int, float]] = {}
+        self._preferred_urls = set(
+            url for url in (preferred_urls or [])[:200] if isinstance(url, str)
+        ) if isinstance(preferred_urls, list) else set()
         normalized_format = image_format.strip().lower()
         if normalized_format not in IMAGE_OUTPUT_FORMATS:
             raise ValueError(f"不支持的图片输出格式: {image_format}")
@@ -549,13 +556,14 @@ class XhsImageDownloader:
         candidates = (image.url, *image.fallback_urls)
         originals = self._original_candidate_indices(image)
         policy = self.transfer_policy
+        probed: set[int] = set()
         plan = None
         if originals:
             ranks = {}
             for index in originals:
                 host = urlparse(candidates[index]).hostname or ""
                 penalty, rate = self._origin_health.get(host, (0, 0))
-                ranks[index] = (penalty, -rate, index)
+                ranks[index] = (penalty, -rate, 0 if candidates[index] in self._preferred_urls else 1, index)
             plan = OriginalSourcePlan(len(candidates), originals, ranks, policy.max_slow_sources)
             attempts = plan.attempts()
         else:
@@ -585,8 +593,17 @@ class XhsImageDownloader:
                 self.progress(f"[连接] 图片 {image.index} · 下载地址 {candidate_index + 1}/{len(candidates)} · "
                               f"尝试 {attempt}/2（单次网络等待超时 {timeout:g} 秒）"
                               f"{' · 原图节点 ' + host if is_original else ''}")
-                request = Request(image_url, headers={"Referer": post.source_url}, extensions=extensions)
-                with ydl.urlopen(request) as response:
+                headers = {"Referer": post.source_url, **({"Accept-Encoding": "identity"} if is_original else {})}
+                request = Request(image_url, headers=headers, extensions=extensions)
+                raw_response = ydl.urlopen(request)
+                opened = OriginalResponse(
+                    ydl, image_url, raw_response, headers, timeout,
+                    check_cancel=self._check_cancelled,
+                    on_recovery=lambda action, offset: self.progress(
+                        f"[Recovery] image {image.index}: {action}, offset {offset / 1024:.0f} KB"
+                    ),
+                ) if is_original else raw_response
+                with opened as response:
                     content_type = str(response.headers.get("Content-Type") or "")
                     mime = content_type.split(";", 1)[0].strip().lower()
                     generic_binary = mime in {"application/octet-stream", "binary/octet-stream"}
@@ -598,11 +615,21 @@ class XhsImageDownloader:
                     self._transfer(post, image, "image-receiving", received, expected)
                     started = last_progress = last_log = time.monotonic()
                     meter = ImageRateMeter(started, policy)
+                    generation = getattr(response, "generation", 0)
                     with open(temp_path, "wb") as handle:
                         while True:
                             self._check_cancelled()
                             block = response.read(policy.read_size)
                             now = time.monotonic()
+                            if getattr(response, "generation", 0) != generation:
+                                generation = response.generation
+                                handle.seek(0)
+                                handle.truncate()
+                                received = 0
+                                expected = _as_positive_int(response.headers.get("Content-Length"))
+                                started = last_progress = last_log = now
+                                meter = ImageRateMeter(now, policy)
+                                self._transfer(post, image, "image-connecting")
                             if not block:
                                 break
                             handle.write(block)
@@ -620,12 +647,31 @@ class XhsImageDownloader:
                                 last_log = now
                             if watch_slow and meter.should_switch(received, expected):
                                 raise _SlowOriginalTransfer()
+                            if (watch_slow and expected and expected >= policy.probe_minimum_size
+                                    and speed and speed >= policy.minimum_rate
+                                    and now - meter.started >= policy.startup_grace
+                                    and (expected - received) / speed >= policy.probe_remaining_time
+                                    and len(probed) < policy.probe_count):
+                                selected = self._probe_original(
+                                    ydl, response, candidates, originals, candidate_index,
+                                    headers, received, expected, speed, probed,
+                                )
+                                if selected is not None:
+                                    candidate_index = selected
+                                    image_url = candidates[selected]
+                                    host = urlparse(image_url).hostname or ""
+                                    previous_index = selected
+                                    self.progress(f"[Source] image {image.index}: selected original node {host}")
+                                # Sampling deliberately pauses the primary response.
+                                # Exclude that pause from low-rate decisions.
+                                meter = ImageRateMeter(time.monotonic(), policy, received)
                         elapsed = now - started
                         self._transfer(post, image, "image-receiving", received, expected,
                                        meter.update(now, received) if received else None)
                         handle.flush()
                         os.fsync(handle.fileno())
                     self._check_cancelled()
+                    extension = _image_extension(str(response.headers.get("Content-Type") or ""), image_url)
                     if expected is not None and received != expected:
                         raise XhsDownloadError(f"图片 {image.index} 下载不完整：应为 {expected} 字节，实际 {received} 字节")
                     if received <= 0:
@@ -688,6 +734,55 @@ class XhsImageDownloader:
                 self.progress(f"[失败] 图片 {image.index} 地址 {candidate_index + 1}/{len(candidates)} · "
                               f"已接收 {received / 1024:.0f} KB{elapsed_text}：{safe_error_text(exc)}")
         raise XhsDownloadError(f"图片 {image.index} 的原图和展示图地址均下载失败：{safe_error_text(last_error)}") from last_error
+
+    def _probe_original(self, ydl, current, candidates, originals, current_index,
+                        headers, received, expected, speed, probed):
+        """Sample alternate full responses only when a large transfer has high ETA."""
+        policy = self.transfer_policy
+        deadline = time.monotonic() + policy.probe_budget
+        for index in originals:
+            if index == current_index or index in probed:
+                continue
+            if len(probed) >= policy.probe_count or time.monotonic() >= deadline:
+                break
+            self._check_cancelled()
+            probed.add(index)
+            response = None
+            started = time.monotonic()
+            try:
+                response = ydl.urlopen(Request(
+                    candidates[index], headers=headers,
+                    extensions={"timeout": min(policy.probe_timeout, max(0.05, deadline - started))},
+                ))
+                representation = Representation.capture(response, candidates[index])
+                if (getattr(response, "status", 200) != 200 or representation.size != expected
+                        or not representation.identity or representation.mime != current.representation.mime):
+                    continue
+                chunks = []
+                length = 0
+                while length < policy.probe_sample_size and time.monotonic() < deadline:
+                    self._check_cancelled()
+                    block = response.read(min(policy.read_size, policy.probe_sample_size - length))
+                    if not block:
+                        break
+                    chunks.append(block)
+                    length += len(block)
+                elapsed = time.monotonic() - started
+                rate = length / elapsed if elapsed > 0 else 0
+                remaining_eta = (expected - received) / speed
+                alternate_eta = expected / rate if rate else float("inf")
+                if (length == policy.probe_sample_size
+                        and remaining_eta - alternate_eta >= max(3.0, remaining_eta * 0.2)):
+                    self._check_cancelled()
+                    current.adopt(candidates[index], response, b"".join(chunks))
+                    response = None
+                    return index
+            except Exception:
+                self._check_cancelled()
+            finally:
+                if response is not None:
+                    response.close()
+        return None
 
     def _validate_download(self, file: Path, image: XhsImage) -> None:
         """Site-specific checks before converting or atomically publishing an image."""

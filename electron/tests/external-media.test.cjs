@@ -35,3 +35,21 @@ test('navigation and cancellation discard late iframe responses without reading 
   web.getURL=()=>source.replace('/123/','/999/');
   await assert.rejects(collectVimeo(web,source,entries),error=>error.cancelled);
 });
+test('a direct Vimeo page can reuse its root player without a new frame or reload',async()=>{
+  const url='https://player.vimeo.com/video/456?h=abcdef';let reloads=0;
+  const root={url,executeJavaScript:async script=>{
+    if(script==='location.reload()')reloads++;
+    return script===vimeoConfigScript?{video:{id:'456'},request:{files:{progressive:[]}}}:0;
+  }};
+  root.framesInSubtree=[root];
+  const web={getURL:()=>url,isDestroyed:()=>false,mainFrame:root};
+  const found=await collectVimeo(web,url,[{...entries[0],url}],{timeout:100});
+  assert.equal(found.size,1);assert.equal(reloads,0);
+});
+test('unresponsive direct Vimeo frames respect the shared collection budget',async()=>{
+  const web=page(()=>new Promise(()=>{}));
+  web.mainFrame.executeJavaScript=()=>new Promise(()=>{});
+  const started=Date.now();
+  assert.equal((await collectVimeo(web,source,entries,{timeout:25})).size,0);
+  assert.ok(Date.now()-started<400);
+});

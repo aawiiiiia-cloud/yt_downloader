@@ -2,6 +2,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Assets, assetUrl, referrerOrigin, imageDimensions, readDimensions } = require('../assets.cjs');
+const originalHintUrl='https://sns-na-i10.xhscdn.com/spectrum/resource';
+test('recent original hints are exact, bounded, and cannot promote previews or unrelated URLs',()=>{
+  const assets=new Assets(()=>{throw new Error('unexpected fetch');});
+  assets.observeOriginal(originalHintUrl,'xiaohongshu');
+  const preview='https://sns-webpic-qc.xhscdn.com/resource!small';
+  assets.observeOriginal(preview,'xiaohongshu');
+  assets.observeOriginal(originalHintUrl+'?token=x','xiaohongshu');
+  assert.deepEqual(assets.sourceHints([originalHintUrl,preview,originalHintUrl+'?token=x',originalHintUrl+'/other']),
+    [originalHintUrl]);
+  assets.originalObservations.set(originalHintUrl,Date.now()-60001);
+  assert.deepEqual(assets.sourceHints([originalHintUrl]),[]);
+  for(let i=0;i<300;i++)assets.observeOriginal(originalHintUrl+i,'xiaohongshu');
+  assert.equal(assets.originalObservations.size,200);
+});
 const { duration, size, videoSize } = require('../ui/media-info.js');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAE0lEQVR4nGO8/Po+AwwwwVnoHABhQQKjPQkWWQAAAABJRU5ErkJggg==', 'base64');
 test('durations preserve seconds and support hours; unknown sizes are not zero', () => {

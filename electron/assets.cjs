@@ -89,7 +89,18 @@ async function readDimensions(response, maximum = 256 * 1024) {
   } finally {await reader.cancel().catch(()=>{});}
 }
 class Assets {
-  constructor(fetch) { this.fetch = fetch; this.cache = new Map(); this.previewRequests = new Map(); this.active = 0; this.metadataActive = 0; this.queue = []; }
+  constructor(fetch) { this.fetch = fetch; this.cache = new Map(); this.previewRequests = new Map(); this.originalObservations = new Map(); this.active = 0; this.metadataActive = 0; this.queue = []; }
+  observeOriginal(url, site) {
+    const parsed = new URL(url);
+    if (site !== 'xiaohongshu' || !/^sns-(?:na-i\d+|img-[a-z]+)\.xhscdn\.com$/.test(parsed.hostname) ||
+        parsed.search || parsed.pathname.includes('!')) return;
+    this.originalObservations.delete(url); this.originalObservations.set(url, Date.now());
+    while (this.originalObservations.size > 200) this.originalObservations.delete(this.originalObservations.keys().next().value);
+  }
+  sourceHints(values) {
+    // Header success is only reachability evidence, never a throughput estimate.
+    return [...new Set(values)].filter(url => Date.now() - (this.originalObservations.get(url) || 0) < 60000).slice(0, 200);
+  }
   limit(work, signal, kind = 'preview') {
     if (signal?.aborted) return Promise.reject(new Error('页面已切换'));
     return new Promise((resolve, reject) => {
@@ -167,6 +178,7 @@ class Assets {
         if (size > 0 && dimensions) info.resolve({ size, ...dimensions });
       }), mime = imageMime(bytes);
       const imageInfo = { size: bytes.length, ...dimensions };
+      this.observeOriginal(url, site);
       info.resolve(imageInfo);
       return this.remember(key, { dataUrl: `data:${mime};base64,${bytes.toString('base64')}` }, imageInfo);
     }, signal).finally(() => {
@@ -200,7 +212,7 @@ class Assets {
             const size = Number(range?.[1] || (response.status === 200 ? response.headers.get('content-length') : 0));
             const encoding = response.headers.get('content-encoding');
             const valid=response.ok && /^(image\/|application\/octet-stream)/i.test(type) && (!encoding || encoding === 'identity');
-            if(valid && size>0)knownSize=size;
+            if(valid && size>0){knownSize=size;this.observeOriginal(url,site);}
             const dimensions=valid && dimensionsWanted && method==='GET' ? await readDimensions(response) : (await response.body?.cancel(),{});
             if(valid && ((knownSize && (!dimensionsWanted || method==='GET')) || dimensions.width))
               return this.remember(key, { size:knownSize, ...dimensions, displayFallback: urls.length > 1 && url === urls.at(-1) });

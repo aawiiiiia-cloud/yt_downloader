@@ -408,6 +408,7 @@ class Collector:
             user_agent=self.request.get("userAgent"),
             item_progress=item_progress,
             transfer_progress=lambda data: self.emit("progress", data),
+            preferred_urls=self.request.get("originalSourceHints"),
         )
 
     def inspect(self) -> dict:

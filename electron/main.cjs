@@ -18,7 +18,7 @@ const { YouTubeProvider } = require('./youtube-provider.cjs');
 const { LoginState } = require('./login-state.cjs');
 const { openFolder } = require('./task-history.cjs');
 const { snapshotScript: behanceSnapshotScript } = require('./behance-page.cjs');
-const { externalEntries, collectVimeo } = require('./external-media.cjs');
+const { externalEntries, externalUrl, collectVimeo } = require('./external-media.cjs');
 const { snapshotScript: taobaoSnapshotScript } = require('./taobao-page.cjs');
 const { snapshotScript: zcoolSnapshotScript } = require('./zcool-page.cjs');
 const { classifyFailure, safeDetail } = require('./task-failure.cjs');
@@ -526,7 +526,7 @@ class CollectorApp {
     })();
     return this.track(handle);
   }
-  async readPage(script, tab = this.tabs.active, waitForValue = false, signal) {
+  async readPage(script, tab = this.tabs.active, waitForValue = false, signal, options = {}) {
     let timer, stopped = false;
     const sequence = tab.sequence;
     const wrapped = `(() => { if (document.readyState === 'loading') return {waiting: true};
@@ -543,15 +543,19 @@ class CollectorApp {
       }
     };
     let abort;
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimeout(() => options.fallback ? resolve(null) : reject(new Error('\u9875\u9762\u54cd\u5e94\u8f83\u6162\uff0c\u8bf7\u7a0d\u540e\u91cd\u65b0\u89e3\u6790')),
+        options.timeoutMs ?? 8000);
+    });
     try {
       // WebContents.executeJavaScript waits for all loading to stop, including ads.
       // The document frame can be read as soon as its DOM is ready.
       return await Promise.race([read(),
+        timeout,
         new Promise((_, reject) => {
           abort = () => reject(Object.assign(new Error('页面已切换或解析已取消'), { cancelled: true }));
           signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
-        }),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('页面响应较慢，请稍后重新解析')), 8000); })]);
+        })]);
     } finally { stopped = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   async inspect(tab = this.tabs.active) {
@@ -562,13 +566,28 @@ class CollectorApp {
     Object.assign(state, { parsing: true, result: null, inspectionId: null, error: '', logs: [] }); this.publish();
     let context = null;
     try {
-      if (siteForUrl(url) === 'xiaohongshu') context = await this.readPage(snapshotScript, tab);
-      if (siteForUrl(url) === 'behance') context = await this.readPage(behanceSnapshotScript, tab);
+      if (siteForUrl(url) === 'xiaohongshu') {
+        this.log('[解析] 正在读取当前笔记页面数据', tab);
+        const deadline = Date.now() + 1200;
+        do {
+          if (ticket !== tab.sequence || tab.closed || this.closing) return;
+          context = await this.readPage(snapshotScript, tab, false, tab.assetsAbort.signal,
+            { timeoutMs: Math.max(1, deadline - Date.now()), fallback: true });
+          if (context?.note && (context.note.imageList?.length || context.note.video || context.note.type === 'video')) break;
+          if (Date.now() >= deadline) break;
+          await new Promise(resolve => setTimeout(resolve, 150));
+        } while (Date.now() < deadline);
+        this.log(context?.note ? '[解析] 已取得当前笔记数据，复用页面解析' :
+          '[解析] 页面数据尚未就绪，使用笔记链接解析', tab);
+      }
+      if (siteForUrl(url) === 'behance') context = await this.readPage(behanceSnapshotScript, tab, false,
+        tab.assetsAbort.signal, { timeoutMs: 1200, fallback: true });
       if (siteForUrl(url) === 'zcool') {
         const deadline = Date.now() + 3500;
         do {
           if (ticket !== tab.sequence || tab.closed || this.closing) return;
-          context = await this.readPage(zcoolSnapshotScript, tab, false, tab.assetsAbort.signal);
+          context = await this.readPage(zcoolSnapshotScript, tab, false, tab.assetsAbort.signal,
+            { timeoutMs: Math.max(1, deadline - Date.now()), fallback: true });
           if (context && !context.mismatch && (context.images?.length || context.videos?.length)) break;
           await new Promise(resolve => setTimeout(resolve, 150));
         } while (Date.now() < deadline);
@@ -577,12 +596,23 @@ class CollectorApp {
         const deadline = Date.now() + 4500;
         do {
           if (ticket !== tab.sequence || tab.closed || this.closing) return;
-          context = await this.readPage(taobaoSnapshotScript, tab, false, tab.assetsAbort.signal);
+          context = await this.readPage(taobaoSnapshotScript, tab, false, tab.assetsAbort.signal,
+            { timeoutMs: Math.max(1, deadline - Date.now()), fallback: true });
           if (context && !context.mismatch && Object.values(context.groups || {}).some(rows => rows.length)) break;
           await new Promise(resolve => setTimeout(resolve, 200));
         } while (Date.now() < deadline);
       }
-      if (siteForUrl(url) === 'bilibili') context = await this.readPage(biliSnapshotScript, tab, /\/video\/BV[0-9A-Za-z]+/.test(new URL(url).pathname));
+      if (siteForUrl(url) === 'bilibili') context = await this.readPage(biliSnapshotScript, tab, true,
+        tab.assetsAbort.signal, { timeoutMs: 1200, fallback: true });
+      if (siteForUrl(url) === 'vimeo') {
+        const entry = externalUrl(url);
+        if (entry?.provider === 'vimeo') {
+          const key = 'direct-vimeo';
+          const configs = await collectVimeo(tab.view.webContents, url, [{ ...entry, key }],
+            { signal: tab.assetsAbort.signal, timeout: 1200 });
+          if (configs.has(key)) context = { vimeo: { ...configs.get(key), sourceUrl: url } };
+        }
+      }
       if (siteForUrl(url) === 'douyin') {
         context = await resolveDouyinContext({ url, signal: tab.assetsAbort.signal,
           cached: () => this.tabs.rows.map(row => row.douyinPage?.get(url)).find(Boolean),
@@ -750,6 +780,9 @@ class CollectorApp {
     const spec={ command: 'download', url: item.url, kind: item.kind, context: external?.context || snapshot.context,
       mediaId: item.mediaId, referrer: snapshot.result.site === 'behance' ? snapshot.url : undefined,
       indices, formatId, formatHasAudio: !!item.formats?.find(format => format.id === formatId)?.audio,
+      originalSourceHints: snapshot.result.site === 'xiaohongshu' && item.kind === 'images' ?
+        this.assets.sourceHints(item.images.filter(image => indices.includes(image.index))
+          .flatMap(image => [image.url, ...(image.fallback_urls || [])])) : undefined,
       settings: { ...this.settings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } };
     if(external)this.externalTasks.set(spec,{...external.entry,tabId:tab.id,sourceUrl:snapshot.url});
     const baseTitle = item.categoryLabel ? `${item.title} · ${item.categoryLabel}` : item.title;
