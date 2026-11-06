@@ -63,6 +63,31 @@ class SiteTabs {
   }
 }
 
+function nativeInstagramNavigation(source, target, searchOpen = false) {
+  try {
+    const url = new URL(source);
+    if (!['www.instagram.com', 'instagram.com'].includes(url.hostname) ||
+        !['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+        !['', '80', '443'].includes(url.port) || !contentKey(target)?.startsWith('instagram:')) return false;
+    return !!contentKey(source) || /^\/explore\/search(?:\/|$)/.test(url.pathname) || searchOpen;
+  } catch { return false; }
+}
+
+function instagramSearchOpen() {
+  return [...document.querySelectorAll('[role="search"] input, input[type="search"], input[placeholder], input[aria-label]')]
+    .some(input => {
+      const label = input.getAttribute('aria-label') || input.getAttribute('placeholder') || '';
+      if (input.type !== 'search' && !input.closest('[role="search"]') &&
+          !/^(?:search(?: input)?|\u641c\u7d22(?:\u8f93\u5165)?|\u641c\u5c0b(?:\u8f38\u5165)?)$/i.test(label.trim())) return false;
+      const rect = input.getBoundingClientRect(), style = getComputedStyle(input);
+      return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
+        rect.left < window.innerWidth && rect.top < window.innerHeight &&
+        style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+    });
+}
+const instagramSearchScript = `(() => typeof window.__collectorInstagramSearchOpen === 'function'
+  ? window.__collectorInstagramSearchOpen() : (${instagramSearchOpen.toString()})())()`;
+
 // Run in the remote page without Node or an IPC bridge. Capture ordinary detail-link
 // clicks before SPA routers consume them; the native window-open handler validates URLs.
 const linkScript = `(() => {
@@ -72,12 +97,42 @@ const linkScript = `(() => {
   const belongs = (host, domain) => host === domain || host.endsWith('.' + domain);
   const SITES = ${JSON.stringify(SITES)};
   const contentKey = ${contentKey.toString()};
+  const nativeInstagramNavigation = ${nativeInstagramNavigation.toString()};
+  const instagramSearchOpen = ${instagramSearchOpen.toString()};
+  // Instagram hides its search input behind the modal. Retain only the originating
+  // history entry, so closing/reopening a parsed post does not turn search into home.
+  let searchOrigin = null;
+  const searchEntryMatches = () => searchOrigin?.url === location.href &&
+    (!searchOrigin.key || searchOrigin.key === window.navigation?.currentEntry?.key);
+  const resetSearch = () => {
+    if (searchOrigin && !contentKey(location.href) && !searchEntryMatches()) searchOrigin = null;
+  };
+  const searchActive = () => {
+    resetSearch();
+    return instagramSearchOpen() || !!searchEntryMatches();
+  };
+  window.__collectorInstagramSearchOpen = searchActive;
+  window.navigation?.addEventListener('currententrychange', resetSearch);
+  window.addEventListener('popstate', resetSearch);
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !contentKey(location.href)) searchOrigin = null;
+  }, true);
   window.addEventListener('click', event => {
     if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     const anchor = event.composedPath().find(node => node?.tagName === 'A' && node.href);
-    if (!anchor || anchor.hasAttribute('download') || !contentKey(anchor.href) || contentKey(anchor.href) === contentKey(location.href)) return;
+    if (!anchor || anchor.hasAttribute('download')) return;
+    if (!contentKey(anchor.href)) { searchOrigin = null; return; }
+    if (contentKey(anchor.href) === contentKey(location.href)) return;
     // Xiaohongshu owns the click: its SPA opens a note overlay over the feed.
     if (siteForUrl(location.href) === 'xiaohongshu' && siteForUrl(anchor.href) === 'xiaohongshu') return;
+    // Search and related posts belong to Instagram's own modal/page router.
+    if (siteForUrl(location.href) === 'instagram' &&
+        nativeInstagramNavigation(location.href, anchor.href, searchActive())) {
+      if (!contentKey(location.href)) searchOrigin = {
+        url: location.href, key: window.navigation?.currentEntry?.key,
+      };
+      anchor.target = '_self'; return;
+    }
     // A part selector within the same Bilibili video remains in its current tab.
     const current = contentKey(location.href), next = contentKey(anchor.href);
     if (current?.startsWith('bilibili:') && current.split(':')[1] === next.split(':')[1]) return;
@@ -87,4 +142,4 @@ const linkScript = `(() => {
   document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
   document.addEventListener('play', event => { if (document.hidden) event.target.pause?.(); }, true);
 })()`;
-module.exports = { SiteTabs, linkScript, MAX_TABS };
+module.exports = { SiteTabs, linkScript, MAX_TABS, nativeInstagramNavigation, instagramSearchScript };

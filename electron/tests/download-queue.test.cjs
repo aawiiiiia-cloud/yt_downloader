@@ -108,6 +108,7 @@ for (const [site,url,mediaId] of [
   ['taobao','https://detail.tmall.com/item.htm?id=123','main'],
   ['behance','https://www.behance.net/gallery/123/Fixture',undefined],
   ['zcool','https://www.zcool.com.cn/work/ZNzQyNjY2ODg=.html','ZNzQyNjY2ODg='],
+  ['instagram','https://www.instagram.com/p/Deg1QJmknzi/',undefined],
 ]) {
   test(`${site}: a batch protects every selected image while a distinct image fills the second slot`, async () => {
     const {add,started,queue,handles}=controlled({globalConcurrency:5,siteConcurrency:2});

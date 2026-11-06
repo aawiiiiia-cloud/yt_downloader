@@ -7,6 +7,7 @@ const { app } = require('electron');
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { contentKey, siteForUrl } = require('./model.cjs');
+const { nativeInstagramNavigation } = require('./site-tabs.cjs');
 const { pythonExecutable } = require('./bridge.cjs');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 function reportUrl(value) {
@@ -59,6 +60,44 @@ async function run(collector, profile) {
             fs.writeFileSync(path.join(profile, '..', `behance-browser-context-${contentKey(url).split(':')[1]}.json`), JSON.stringify(context));
           }
           if (site === 'bilibili') console.log('LIVE: player data', await collector.readPage('({video:!!window.__INITIAL_STATE__?.videoData,play:!!window.__playinfo__})'));
+          if (site === 'instagram' && process.env.YT_COLLECTOR_TEST_METADATA === '1') {
+            result.metadataEvidence = await collector.readPage(`(() => {
+              const code = location.pathname.match(/\\/(?:p|reels?)\\/([^/]+)\\/?$/)?.[1], stack = [];
+              for (const script of document.querySelectorAll('script[data-sjs],script[type="application/json"]')) {
+                try { stack.push(JSON.parse(script.textContent)); } catch {}
+              }
+              const media = [];
+              let visited = 0;
+              while (stack.length && ++visited < 200000) {
+                const item = stack.pop();
+                if (!item || typeof item !== 'object') continue;
+                if (item.code === code && (item.video_versions || item.carousel_media)) {
+                  for (const row of item.carousel_media || [item]) {
+                    if (!row.video_versions?.length) continue;
+                    const xml = new DOMParser().parseFromString(row.video_dash_manifest || '', 'text/xml');
+                    media.push({
+                      fields: Object.keys(row).filter(key => /duration|length|size|video|dash/i.test(key)),
+                      duration: row.video_duration,
+                      videoVariants: row.video_versions.map(value => ({
+                        fields: Object.keys(value), width: value.width, height: value.height,
+                        bytes: value.file_size ?? value.content_length,
+                      })),
+                      manifest: [...xml.querySelectorAll('MPD,Period,Representation,SegmentBase')]
+                        .map(node => ({tag: node.localName, attributes: Object.fromEntries([...node.attributes]
+                          .filter(attr => !/url|token|signature/i.test(attr.name)).map(attr => [attr.name, attr.value]))})),
+                    });
+                  }
+                }
+                for (const child of Object.values(item)) if (child && typeof child === 'object') stack.push(child);
+              }
+              return {media: media.slice(0, 10),
+                postLinks: [...document.querySelectorAll('a[href]')]
+                  .map(anchor => new URL(anchor.href).pathname)
+                  .filter(path => /\/(?:p|reels?)\/[^/]+\/?$/.test(path)).slice(0, 30),
+                players: [...document.querySelectorAll('video')]
+                .map(video => ({duration: Number.isFinite(video.duration) ? video.duration : null, readyState: video.readyState}))};
+            })()`, undefined, false, undefined, { timeoutMs: 20000, fallback: true });
+          }
           await collector.inspect();
           const externalCheck=site==='behance'&&process.env.YT_COLLECTOR_TEST_EXTERNAL==='1';
           if(externalCheck)await collector.inspectExternal({inspectionId:collector.state.inspectionId});
@@ -86,6 +125,8 @@ async function run(collector, profile) {
           result.contentTitle = collector.state.result?.items?.[itemIndex]?.title;
           result.images = collector.state.result?.items?.[itemIndex]?.images?.length || 0;
           result.duration = collector.state.result?.items?.[itemIndex]?.duration;
+          if (process.env.YT_COLLECTOR_TEST_METADATA === '1')
+            result.formatMetadata = collector.state.result?.items?.[itemIndex]?.formats;
           if (site === 'behance') result.resourceSummary = collector.state.result?.items?.map(item => ({kind:item.kind, images:item.images?.length, formats:item.formats?.length, duration:item.duration, provider:item.provider}));
           if (site === 'behance') result.skippedExternal = collector.state.result?.skippedExternal || 0;
           visited.push({ tab: collector.tabs.active, receipt: collector.state.inspectionId, url: collector.state.url });
@@ -130,7 +171,8 @@ async function run(collector, profile) {
             const expectedSize = format?.size || (format?.bitrate * 1000 * item.duration / 8);
             if (expectedSize > 64000000) throw new Error('该验收画质预计超过 64 MB，不执行样本下载');
             const indices = item.kind === 'images' ? (process.env.YT_COLLECTOR_TEST_ALL_IMAGES === '1' ? item.images.map(image => image.index) : [item.images[0].index]) : [];
-            collector.settings.saveDir = path.join(profile, 'downloads', site);
+            collector.settings.saveDir = path.join(profile, 'downloads', site, contentKey(url).split(':').slice(1).join('-'));
+            fs.mkdirSync(collector.settings.saveDir, {recursive: true});
             const id = await collector.download({ inspectionId: collector.state.inspectionId, itemIndex,
               formatId: format?.id, indices });
             const task = collector.queue.tasks.find(t => t.id === id);
@@ -186,17 +228,95 @@ print(json.dumps({'decodedImages':images,'bytes':sum(i['bytes'] for i in images)
           const report = results.find(row => row.site === entry.tab.group);
           if (!next) report.linkTabCheck = 'no alternate detail link on this page';
           else {
+            report.clickedPostPath = new URL(next).pathname;
+            const sameTab = nativeInstagramNavigation(entry.url, next), tabCount = collector.tabs.rows.length;
+            const observedResponses = [], debuggerClient = entry.tab.view.webContents.debugger;
+            const observe = (_event, method, params) => {
+              if (method !== 'Network.responseReceived' || observedResponses.length >= 30) return;
+              try {
+                const url = new URL(params.response.url);
+                if (['www.instagram.com', 'instagram.com', 'i.instagram.com'].includes(url.hostname) &&
+                    /^\/(?:graphql\/query|api\/graphql|api\/v1\/(?:media|feed))(?:\/|$)/.test(url.pathname))
+                  observedResponses.push({ path: url.pathname, status: params.response.status, mime: params.response.mimeType });
+              } catch {}
+            };
+            if (entry.tab.group === 'instagram') debuggerClient.on('message', observe);
+            try {
             await entry.tab.view.webContents.mainFrame.executeJavaScript(`
               [...document.querySelectorAll('a[href]')].find(anchor => anchor.href === ${JSON.stringify(next)}).click()`, true);
             const deadline = Date.now() + 5000;
-            while (Date.now() < deadline && collector.tabs.active === entry.tab) await wait(100);
+            while (Date.now() < deadline && (sameTab ? contentKey(entry.tab.view.webContents.getURL()) !== contentKey(next) :
+              collector.tabs.active === entry.tab)) await wait(100);
             const opened = collector.tabs.active;
-            if (opened === entry.tab || opened.group !== entry.tab.group || contentKey(opened.url) !== contentKey(next) ||
-              contentKey(entry.tab.view.webContents.getURL()) !== contentKey(entry.url) || entry.tab.state.inspectionId !== entry.receipt)
-              throw new Error('真实网站详情链接新标签检查失败：' + entry.tab.group);
-            report.linkOpenedInGroup = true;
-            collector.closeTab(opened.id); collector.activateTab(entry.tab.id);
-            console.log('LIVE: real detail link opened a group tab and retained its source: ' + entry.tab.group);
+            if (sameTab) {
+              if (opened !== entry.tab || collector.tabs.rows.length !== tabCount ||
+                  contentKey(opened.view.webContents.getURL()) !== contentKey(next))
+                throw new Error('Instagram related post did not remain in its original tab');
+              report.relatedOpenedInSameTab = true;
+            } else {
+              if (opened === entry.tab || opened.group !== entry.tab.group || contentKey(opened.url) !== contentKey(next) ||
+                contentKey(entry.tab.view.webContents.getURL()) !== contentKey(entry.url) || entry.tab.state.inspectionId !== entry.receipt)
+                throw new Error('真实网站详情链接新标签检查失败：' + entry.tab.group);
+              report.linkOpenedInGroup = true;
+            }
+            if (entry.tab.group === 'instagram' && process.env.YT_COLLECTOR_TEST_RELATED_PARSE === '1') {
+              const loaded = Date.now() + 35000;
+              while (opened.view.webContents.isLoadingMainFrame() && Date.now() < loaded) await wait(200);
+              await wait(1600);
+              await collector.inspect(opened);
+              report.relatedFinalPath = new URL(opened.view.webContents.getURL()).pathname;
+              report.relatedPostParsed = !!opened.state.result?.items?.length &&
+                contentKey(opened.state.result.url) === contentKey(next) && collector.resultMatchesPage(opened);
+              report.relatedApiResponses = observedResponses;
+              report.relatedCache = {
+                observedPosts: opened.instagramPage?.cache.size || 0,
+                hasCurrentPost: !!opened.instagramPage?.get(next),
+              };
+              if (!report.relatedPostParsed) {
+                report.relatedPageEvidence = await collector.readPage(`(() => {
+                  const code = location.pathname.match(/\\/(?:p|reels?)\\/([^/]+)\\/?$/)?.[1], stack = [];
+                  const scripts = [...document.querySelectorAll('script[data-sjs],script[type="application/json"]')];
+                  for (const script of scripts) { try { stack.push(JSON.parse(script.textContent)); } catch {} }
+                  const matches = []; let visits = 0;
+                  while (stack.length && ++visits < 60000 && matches.length < 10) {
+                    const value = stack.pop();
+                    if (!value || typeof value !== 'object') continue;
+                    if (value.code === code || value.shortcode === code) matches.push({
+                      fields: Object.keys(value), mediaType: value.media_type,
+                      images: value.image_versions2?.candidates?.length || value.display_resources?.length || 0,
+                      videos: value.video_versions?.length || (value.video_url ? 1 : 0),
+                      children: value.carousel_media?.length || value.edge_sidecar_to_children?.edges?.length || 0,
+                    });
+                    for (const child of Object.values(value).slice(0, 500))
+                      if (child && typeof child === 'object' && stack.length + visits < 60000) stack.push(child);
+                  }
+                  return { scripts: scripts.length, matches, dialogs: document.querySelectorAll('[role=dialog]').length,
+                    players: [...document.querySelectorAll('video')].map(video => ({
+                      readyState: video.readyState, duration: Number.isFinite(video.duration) ? video.duration : null,
+                    })) };
+                })()`, opened, false, undefined, { timeoutMs: 3000, fallback: true });
+                fs.writeFileSync(path.join(profile, '..', 'live-link-tabs-result.json'), JSON.stringify({ results, profile }, null, 2));
+                console.log('LIVE: related post diagnostics', JSON.stringify({
+                  path: report.relatedFinalPath, responses: observedResponses, cache: report.relatedCache,
+                  page: report.relatedPageEvidence,
+                }));
+              }
+              if (!report.relatedPostParsed) throw new Error(opened.state.error || 'Related post parsing failed');
+              report.relatedSourceRetained = !sameTab && entry.tab.state.inspectionId === entry.receipt;
+            }
+            if (sameTab) {
+              collector.navigate(entry.url);
+              const restored = Date.now() + 35000;
+              while ((contentKey(entry.tab.view.webContents.getURL()) !== contentKey(entry.url) ||
+                entry.tab.view.webContents.isLoadingMainFrame()) && Date.now() < restored) await wait(200);
+              await collector.inspect(entry.tab); entry.receipt = entry.tab.state.inspectionId;
+              if (!entry.receipt || !collector.resultMatchesPage(entry.tab)) throw new Error('Original Instagram post did not restore');
+              console.log('LIVE: real Instagram related post used its original tab and parsed correctly');
+            } else {
+              collector.closeTab(opened.id); collector.activateTab(entry.tab.id);
+              console.log('LIVE: real detail link opened a group tab and retained its source: ' + entry.tab.group);
+            }
+            } finally { debuggerClient.removeListener('message', observe); }
           }
         }
       }

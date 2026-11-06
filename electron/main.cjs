@@ -9,7 +9,7 @@ const { SITES, navigationUrl, siteForUrl, contentKey, cookieText, readCookies, h
 const { pythonTask } = require('./bridge.cjs');
 const { Assets, readBody } = require('./assets.cjs');
 const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
-const { SiteTabs, linkScript, MAX_TABS } = require('./site-tabs.cjs');
+const { SiteTabs, linkScript, MAX_TABS, nativeInstagramNavigation, instagramSearchScript } = require('./site-tabs.cjs');
 const { taobaoPopupKind } = require('./browser-popups.cjs');
 const { TaobaoRelayGuard, relayHelpScript, isTaobaoRelayUrl } = require('./taobao-relay.cjs');
 const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-page.cjs');
@@ -25,6 +25,9 @@ const { classifyFailure, safeDetail } = require('./task-failure.cjs');
 const { loginPlan, loginHost, surfaceScript, waitForLogin } = require('./web-login.cjs');
 const { TaobaoHomeScroll } = require('./taobao-scroll.cjs');
 const { waitForPreparation } = require('./task-preflight.cjs');
+const { workerProxy } = require('./proxy-route.cjs');
+const { snapshotScript: instagramSnapshotScript, htmlSnapshotScript, completeContext: instagramComplete } = require('./instagram-page.cjs');
+const { InstagramNetwork } = require('./instagram-network.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -189,6 +192,7 @@ class CollectorApp {
     const web = view.webContents;
     if (tab.group === 'taobao') tab.homeScroll = new TaobaoHomeScroll(web);
     if (tab.group === 'douyin') tab.douyinPage = new DouyinPage(web);
+    if (tab.group === 'instagram') tab.instagramPage = new InstagramNetwork(web);
     web.setUserAgent(this.userAgent); web.setAudioMuted(true);
     // Native webpage views can receive the pointer while it crosses the divider.
     // Forward only an active local drag; the remote page has no resize IPC bridge.
@@ -216,11 +220,21 @@ class CollectorApp {
         const key = contentKey(next), current = contentKey(tab.state.url);
         const sameBiliVideo = current?.startsWith('bilibili:') && current.split(':')[1] === key?.split(':')[1];
         const sameXhsSite = group === 'xiaohongshu' && tab.group === group && siteForUrl(tab.state.url) === group;
-        if ((group && group !== tab.group) || (key && key !== current && !sameBiliVideo && !sameXhsSite)) {
+        const sameInstagramPage = nativeInstagramNavigation(tab.state.url, next);
+        if ((group && group !== tab.group) || (key && key !== current && !sameBiliVideo && !sameXhsSite && !sameInstagramPage)) {
           event.preventDefault(); tab.state.loading = false;
-          setImmediate(() => {
+          const sourceUrl = web.getURL(), sequence = tab.sequence;
+          setImmediate(async () => {
             if (this.closing || tab.closed) return;
-            try { this.openTab(next, { group: group || tab.group, reuse: true }); }
+            try {
+              if (tab.group === 'instagram' && group === 'instagram') {
+                const searchOpen = await web.mainFrame.executeJavaScript(instagramSearchScript).catch(() => false);
+                if (this.closing || tab.closed || web.isDestroyed() || web.getURL() !== sourceUrl || tab.sequence !== sequence) return;
+                // A plain link fallback from the sidebar search still uses its original view.
+                if (nativeInstagramNavigation(sourceUrl, next, searchOpen)) { await web.loadURL(next); return; }
+              }
+              this.openTab(next, { group: group || tab.group, reuse: true });
+            }
             catch (error) { tab.state.error = error.message; this.publish(); }
           });
           this.publish();
@@ -236,7 +250,7 @@ class CollectorApp {
       tab.state.loading = true; this.publish();
     });
     // A cancelled/provisional navigation must not discard the source tab's resources.
-    web.on('did-navigate', (_event, url) => { this.invalidate(tab, { preserveResult: !this.settings.autoParse }); tab.douyinPage?.reset(); tab.documentKey = contentKey(url); });
+    web.on('did-navigate', (_event, url) => { this.invalidate(tab, { preserveResult: !this.settings.autoParse }); tab.douyinPage?.reset(); tab.instagramPage?.reset(); tab.documentKey = contentKey(url); });
     web.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (!isMainFrame || tab.closed) return;
       // B站的静态 __playinfo__ 可能在 SPA 分P切换后仍指向上一段。
@@ -377,6 +391,7 @@ class CollectorApp {
   disposeTab(tab) {
     if (tab.closed) return;
     tab.closed = true; this.invalidate(tab); tab.assetsAbort.abort(); tab.douyinPage?.dispose(); tab.relayGuard?.dispose(); tab.homeScroll?.dispose();
+    tab.instagramPage?.dispose();
     for (const [popup, owner] of this.popups) if (owner === tab.id && !popup.isDestroyed()) popup.destroy();
     // A script-closed WebContentsView has already detached its native view and
     // no longer returns webContents. Do not access it as a still-live page.
@@ -471,12 +486,7 @@ class CollectorApp {
   }
   async effectiveProxy(url, configured) {
     if (configured) return configured;
-    const route = (await this.browserSession.resolveProxy(url)).split(';')[0].trim();
-    const match = route.match(/^(PROXY|HTTPS|SOCKS5?|SOCKS4)\s+(.+)$/i);
-    if (!match) return '';
-    const kind = match[1].toUpperCase();
-    const scheme = kind === 'SOCKS4' ? 'socks4' : kind.startsWith('SOCKS') ? 'socks5' : kind === 'HTTPS' ? 'https' : 'http';
-    return `${scheme}://${match[2]}`;
+    return workerProxy(await this.browserSession.resolveProxy(url));
   }
   withCookies(spec, onEvent) {
     let task, cancelled = false;
@@ -503,16 +513,22 @@ class CollectorApp {
         onEvent?.('log', '网络准备完成，正在启动下载器…');
         for (let attempt=0;attempt<2;attempt++) {
           const context=spec.command==='download'&&site==='vimeo'&&this.externalTasks.has(spec) ?
-            await this.externalDownloadContext(spec,controller.signal,attempt>0) : spec.context;
+            await this.externalDownloadContext(spec,controller.signal,attempt>0) :
+            site==='instagram' && attempt ? await this.refreshInstagramContext(spec,controller.signal) : spec.context;
           if(cancelled)throw Object.assign(new Error('操作已取消'),{cancelled:true});
           task = this.track(this.runTask({ ...spec, context, ...(siteForUrl(spec.url) === 'youtube' ? { providerUrl } : {}), youtubeVerified, settings: { ...spec.settings, proxy }, cookieFile, userAgent: this.userAgent }, (type, data) => {
             if (type === 'log') { logs.push(safeDetail(data)); if (logs.length > 35) logs.shift(); }
             onEvent?.(type, data);
           }));
           try {return await task.promise;} catch(error) {
-            if(attempt || cancelled || spec.command!=='download' || site!=='vimeo' || !this.externalTasks.has(spec) || !spec.context?.vimeo ||
-                ![401,403].includes(error.failure?.httpStatus || error.httpStatus) && !/HTTP (?:Error )?(?:401|403)/i.test(error.message+' '+(error.failure?.detail||''))) throw error;
-            onEvent?.('log','视频地址暂不可用，正在从原播放器重新获取一次…');
+            const statuses = site === 'instagram' ? [401,403,404,410] : [401,403];
+            const status = error.failure?.httpStatus || error.httpStatus ||
+              Number((error.message+' '+(error.failure?.detail||'')).match(/HTTP (?:Error )?(\d{3})/i)?.[1]);
+            const expired = statuses.includes(status);
+            const refreshable = site==='instagram' && spec.context?.instagram ||
+              site==='vimeo' && this.externalTasks.has(spec) && spec.context?.vimeo;
+            if(attempt || cancelled || spec.command!=='download' || !refreshable || !expired) throw error;
+            onEvent?.('log','素材地址暂不可用，正在从原页面重新获取一次…');
           }
         }
       } catch (error) {
@@ -558,6 +574,44 @@ class CollectorApp {
         })]);
     } finally { stopped = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
+  async fetchInstagramContext(value, signal) {
+    const key = contentKey(value);
+    if (!key?.startsWith('instagram:')) throw new Error('请打开 Instagram 帖子详情页');
+    let url = `https://www.instagram.com/p/${key.slice('instagram:'.length)}/`;
+    const abort = signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000);
+    for (let redirects = 0; redirects < 5; redirects++) {
+      const target = new URL(url);
+      if (target.protocol !== 'https:' || !['instagram.com','www.instagram.com'].includes(target.hostname) ||
+          target.username || target.password || target.port) throw new Error('Instagram 页面跳转地址不受支持');
+      if (/^\/(?:accounts\/login|challenge|checkpoint)(?:\/|$)/.test(target.pathname))
+        throw new Error('Instagram 需要登录或验证，请先在应用页面完成');
+      const response = await this.browserSession.fetch(url, { credentials: 'include', redirect: 'manual', signal: abort,
+        headers: { 'User-Agent': this.userAgent } });
+      if ([301,302,303,307,308].includes(response.status)) {
+        const next = response.headers.get('location'); await response.body?.cancel();
+        if (!next) throw new Error('Instagram 页面跳转地址为空');
+        url = new URL(next, url).href; continue;
+      }
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw Object.assign(new Error(`Instagram 页面请求失败：HTTP ${response.status}`), { httpStatus: response.status });
+      }
+      if (contentKey(url) !== key) { await response.body?.cancel(); throw new Error('Instagram 帖子身份已变化，请重新解析'); }
+      const html = (await readBody(response, 8 * 1024 * 1024)).toString('utf8');
+      // Native DOMParser parses inert HTML; the site's scripts never execute here.
+      return waitForPreparation(() => this.window.webContents.executeJavaScript(htmlSnapshotScript(html, value)),
+        { signal: abort, label: 'Instagram 页面数据解析' });
+    }
+    throw new Error('Instagram 页面跳转过多');
+  }
+  async refreshInstagramContext(spec, signal) {
+    const context = await this.fetchInstagramContext(spec.url, signal);
+    const ids = value => (value?.instagram?.post?.carousel_media || [value?.instagram?.post])
+      .map(row => String(row?.pk || ''));
+    if (!instagramComplete(context) || JSON.stringify(ids(context)) !== JSON.stringify(ids(spec.context)))
+      throw new Error('Instagram 素材列表已变化，请重新解析后下载');
+    return context;
+  }
   async inspect(tab = this.tabs.active) {
     const state = tab.state, url = tab.view.webContents.getURL();
     if (!contentKey(url)) throw new Error('请先在左侧打开视频、笔记、作品或商品详情页');
@@ -582,6 +636,25 @@ class CollectorApp {
       }
       if (siteForUrl(url) === 'behance') context = await this.readPage(behanceSnapshotScript, tab, false,
         tab.assetsAbort.signal, { timeoutMs: 1200, fallback: true });
+      if (siteForUrl(url) === 'instagram') {
+        this.log('[解析] 正在读取当前 Instagram 帖子页面', tab);
+        context = await this.readPage(instagramSnapshotScript, tab, false, tab.assetsAbort.signal,
+          { timeoutMs: 1200, fallback: true });
+        if (!instagramComplete(context)) {
+          const deadline = Date.now() + 1200;
+          do {
+            if (ticket !== tab.sequence || tab.closed || this.closing) return;
+            const observed = tab.instagramPage?.get(url);
+            if (instagramComplete(observed)) { context = observed; break; }
+            if (!tab.instagramPage?.owned) break;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } while (Date.now() < deadline);
+        }
+        if (!instagramComplete(context)) {
+          this.log('[解析] 页面数据尚未完整，使用浏览器网络补取本帖数据', tab);
+          context = await this.fetchInstagramContext(url, tab.assetsAbort.signal);
+        }
+      }
       if (siteForUrl(url) === 'zcool') {
         const deadline = Date.now() + 3500;
         do {
@@ -755,7 +828,7 @@ class CollectorApp {
     if (item.kind === 'images' && !image) throw new Error('图片不存在');
     if (mode === 'size') {
       if (!image) throw new Error('当前内容不是图片');
-      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal, ['taobao', 'zcool'].includes(site) ? item.url : undefined, site === 'zcool' || (site === 'taobao' && !(image.width && image.height)), !!data.refresh);
+      return this.assets.sourceSize([image.url, ...(image.fallback_urls || [])], site, this.tabs.active.assetsAbort.signal, ['taobao', 'zcool'].includes(site) ? item.url : undefined, site === 'zcool' || (['taobao','instagram'].includes(site) && !(image.width && image.height)), !!data.refresh);
     }
     const url = image ? image.preview_url || image.fallback_urls?.at(-1) || image.url : item.thumbnail;
     if (!url) throw new Error('当前页面未提供视频封面');

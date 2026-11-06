@@ -1,8 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://www.taobao.com/', zcool: 'https://www.zcool.com.cn/' };
-const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫', zcool: '站酷' };
+const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/explore', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://www.taobao.com/', zcool: 'https://www.zcool.com.cn/', instagram: 'https://www.instagram.com/' };
+const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫', zcool: '站酷', instagram: 'Instagram' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
 const openedLogs = new Set();
@@ -42,7 +42,7 @@ function loadPreview(frame, refresh = false) {
   frame.dataset.previewGeneration = generation;
   const current = () => frame.isConnected && state.inspectionId === receipt && selectedItem === itemIndex && frame.dataset.previewGeneration === generation;
   const image = state.result?.items?.[itemIndex]?.images?.find(image => image.index === Number(imageIndex));
-  const needDimensions = state.result?.site === 'zcool' || (state.result?.site === 'taobao' && !(image?.width && image?.height));
+  const needDimensions = state.result?.site === 'zcool' || (['taobao','instagram'].includes(state.result?.site) && !(image?.width && image?.height));
   const complete = value => value.size > 0 && (!needDimensions || (value.width && value.height));
   let previewFailed = false, metadataIncomplete = false;
   const img = frame.querySelector('img'), message = frame.querySelector('.preview-message'), retry = frame.querySelector('button');
@@ -149,6 +149,14 @@ function restoreResourceScroll() {
   const draft = drafts.get(state.activeTabId);
   if (draft?.receipt === state.inspectionId) $('resources-panel').scrollTop = draft.scroll || 0;
 }
+function revealActiveSite() {
+  const strip = document.querySelector('.site-links'), button = strip.querySelector('[data-site].active');
+  if (!button) return;
+  const area = strip.getBoundingClientRect(), item = button.getBoundingClientRect();
+  if (item.left < area.left) strip.scrollLeft += item.left - area.left;
+  else if (item.right > area.right) strip.scrollLeft += item.right - area.right;
+}
+new ResizeObserver(revealActiveSite).observe(document.querySelector('.site-links'));
 function renderBrowserTabs() {
   const signature = JSON.stringify([state.activeGroup, state.activeTabId, state.tabs]);
   if (signature === tabsSignature) return;
@@ -221,6 +229,7 @@ function renderTasks() {
 }
 function render(next) {
   const previousError = state?.error;
+  const previousGroup = state?.activeGroup;
   saveDraft();
   state = next;
   window.collectorLayout.load(state.settings.panelWidth);
@@ -233,6 +242,7 @@ function render(next) {
   $('parse').textContent = state.parsing ? '停止解析' : '解析当前页面';
   setLoading($('parse'), state.parsing);
   document.querySelectorAll('[data-site]').forEach(button => button.classList.toggle('active', button.dataset.site === state.activeGroup));
+  if (previousGroup !== state.activeGroup) revealActiveSite();
   const expired = state.loginExpired?.[selectedSite] || (selectedSite === 'youtube' && state.youtubeAuth === 'expired');
   const account = loginStatus.display(selectedSite, names[selectedSite], !!state.login[selectedSite], expired, state.youtubeAuth);
   $('login-state').textContent = account.text;
@@ -242,14 +252,15 @@ function render(next) {
   const loginBusy = !!state.loginRunning || !!state.importingCookies || !!state.openingWebLogin;
   const externalLoginOnly = ['youtube', 'vimeo'].includes(selectedSite);
   $('web-login').hidden = externalLoginOnly;
-  $('edge-login').hidden = ['behance', 'zcool'].includes(selectedSite);
-  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly || ['behance', 'zcool'].includes(selectedSite));
+  $('edge-login').hidden = ['behance', 'zcool', 'instagram'].includes(selectedSite);
+  document.querySelector('.login-tools').classList.toggle('external-login-only', externalLoginOnly || ['behance', 'zcool', 'instagram'].includes(selectedSite));
   $('web-login').disabled = loginBusy;
   $('web-login').textContent = state.openingWebLogin === selectedSite ? '正在打开…' : '登录';
   setLoading($('web-login'), state.openingWebLogin === selectedSite);
   document.querySelector('.login-help').textContent = (selectedSite === 'youtube' ? '通过 Edge 登录，下载前会验证。' : externalLoginOnly ? '通过 Edge 登录。' : '可在左侧网页登录，或通过 Edge 登录。') + '也可选择本站的 Netscape 格式 Cookies 文件（.txt）。右侧显示的是凭据状态，网页是否已登录请以左侧为准。';
   if (selectedSite === 'behance') document.querySelector('.login-help').textContent = '需要登录的作品，请在左侧完成 Adobe 登录；也可导入 Behance Cookies。账号状态以左侧网页为准。';
   if (selectedSite === 'zcool') document.querySelector('.login-help').textContent = '高清图片建议先登录站酷，再刷新作品页并重新解析；也可导入本站 Cookies。右侧只确认凭据存在，是否有效以左侧网页和站酷验证为准。';
+  if (selectedSite === 'instagram') document.querySelector('.login-help').textContent = 'Instagram 账号状态以左侧网页为准。';
   $('edge-login').disabled = loginBusy; $('cancel-login').hidden = !state.loginRunning;
   $('import-login').disabled = loginBusy;
   $('import-login').textContent = state.importingCookies ? '正在导入…' : '导入Cookies';
@@ -274,7 +285,7 @@ function render(next) {
   $('core-status').textContent = h ? (!h.ffmpeg ? '视频合并工具缺失，请查看设置' : '下载核心已连接 · 本地保存') : '正在连接下载核心…';
   setLoading($('core-status'), !h);
   document.querySelector('.status-dot').hidden = !h;
-  $('health-detail').textContent = h ? `视频合并：${h.ffmpeg ? '就绪' : '缺失'}；YouTube 解算：${h.node ? '就绪' : '缺少 Node'}；YouTube 增强：${h.provider ? '就绪' : '未就绪，部分画质可能不可用'}；Behance 解析：${h.packages?.['gallery-dl'] ? '就绪' : '缺少 gallery-dl'}` : '正在检查运行环境…';
+  $('health-detail').textContent = h ? `视频合并：${h.ffmpeg ? '就绪' : '缺失'}；YouTube 解算：${h.node ? '就绪' : '缺少 Node'}；YouTube 增强：${h.provider ? '就绪' : '未就绪，部分画质可能不可用'}；Behance / Instagram 解析：${h.packages?.['gallery-dl'] ? '就绪' : '缺少 gallery-dl'}` : '正在检查运行环境…';
   setLoading($('health-detail'), !h);
   document.querySelectorAll('.is-loading').forEach(alignLoadingAnimation);
 }

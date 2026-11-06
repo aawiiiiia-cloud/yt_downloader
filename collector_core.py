@@ -22,10 +22,13 @@ def checked_url(value: str) -> str:
     value = str(value).strip()
     parsed = urlparse(value)
     if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password or not site_for_url(value):
-        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo、抖音、Behance、淘宝和站酷的内容链接")
+        raise ValueError("目前支持 YouTube、B站、小红书、Vimeo、抖音、Behance、淘宝、站酷和 Instagram 的内容链接")
     if site_for_url(value) == 'zcool':
         from zcool_adapter import work_url
         return work_url(value)
+    if site_for_url(value) == 'instagram':
+        from instagram_adapter import post_url
+        return post_url(value)
     if site_for_url(value) == 'taobao':
         from taobao_adapter import product_url
         return product_url(value)
@@ -416,6 +419,9 @@ class Collector:
         from xhs_image_downloader import XhsVideoPost
         url = checked_url(self.request["url"])
         self.check_cancel()
+        if site_for_url(url) == 'instagram':
+            from instagram_adapter import inspect_post
+            return inspect_post(self, url)
         if site_for_url(url) == 'taobao':
             from taobao_adapter import inspect_product
             return inspect_product(self, url)
@@ -504,6 +510,9 @@ class Collector:
         self.check_cancel()
         self.emit("progress", {"status": "extracting", "percent": None, "speed": None})
         self.log("[准备] 正在获取资源信息与下载地址；网络连接或重试时可在任务日志查看状态")
+        if site_for_url(url) == 'instagram':
+            from instagram_adapter import download_post
+            return download_post(self, url, folder)
         if site_for_url(url) == 'taobao':
             from taobao_adapter import download_product
             return download_product(self, url, folder)

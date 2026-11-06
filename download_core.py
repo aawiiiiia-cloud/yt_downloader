@@ -19,6 +19,7 @@ def site_for_url(url: str) -> str | None:
         "behance": ("behance.net",),
         "taobao": ("taobao.com", "tmall.com"),
         "zcool": ("zcool.com.cn",),
+        "instagram": ("instagram.com",),
     }.items():
         if any(host == domain or host.endswith("." + domain) for domain in domains):
             return site

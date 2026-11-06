@@ -23,7 +23,7 @@ test('speed expires after six seconds and non-transfer phases discard stale numb
   assert.equal(taskSpeed({...task,status:'cancelling'},11000),'正在取消');
   assert.equal(taskProgress({status:'running',percent:null,downloadedBytes:1024**2}).text,'已接收 1.0 MB');
 });
-for (const site of ['youtube','bilibili','xiaohongshu','vimeo','douyin','behance','taobao','zcool']) {
+for (const site of ['youtube','bilibili','xiaohongshu','vimeo','douyin','behance','taobao','zcool','instagram']) {
   test(`${site} queue preserves real speed, zero and ETA; clears stages and final state`, async () => {
     let emit, finish;
     const queue=new DownloadQueue((_s,cb)=>{emit=cb;return {promise:new Promise(r=>finish=r),cancel(){}};},()=>{});

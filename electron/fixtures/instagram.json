@@ -1,0 +1,24 @@
+{
+  "pk": "4008437874647268578",
+  "code": "Deg1QJmknzi",
+  "taken_at": 1700000000,
+  "caption": {"text": "Instagram fixture"},
+  "user": {"pk": "10", "username": "fixture", "full_name": "Fixture author", "secret": "excluded"},
+  "carousel_media_count": 3,
+  "carousel_media": [
+    {"pk": "101", "code": "Bl", "media_type": 1, "image_versions2": {"candidates": [
+      {"url": "https://fixture.cdninstagram.com/101-small.jpg", "width": 4, "height": 3},
+      {"url": "https://fixture.cdninstagram.com/101-large.jpg?sig=fixture%2Btest", "width": 8, "height": 6}
+    ]}},
+    {"pk": "102", "media_type": 2, "video_duration": 12.5, "image_versions2": {"candidates": [
+      {"url": "https://fixture.cdninstagram.com/102.jpg", "width": 4, "height": 3}
+    ]}, "video_versions": [
+      {"url": "https://fixture.cdninstagram.com/102-large.mp4", "width": 720, "height": 1280},
+      {"url": "https://fixture.cdninstagram.com/102-small.mp4", "width": 360, "height": 640}
+    ]},
+    {"pk": "103", "media_type": 1, "image_versions2": {"candidates": [
+      {"url": "https://fixture.cdninstagram.com/103.jpg", "width": null, "height": null}
+    ]}}
+  ],
+  "private_token": "excluded"
+}

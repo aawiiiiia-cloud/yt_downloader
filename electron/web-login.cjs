@@ -8,6 +8,7 @@ const WEB_LOGIN = {
   douyin: { url: 'https://www.douyin.com/' },
   behance: { url: 'https://www.behance.net/login' },
   taobao: { url: 'https://login.taobao.com/member/login.jhtml', direct: true },
+  instagram: { url: 'https://www.instagram.com/accounts/login/', direct: true },
   zcool: { url: 'https://passport.zcool.com.cn/loginApp.do?appId=1006&cback=https%3A%2F%2Fwww.zcool.com.cn%2F', direct: true },
 };
 
@@ -20,6 +21,7 @@ function loginHost(site, value) {
   let url; try { url = new URL(value); } catch { return false; }
   if (url.protocol !== 'https:') return false;
   const host = url.hostname;
+  if (site === 'instagram') return host === 'www.instagram.com' && url.pathname.startsWith('/accounts/login');
   if (site === 'bilibili') return host === 'passport.bilibili.com';
   if (site === 'zcool') return host === 'passport.zcool.com.cn';
   if (site === 'taobao') return host === 'login.taobao.com' || host === 'login.tmall.com';

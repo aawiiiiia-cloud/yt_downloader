@@ -2,8 +2,8 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const { WEB_LOGIN, loginPlan, loginHost, surfaceScript, waitForLogin } = require('../web-login.cjs');
 
-test('embedded login covers all six supported sites and excludes external-only sites', () => {
-  assert.equal(Object.keys(WEB_LOGIN).length, 6);
+test('embedded login covers all seven supported sites and excludes external-only sites', () => {
+  assert.equal(Object.keys(WEB_LOGIN).length, 7);
   for (const site of Object.keys(WEB_LOGIN)) {
     assert.equal(new URL(loginPlan(site).url).protocol, 'https:'); new Function(surfaceScript(site));
   }

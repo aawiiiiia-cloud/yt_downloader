@@ -10,8 +10,11 @@ const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
 // retains Chromium's default background and occlusion behavior.
 const testFlags = ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
   '--disable-features=CalculateNativeWinOcclusion'];
-let result = spawnSync(executable, [...testFlags, '.', '--collector-smoke'], { cwd: root, env, stdio: 'inherit', timeout: 120000, windowsHide: true });
-if (result.status !== 0) process.exit(result.status || 1);
+let result = spawnSync(executable, [...testFlags, '.', '--collector-smoke'], { cwd: root, env, stdio: 'inherit', timeout: 600000, windowsHide: true });
+if (result.status !== 0) {
+  if (result.error) console.error(result.error.message);
+  process.exit(result.status || 1);
+}
 const report = JSON.parse(fs.readFileSync(path.join(root, 'electron-artifacts', 'smoke-result.json'), 'utf8'));
 result = spawnSync(executable, [...testFlags, '.', '--collector-persistence-check'], {
   cwd: root, env: { ...env, YT_COLLECTOR_HOME: report.profile }, stdio: 'inherit', timeout: 30000, windowsHide: true,

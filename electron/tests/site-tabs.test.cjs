@@ -2,18 +2,127 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { SiteTabs, MAX_TABS, linkScript } = require('../site-tabs.cjs');
+const { SiteTabs, MAX_TABS, linkScript, nativeInstagramNavigation, instagramSearchScript } = require('../site-tabs.cjs');
 
-function detailClick(source, target, modifiers = {}) {
-  let handler; const opened = [];
-  const event = { button: 0, ...modifiers, prevented: false, stopped: false,
-    composedPath: () => [{ tagName: 'A', href: target, hasAttribute: () => false }],
-    preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
-  vm.runInNewContext(linkScript, { URL, location: { href: source },
-    window: { addEventListener(name, callback) { if (name === 'click') handler = callback; }, open(url) { opened.push(url); } },
-    document: { addEventListener() {} } });
-  handler(event); return { event, opened };
+function linkPage(source, options = {}) {
+  const handlers = {}, opened = [], location = { href: source };
+  const navigation = { currentEntry: { key: 'search-entry' }, addEventListener(name, callback) { handlers[name] = callback; } };
+  const context = vm.createContext({ URL, location,
+    window: { innerWidth: 1440, innerHeight: 900,
+      navigation, addEventListener(name, callback) { handlers[name] = callback; }, open(url) { opened.push(url); } },
+    document: { addEventListener() {}, querySelectorAll: () => options.inputs || [] },
+    getComputedStyle: input => ({ visibility: 'visible', display: 'block', opacity: '1', ...input.style }) });
+  vm.runInContext(linkScript, context);
+  return {
+    click(target, modifiers = {}, clickOptions = options) {
+      const anchor = { tagName: 'A', href: target, target: clickOptions.target || '',
+        hasAttribute: name => name === 'download' && !!clickOptions.download };
+      const event = { button: 0, ...modifiers, prevented: false, stopped: false,
+        composedPath: () => [anchor], preventDefault() { this.prevented = true; },
+        stopImmediatePropagation() { this.stopped = true; } };
+      handlers.click(event); return { event, opened: [...opened], anchor };
+    },
+    navigate(url, key) { location.href = url; navigation.currentEntry.key = key; handlers.currententrychange?.(); },
+    escape() { handlers.keydown?.({ key: 'Escape' }); },
+    searchOpen() { return vm.runInContext(instagramSearchScript, context); },
+  };
 }
+function detailClick(source, target, modifiers = {}, options = {}) {
+  return linkPage(source, options).click(target, modifiers);
+}
+
+test('Instagram search results and related posts retain their native router in the current view', () => {
+  const target = 'https://www.instagram.com/fixture/p/DfFPRM6n0u9/';
+  for (const source of [
+    'https://www.instagram.com/explore/search/keyword/?q=fixture',
+    'https://www.instagram.com/explore/search/',
+    'https://www.instagram.com/p/Deg1QJmknzi/',
+    'https://www.instagram.com/fixture/reel/Deg1QJmknzi/',
+  ]) {
+    const { event, opened, anchor } = detailClick(source, target, {}, { target: '_blank' });
+    assert.equal(event.prevented, false); assert.equal(event.stopped, false);
+    assert.deepEqual(opened, []); assert.equal(anchor.target, '_self');
+    assert.equal(nativeInstagramNavigation(source, target), true);
+  }
+});
+
+test('Instagram sidebar search is recognized only while its search input is visible', () => {
+  const target = 'https://www.instagram.com/p/Deg1QJmknzi/';
+  const input = { type: 'text', closest: () => null, getAttribute: name => name === 'placeholder' ? 'Search' : null,
+    getBoundingClientRect: () => ({ width: 280, height: 36, left: 60, top: 60, right: 340, bottom: 96 }) };
+  const visible = detailClick('https://www.instagram.com/', target, {}, { inputs: [input], target: '_blank' });
+  assert.equal(visible.event.stopped, false); assert.equal(visible.anchor.target, '_self');
+  for (const hidden of [
+    { ...input, style: { visibility: 'hidden' } },
+    { ...input, style: { opacity: '0' } },
+    { ...input, getBoundingClientRect: () => ({ width: 0, height: 0 }) },
+    { ...input, getBoundingClientRect: () => ({ width: 280, height: 36, left: -400, top: 60, right: -120, bottom: 96 }) },
+    { ...input, getAttribute: () => 'Email' },
+  ]) {
+    assert.deepEqual(detailClick('https://www.instagram.com/', target, {}, { inputs: [hidden] }).opened, [target]);
+  }
+});
+
+function searchInput() {
+  return { type: 'search', closest: () => null, getAttribute: () => 'Search',
+    getBoundingClientRect: () => ({ width: 280, height: 36, left: 60, top: 60, right: 340, bottom: 96 }) };
+}
+test('Instagram search context survives hidden inputs and repeated modal parse/download/return cycles', () => {
+  const root = 'https://www.instagram.com/', first = root + 'p/Deg1QJmknzi/', second = root + 'p/DfFPRM6n0u9/';
+  const input = searchInput(), page = linkPage(root, { inputs: [input], target: '_blank' });
+  assert.equal(page.click(first).event.stopped, false);
+  page.navigate(first, 'post-entry');
+  input.style = { display: 'none' };
+  assert.equal(page.click(second).event.stopped, false);
+  page.navigate(second, 'related-entry');
+  page.navigate(root, 'search-entry');
+  assert.equal(page.searchOpen(), true);
+  for (const url of [second, first, second]) {
+    const { event, opened, anchor } = page.click(url);
+    assert.equal(event.prevented, false); assert.deepEqual(opened, []); assert.equal(anchor.target, '_self');
+    page.navigate(url, 'post-entry'); page.navigate(root, 'search-entry');
+  }
+});
+test('Instagram remembered search is scoped to its history entry and cleared on leaving search', () => {
+  const root = 'https://www.instagram.com/', target = root + 'p/Deg1QJmknzi/';
+  for (const destination of [root + 'fixture/', root]) {
+    const input = searchInput(), page = linkPage(root, { inputs: [input] });
+    page.click(target); page.navigate(target, 'post-entry'); input.style = { display: 'none' };
+    page.navigate(destination, 'new-entry');
+    assert.equal(page.searchOpen(), false); assert.deepEqual(page.click(target).opened, [target]);
+    page.navigate(root, 'search-entry');
+    assert.equal(page.searchOpen(), false);
+  }
+});
+test('Instagram explicit home links and search dismissal do not retain remembered search', () => {
+  const root = 'https://www.instagram.com/', target = root + 'p/Deg1QJmknzi/';
+  for (const dismiss of [page => page.click(root), page => page.escape()]) {
+    const input = searchInput(), page = linkPage(root, { inputs: [input] });
+    page.click(target); page.navigate(target, 'post-entry'); input.style = { visibility: 'hidden' };
+    page.navigate(root, 'search-entry'); assert.equal(page.searchOpen(), true);
+    dismiss(page);
+    assert.equal(page.searchOpen(), false); assert.deepEqual(page.click(target).opened, [target]);
+  }
+});
+
+test('Instagram home, profiles, explicit new tabs and cross-site links preserve their opening behavior', () => {
+  const target = 'https://www.instagram.com/p/Deg1QJmknzi/';
+  for (const source of ['https://www.instagram.com/', 'https://www.instagram.com/fixture/']) {
+    assert.deepEqual(detailClick(source, target).opened, [target]);
+    assert.equal(nativeInstagramNavigation(source, target), false);
+  }
+  for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+    const { event, anchor } = detailClick('https://www.instagram.com/explore/search/', target, modifiers, { target: '_blank' });
+    assert.equal(event.stopped, false); assert.equal(anchor.target, '_blank');
+  }
+  const otherSite = 'https://www.youtube.com/watch?v=fixture';
+  assert.deepEqual(detailClick('https://www.instagram.com/explore/search/', otherSite).opened, [otherSite]);
+  assert.equal(nativeInstagramNavigation('https://www.instagram.com/p/Deg1QJmknzi/', otherSite, true), false);
+  for (const source of ['https://instagram.com.evil.test/explore/search/', 'https://user@www.instagram.com/explore/search/',
+    'file:///explore/search/', 'https://www.instagram.com:8123/explore/search/']) {
+    assert.equal(nativeInstagramNavigation(source, target, true), false);
+  }
+});
 
 test('Xiaohongshu feed, search and profile clicks reach the native note overlay router', () => {
   const target = 'https://www.xiaohongshu.com/explore/0123456789abcdef01234567?xsec_source=pc_feed';

@@ -17,7 +17,12 @@ async function captureWindow(window) {
 }
 async function run(collector, profile, snapshotScript) {
   const results = [], warnings = [];
-  const check = (name, condition) => { assert.ok(condition, name); results.push(name); };
+  const started = Date.now();
+  const check = (name, condition) => {
+    assert.ok(condition, name); results.push(name);
+    fs.writeFileSync(path.join(profile, '..', 'smoke-progress.json'),
+      JSON.stringify({ checks: results.length, lastCheck: name, elapsedMs: Date.now() - started, profile }, null, 2));
+  };
   try {
     new Function(snapshotScript);
     await collector.healthTask.promise;
@@ -49,13 +54,15 @@ async function run(collector, profile, snapshotScript) {
     await session.defaultSession.protocol.handle('https', () => new Response('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="140"><rect width="100" height="140" fill="#eaf4ef"/></svg>', { headers: { 'content-type': 'image/svg+xml' } }));
     await collector.browserSession.protocol.handle('https', async request => {
       const resource = new URL(request.url);
+      const instagramFixture = require('./instagram-smoke.cjs').fixture(request);
+      if (instagramFixture) return instagramFixture;
       const homeScrollFixture = require('./taobao-scroll-smoke.cjs').fixture(request);
       if (homeScrollFixture) return homeScrollFixture;
       const loginFixture = require('./web-login-smoke.cjs').fixture(request);
       if (loginFixture) return loginFixture;
       const popupFixture = await require('./popup-smoke.cjs').fixture(request);
       if (popupFixture) return popupFixture;
-      if (resource.hostname === 'video.zcool.cn' || resource.hostname === 'img.zcool.cn' || resource.hostname === 'img.alicdn.com' || resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
+      if (resource.hostname.endsWith('.cdninstagram.com') || resource.hostname === 'video.zcool.cn' || resource.hostname === 'img.zcool.cn' || resource.hostname === 'img.alicdn.com' || resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
         assetRequests.push({ url:request.url, method:request.method, referer:request.headers.get('referer') });
         if (resource.hostname.endsWith('.hdslb.com') && !coverFailed) { coverFailed = true; return new Response('unavailable', {status:503}); }
         return new Response(request.method === 'HEAD' ? null : imageBytes, { headers: { 'content-type':'image/png', 'content-length':request.method === 'HEAD' ? '340000' : String(imageBytes.length) } });
@@ -186,6 +193,7 @@ async function run(collector, profile, snapshotScript) {
     youtubeLoggedIn = false;
     await require('./workspace-smoke.cjs').run(collector, check, until, wait, profile);
     await require('./new-sites-smoke.cjs').run(collector, check, until, wait);
+    await require('./instagram-smoke.cjs').run(collector, check, until, wait, profile);
     await require('./behance-smoke.cjs').run(collector, check, until, wait);
     await require('./taobao-smoke.cjs').run(collector, check, until, wait, assetRequests);
     await require('./taobao-scroll-smoke.cjs').run(collector, check, until, wait, warnings);

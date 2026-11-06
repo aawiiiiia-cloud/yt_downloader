@@ -15,6 +15,7 @@ const SITES = {
   // The official frontend requires both cookies; JSESSIONID/z_ui alone are anonymous/profile state.
   zcool: { name: '站酷', home: 'https://www.zcool.com.cn/', domains: ['zcool.com.cn'], cookieDomains: ['zcool.com.cn', 'zcool.cn'],
     auth: ['zcool_mt', 'zcool_logon_new'], authAll: true },
+  instagram: { name: 'Instagram', home: 'https://www.instagram.com/', domains: ['instagram.com'], auth: ['sessionid'] },
 };
 function belongs(host, domain) { return host === domain || host.endsWith('.' + domain); }
 function navigationUrl(value) {
@@ -41,6 +42,11 @@ function contentKey(value) {
       const id = url.hostname === 'youtu.be' ? path.slice(1) : url.searchParams.get('v') || path.match(/^\/(?:shorts|live|embed)\/([^/]+)/)?.[1];
       if (id) return `youtube:${id}`;
       if (path === '/playlist' && url.searchParams.get('list')) return `youtube:list:${url.searchParams.get('list')}`;
+    }
+    if (site === 'instagram' && ['www.instagram.com', 'instagram.com'].includes(url.hostname) &&
+        !url.username && !url.password && ['', '80', '443'].includes(url.port)) {
+      const code = path.match(/^\/(?:(?!accounts\/|stories\/|explore\/|direct\/|share\/|challenge\/|checkpoint\/)[A-Za-z0-9._]{1,30}\/)?(?:p|reels?)\/([A-Za-z0-9_-]{5,32})\/?$/)?.[1];
+      if (code) return `instagram:${code}`;
     }
     if (site === 'bilibili') {
       if (url.hostname === 'b23.tv' && path.length > 1) return value;
