@@ -24,7 +24,7 @@ async function loginChecks(collector, check, until) {
     path: '/', name, value, secure: true, httpOnly: true, expirationDate: Date.now() / 1000 + 3600 });
   const signedIn = () => ui("document.getElementById('login-state').textContent.includes('【已检测到登录凭据】如左侧网页显示未登录，请重新登录') && !document.getElementById('login-state').classList.contains('login-warning') && !document.getElementById('login-state').classList.contains('login-success')");
   const signedOut = () => ui("document.getElementById('login-state').textContent.includes('【未检测到登录凭据】建议登录') && document.getElementById('login-state').classList.contains('login-warning')");
-  const expired = () => ui("document.getElementById('login-state').textContent.includes('【已检测到登录凭据】如左侧网页显示未登录，请重新登录') && document.getElementById('login-state').classList.contains('login-warning')");
+  const expired = () => ui("document.getElementById('login-state').textContent.includes('\u51ed\u636e\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55') && document.getElementById('login-state').classList.contains('login-warning')");
   await set('JSESSIONID', 'zcool-fixture-visitor'); await collector.updateLogin();
   await until(signedOut, 'anonymous ZCOOL cookies incorrectly logged in');
   check('ZCOOL anonymous sessions show a red sign-in suggestion', !collector.state.login.zcool);

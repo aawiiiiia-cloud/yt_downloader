@@ -49,7 +49,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const mainPath = path.resolve(__dirname,'../main.cjs'), localRequire = createRequire(mainPath);
-const fakeApp = {setName(){},setPath(){},on(){},whenReady(){return new Promise(()=>{});}};
+const fakeApp = {setName(){},setPath(){},on(){},requestSingleInstanceLock(){return true;},quit(){},whenReady(){return new Promise(()=>{});}};
 const moduleObject = {exports:{}};
 vm.runInNewContext(fs.readFileSync(mainPath,'utf8'),{
   require:name=>name==='electron'?{app:fakeApp}:localRequire(name),
@@ -62,6 +62,7 @@ function fixture(overrides={}) {
     externalTasks:new Set(),track:task=>task,userAgent:'FixtureAgent',
     cookieSnapshot:async()=>path.join(__dirname,'nonexistent-fixture.cookies'),
     effectiveProxy:async()=>'',runTask:()=>({promise:Promise.resolve({count:1}),cancel(){}}),
+    credentials:{remove:file=>fs.rmSync(file,{force:true})},
   },overrides);
 }
 const spec = {command:'download',url:'https://www.xiaohongshu.com/explore/abc123?xsec_token=secret',settings:{}};
@@ -189,17 +190,19 @@ test('actual task renderer inserts stage, progress and task log without rebuildi
   const source=fs.readFileSync(path.resolve(__dirname,'../ui/app.js'),'utf8');
   const start=source.indexOf('function renderTasks() {'),end=source.indexOf('\nfunction render(next)',start);
   assert.ok(start>=0 && end>start);
-  const target={innerHTML:''},view={tasks:[{id:'fixture',title:'fixture image',status:'running',
+  const target={},view={tasks:[{id:'fixture',title:'fixture image',status:'running',
     detail:'image-connecting',percent:null,logs:['正在确认网络与系统代理设置…']}]};
   const context={$:()=>target,state:view,openedLogs:new Set(),folderErrors:new Map(),openingFolders:new Set(),clearingHistory:false,escape:text=>String(text ?? ''),
-    window:{collectorTaskProgress:taskProgress,collectorTaskSpeed:taskSpeed}};
+    window:{collectorRenderTasks:(container,tasks,options)=>{
+      assert.equal(container,target);assert.equal(tasks,view.tasks);assert.ok(options.openedLogs instanceof Set);
+      target.progress=taskProgress(tasks[0]);target.logs=tasks[0].logs;
+    }}};
   vm.runInNewContext(source.slice(start,end)+'\nrenderTasks();',context);
-  assert.match(target.innerHTML,/正在连接图片/);assert.match(target.innerHTML,/等待数据/);
-  assert.match(target.innerHTML,/<progress max="100"><\/progress>/);
-  assert.match(target.innerHTML,/确认网络与系统代理/);
+  assert.equal(target.progress.stage,'正在连接图片');assert.equal(target.progress.text,'等待数据');
+  assert.equal(target.progress.attribute,'');assert.match(target.logs[0],/确认网络与系统代理/);
   view.tasks[0].detail='image-receiving';view.tasks[0].percent=37;
   vm.runInNewContext('renderTasks();',context);
-  assert.match(target.innerHTML,/<progress max="100" value="37">/);assert.match(target.innerHTML,/37%/);
+  assert.equal(target.progress.attribute,' value="37"');assert.equal(target.progress.text,'37%');
   const html=fs.readFileSync(path.resolve(__dirname,'../ui/index.html'),'utf8');
   assert.ok(html.indexOf('task-progress.js')<html.indexOf('src="app.js"'));
 });

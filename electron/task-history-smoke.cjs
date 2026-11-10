@@ -28,7 +28,7 @@ async function run(collector, check, until, wait, profile) {
     await until(()=>ui('document.getElementById("login-state").classList.contains("login-warning")'),'logged out label');
     check('all four logged-out card borders match the red login label',await ui(borderScript));
     collector.state.login.xiaohongshu=true;collector.state.loginExpired.xiaohongshu=true;collector.publish();
-    await until(()=>ui('document.getElementById("login-state").textContent.includes("已检测到登录凭据")&&document.getElementById("login-state").classList.contains("login-warning")'),'rejected credentials label');
+    await until(()=>ui('document.getElementById("login-state").textContent.includes("凭据已失效")&&document.getElementById("login-state").classList.contains("login-warning")'),'rejected credentials label');
     check('expired credentials keep the red account border',await ui(borderScript));
     await wait(100);
     fs.writeFileSync(path.join(profile,'..','login-border-red.png'),(await collector.window.webContents.capturePage()).toPNG());
@@ -65,7 +65,7 @@ async function run(collector, check, until, wait, profile) {
     fs.writeFileSync(path.join(profile,'..','task-folder-missing.png'),(await collector.window.webContents.capturePage()).toPNG());
     fs.mkdirSync(output);fs.writeFileSync(path.join(output,'kept.txt'),'do not delete');
     await clickOpen();await until(()=>ui('!document.querySelector("[data-folder=history-completed]").disabled'),'successful folder open');
-    check('a successful retry clears the prior directory error',shellCalls===1&&await ui('!document.querySelector("[data-task-id=history-completed] .task-folder-error")'));
+    check('a successful retry clears the prior directory error',shellCalls===1&&await ui('document.querySelector("[data-task-id=history-completed] .task-folder-error").hidden'));
     mode='failure';await clickOpen();
     await until(()=>ui('document.querySelector(".task-folder-error")?.textContent.includes("无法打开目录")'),'OS failure feedback');
     check('resolved OS error strings also produce inline card feedback',shellCalls===2);
@@ -76,7 +76,7 @@ async function run(collector, check, until, wait, profile) {
     check('clear records persists immediately and keeps only the running and queued jobs',saved.length===2&&saved.some(task=>task.id===running)&&saved.some(task=>task.id===waiting)&&queue.active.size===1&&!jobs[0].cancelled);
     check('clear records leaves downloaded local files untouched',fs.readFileSync(path.join(moved,'fixture.png'),'utf8')==='local fixture media'&&fs.readFileSync(path.join(output,'kept.txt'),'utf8')==='do not delete');
     releaseOpen('late controlled failure');await wait(80);
-    check('a late folder failure cannot resurrect a cleared task or leave an orphan error',queue.tasks.length===2&&await ui('!document.querySelector(".task-folder-error")'));
+    check('a late folder failure cannot resurrect a cleared task or leave an orphan error',queue.tasks.length===2&&await ui('[...document.querySelectorAll(".task-folder-error")].every(row=>row.hidden)'));
     check('clear records is disabled while only active and queued jobs remain',await ui('document.getElementById("clear-history").disabled'));
     jobs[0].resolve({});await until(()=>jobs.length===2,'queue continues after clearing history');
     check('completing a retained worker still advances the retained queue',queue.tasks.find(task=>task.id===waiting).status==='running');

@@ -47,7 +47,7 @@ async function run(collector, check, until, wait, assetRequests) {
   await ui("document.getElementById('resources-tab').click()");
   present([video]);
   await until(() => ui("!document.querySelector('#part-select') && document.querySelector('.cover-frame img')?.naturalWidth>0"), 'ZCOOL video-only resources did not render');
-  check('ZCOOL video-only works render without an image collection', await ui("document.querySelector('#download').textContent==='下载所选'"));
+  check('ZCOOL video-only works render without an image collection', await ui("!document.querySelector('#resource-actions').hidden&&document.querySelector('#download').textContent==='下载视频'"));
   await ui("document.getElementById('resources-panel').scrollTop=0"); await wait(100);
   fs.writeFileSync(path.join(app.getPath('userData'), '..', 'zcool-video-panel.png'), (await collector.window.webContents.capturePage()).toPNG());
 }

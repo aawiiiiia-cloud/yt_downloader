@@ -60,7 +60,7 @@ async function run(collector, check, until, wait) {
   await tab.view.webContents.mainFrame.executeJavaScript("(() => { const node=document.getElementById('beconfig-store_state');const data=JSON.parse(node.textContent);data.project.project.modules=data.project.project.modules.filter(module=>module.__typename==='EmbedModule');node.textContent=JSON.stringify(data); })()");
   await collector.inspect();
   await until(()=>ui("document.querySelector('#skipped-external')?.textContent.includes('已跳过 1')"),'external-only summary did not render');
-  check('an external-only work displays a skip summary without a download action or parse error',!collector.state.error&&collector.state.result.items.length===0&&await ui("!document.getElementById('download')"));
+  check('an external-only work displays a skip summary without a download action or parse error',!collector.state.error&&collector.state.result.items.length===0&&await ui("document.getElementById('resource-actions').hidden"));
   await require('./external-media-smoke.cjs').run(collector,check,until,wait);
   collector.activateTab(source.id);
 }

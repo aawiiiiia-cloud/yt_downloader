@@ -17,10 +17,12 @@ async function captureWindow(window) {
 }
 async function run(collector, profile, snapshotScript) {
   const results = [], warnings = [];
+  const reliabilityOnly = process.argv.includes('--collector-reliability-only');
+  const report = path.join(profile, '..', reliabilityOnly ? 'reliability-result.json' : 'smoke-result.json');
   const started = Date.now();
   const check = (name, condition) => {
     assert.ok(condition, name); results.push(name);
-    fs.writeFileSync(path.join(profile, '..', 'smoke-progress.json'),
+    fs.writeFileSync(path.join(profile, '..', reliabilityOnly ? 'reliability-progress.json' : 'smoke-progress.json'),
       JSON.stringify({ checks: results.length, lastCheck: name, elapsedMs: Date.now() - started, profile }, null, 2));
   };
   try {
@@ -78,9 +80,24 @@ async function run(collector, profile, snapshotScript) {
       const html = new URL(request.url).searchParams.has('slow') ? fixture.replace('</body>', '<img src="/collector-slow-resource"></body>') : fixture;
       return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
     });
+    if (reliabilityOnly) {
+      await require('./reliability-smoke.cjs').run(collector, check, until, wait, profile);
+      check('focused checks leave no temporary cookie files', fs.readdirSync(collector.credentials.directory).length === 0);
+      collector.queue.close(); collector.youtubeProvider.close(); collector.credentials.close(); collector.persistence.close();
+      fs.writeFileSync(report, JSON.stringify({ ok: true, results, warnings, profile }, null, 2));
+      console.log(JSON.stringify({ ok: true, checks: results.length, profile }));
+      collector.destroyViews(); collector.window.destroy(); app.exit(0); return;
+    }
     for (const url of ['https://www.youtube.com/watch?v=fixture', 'https://www.bilibili.com/video/BVfixture', `https://www.xiaohongshu.com/explore/${a}`]) {
       collector.navigate(url);
-      await until(() => collector.browser.webContents.getURL() === url && !collector.browser.webContents.isLoadingMainFrame(), 'site did not load');
+      try {
+        await until(() => collector.browser.webContents.getURL() === url && !collector.browser.webContents.isLoadingMainFrame(), 'site did not load');
+      } catch (error) {
+        const web = collector.browser.webContents;
+        error.message += ': ' + JSON.stringify({ expected: url, actual: web.getURL(),
+          loading: web.isLoadingMainFrame(), error: collector.state.error });
+        throw error;
+      }
       check('embedded navigation: ' + new URL(url).hostname, collector.browser.webContents.getURL() === url);
       if (url.includes('youtube.com')) {
         const login = collector.login; let edgeRequested = false;
@@ -205,17 +222,19 @@ async function run(collector, profile, snapshotScript) {
     await require('./task-failure-smoke.cjs').run(collector, check, until, wait, profile);
     await require('./concurrency-smoke.cjs').run(collector, check, until, wait, profile);
     await require('./task-history-smoke.cjs').run(collector, check, until, wait, profile);
+    await require('./reliability-smoke.cjs').run(collector, check, until, wait, profile);
     collector.persist();
     const saved = fs.readFileSync(path.join(profile, 'history.json'), 'utf8');
     check('history does not store cookie snapshots', !saved.includes('fixture-secret') && !saved.includes('cookieFile'));
-    check('temporary cookie files are removed', fs.readdirSync(path.join(profile, 'tasks')).length === 0);
+    check('temporary cookie files are removed', fs.readdirSync(path.join(profile, 'tasks')).every(name=>name==='credentials') &&
+      fs.readdirSync(path.join(profile, 'tasks', 'credentials')).length === 0);
     await collector.browserSession.cookies.flushStore();
     check('persistent browser profile created', fs.existsSync(path.join(profile, 'Partitions')));
-    fs.writeFileSync(path.join(profile, '..', 'smoke-result.json'), JSON.stringify({ ok: true, results, warnings, profile }, null, 2));
+    fs.writeFileSync(report, JSON.stringify({ ok: true, results, warnings, profile }, null, 2));
     console.log(JSON.stringify({ ok: true, checks: results.length, profile }));
     collector.destroyViews(); collector.window.destroy(); app.exit(0);
   } catch (error) {
-    fs.writeFileSync(path.join(profile, '..', 'smoke-result.json'), JSON.stringify({ ok: false, results, warnings, error: error.stack, profile }, null, 2));
+    fs.writeFileSync(report, JSON.stringify({ ok: false, results, warnings, error: error.stack, profile }, null, 2));
     console.error(error); app.exit(1);
   }
 }

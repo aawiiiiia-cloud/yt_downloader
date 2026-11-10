@@ -82,8 +82,9 @@ test('rapid independent receipts are bounded; disposal resolves all pending flig
   for(let i=0;i<5;i++)all.push(feedback.fly(origin,f.target));
   assert.equal(f.icons.filter(i=>i.isConnected).length,3);feedback.clear();await Promise.all(all);assert.equal(f.timers.size,0);
 });
-const source=fs.readFileSync(path.resolve(__dirname,'../ui/app.js'),'utf8');
-const start=source.indexOf("  const imageButton = event.target.closest('[data-download-image]');"),end=source.indexOf('\n});',start);
+const source=fs.readFileSync(path.resolve(__dirname,'../ui/app.js'),'utf8').replace(/\r\n/g,'\n');
+const start=source.indexOf("  const imageButton = event.target.closest('[data-download-image]');"),
+  end=source.indexOf("\n}\n$('resources').addEventListener('click', resourceClick);",start);
 assert.ok(start>0&&end>start);
 function clickFixture({single=false, fail=false, switchPanel=false, changeReceipt=false, retryLogin=false}={}) {
   const actions=[],button={dataset:{downloadImage:'7'},getBoundingClientRect:()=>{actions.push('origin');return origin;}},target={};
@@ -144,11 +145,14 @@ test('actual button renderer locks only its own request in the selected resource
   const buttons=[1,2].map(index=>({dataset:{downloadImage:String(index)}})),batch={};
   const pending=new Map([[JSON.stringify(['receipt',0,1]),{}]]);
   const context={state:{inspectionId:'receipt',result:{site:'xiaohongshu',items:[{kind:'images'}]},settings:{}},selectedItem:0,
-    pendingDownloads:pending,$:id=>id==='download'?batch:null,document:{querySelectorAll:()=>buttons},setLoading(){}};
+    pendingDownloads:pending,$:id=>id==='download'?batch:['resource-actions','resources-panel'].includes(id)?{hidden:false}:null,
+    document:{querySelectorAll:selector=>selector==='[data-image]:checked'?[{}]:buttons},setLoading(){}};
   const render=()=>vm.runInNewContext(source.slice(begin,end)+'\nupdateMediaInfo();',context);
   render();assert.equal(buttons[0].disabled,true);assert.equal(buttons[1].disabled,false);assert.equal(batch.disabled,false);
   pending.set(JSON.stringify(['receipt',0,null]),{});render();assert.equal(batch.disabled,true);assert.equal(buttons[1].disabled,false);
   context.selectedItem=1;context.state.result.items.push({kind:'images'});render();assert.ok(buttons.every(b=>!b.disabled));assert.equal(batch.disabled,false);
+  context.document.querySelectorAll=selector=>selector==='[data-image]:checked'?[]:buttons;
+  render();assert.equal(batch.disabled,true);assert.ok(buttons.every(b=>!b.disabled));
 });
 test('speed ticker updates labels only; feedback script obeys existing CSP and load order', () => {
   const html=fs.readFileSync(path.resolve(__dirname,'../ui/index.html'),'utf8');

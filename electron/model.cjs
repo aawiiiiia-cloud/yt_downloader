@@ -164,8 +164,8 @@ class DownloadQueue {
   setLimits(settings) {
     this.limits = concurrencySettings(settings, true); this.changed(); this.pump();
   }
-  add(spec, title) {
-    const task = { id: randomUUID(), title, status: 'queued', percent: 0, logs: [], createdAt: Date.now(), spec };
+  add(spec, title, recovery = null) {
+    const task = { id: randomUUID(), title, status: 'queued', percent: 0, logs: [], createdAt: Date.now(), spec, recovery };
     this.tasks.unshift(task); this.changed(); this.pump(); return task.id;
   }
   list() {
@@ -173,11 +173,22 @@ class DownloadQueue {
     const pending = this.tasks.filter(task => pendingStatus(task.status));
     const recent = this.tasks.filter(task => !pendingStatus(task.status)).slice(0, Math.max(0, 60 - pending.length));
     const visible = new Set([...pending, ...recent]);
-    return this.tasks.filter(task => visible.has(task)).map(({ spec, process, ...task }) => task);
+    return this.tasks.filter(task => visible.has(task)).map(({ spec, process, ...task }) => ({
+      ...task, waitReason: task.status === 'queued' ? this.waitReason({ ...task, spec }) : '',
+    }));
+  }
+  waitReason(task) {
+    if (this.closing) return '\u961f\u5217\u6b63\u5728\u5173\u95ed';
+    if (this.active.size >= this.limits.globalConcurrency) return '\u7b49\u5f85\u5168\u5c40\u5e76\u53d1\u540d\u989d';
+    const running = [...this.active];
+    if (running.some(row => downloadsConflict(task.spec, row.spec))) return '\u7b49\u5f85\u540c\u4e00\u76ee\u6807\u4efb\u52a1\u5b8c\u6210';
+    if (running.filter(row => siteForUrl(row.spec?.url) === siteForUrl(task.spec?.url)).length >= this.limits.siteConcurrency)
+      return '\u7b49\u5f85\u672c\u7ad9\u5e76\u53d1\u540d\u989d';
+    return '\u7b49\u5f85\u6392\u5728\u524d\u9762\u7684\u4efb\u52a1';
   }
   clearFinished() {
     const before = this.tasks.length;
-    this.tasks = this.tasks.filter(task => this.active.has(task) || !['completed', 'failed', 'cancelled'].includes(task.status));
+    this.tasks = this.tasks.filter(task => task.recovering || this.active.has(task) || !['completed', 'failed', 'cancelled'].includes(task.status));
     const removed = before - this.tasks.length;
     if (removed) this.changed();
     return removed;
@@ -251,7 +262,7 @@ class DownloadQueue {
   retry(id) {
     const task = this.tasks.find(t => t.id === id);
     if (!task?.spec || !['failed', 'cancelled'].includes(task.status)) throw new Error('请重新解析该内容后再加入下载队列');
-    return this.add(task.spec, task.title);
+    return this.add(task.spec, task.title, task.recovery);
   }
   close() { this.closing = true; this.tasks.forEach(t => this.cancel(t.id)); }
 }

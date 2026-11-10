@@ -47,7 +47,7 @@ async function run(collector, check, until, wait, profile) {
     check('explicit credential failure marks only the matching site and survives a cookie recheck',
       collector.publicState().loginExpired.bilibili && !collector.publicState().loginExpired.vimeo);
     collector.switchSite('bilibili');
-    await until(() => ui("document.getElementById('login-state').textContent.includes('已检测到登录凭据') && document.getElementById('login-state').classList.contains('login-warning')"), 'rejected credentials header did not render');
+    await until(() => ui("document.getElementById('login-state').textContent.includes('\u51ed\u636e\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55') && document.getElementById('login-state').classList.contains('login-warning')"), 'rejected credentials header did not render');
     await ui("document.getElementById('tasks-tab').click()"); await wait(100);
     check('failed task cards show a Chinese reason and cancellation keeps its own message', await ui("(()=>{const cards=[...document.querySelectorAll('.task-card')];return cards.some(card=>card.textContent.includes('网络超时')&&card.querySelector('.task-error strong')?.textContent.includes('失败原因'))&&cards.some(card=>card.textContent.includes('手动取消')&&card.textContent.includes('操作已取消'))})()"));
     const bounds = await ui("(()=>{const r=document.querySelector('aside').getBoundingClientRect();return{x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}})()");

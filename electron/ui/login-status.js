@@ -2,6 +2,11 @@
   'use strict';
   function display(site, name, detected, expired) {
     const edgeLogin = site === 'youtube' || site === 'vimeo';
+    if (expired) return {
+      text: `${name} \u00b7 \u51ed\u636e\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55`,
+      title: '\u672c\u6b21\u8bf7\u6c42\u5df2\u786e\u8ba4\u767b\u5f55\u51ed\u636e\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u540e\u89e3\u6790',
+      warning: true, success: false,
+    };
     if (!detected) return {
       text: `${name} · 【未检测到登录凭据】${edgeLogin ? '请使用下方Edge登录' : '建议登录'}`,
       title: edgeLogin

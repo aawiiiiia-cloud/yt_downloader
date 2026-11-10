@@ -1,5 +1,6 @@
 'use strict';
 const assert = require('node:assert/strict');
+const { sourceUrl } = require('./task-recovery.cjs');
 
 async function run(collector, check, until, wait) {
   const tab = collector.tabs.active, web = tab.view.webContents;
@@ -24,13 +25,17 @@ async function run(collector, check, until, wait) {
     check('the manual-results reminder appears only in settings directly below automatic parsing',
       !collector.resultMatchesPage(tab) && await ui("(() => { const help = document.getElementById('auto-parse-help'); return help?.closest('#settings-panel') && help.previousElementSibling.contains(document.getElementById('auto-parse')) && help.textContent === '关闭后保留上次结果，手动解析才更新。' && !document.getElementById('retained-result-note') && !document.querySelector('#resources-panel #auto-parse-help'); })()"));
     check('retained previews remain usable after a swipe', (await collector.asset({ inspectionId: oldReceipt, itemIndex: 0 }, 'preview')).dataUrl.startsWith('data:image/'));
+    check('retained resources identify their original source and offer an enabled update action',
+      await ui(`!document.getElementById('result-source').hidden &&
+        document.getElementById('result-source-text').textContent.includes(${JSON.stringify(sourceUrl(oldSnapshot.url))}) &&
+        !document.getElementById('update-result').hidden && !document.getElementById('update-result').disabled`));
     const add = collector.queue.add; let saved;
     collector.queue.add = spec => { saved = spec; return 'retained-fixture'; };
     try { await collector.download({ inspectionId: oldReceipt, itemIndex: 0, formatId: format }); }
     finally { collector.queue.add = add; }
     check('downloading a retained result uses its original URL and browser video data',
       saved.url === oldResult.items[0].url && saved.context.videoId === oldSnapshot.context.videoId && saved.context.detail.aweme_id === initial.aweme.detail.aweme_id);
-    await ui("document.getElementById('parse').click()");
+    await ui("document.getElementById('update-result').click()");
     await until(() => !!tab.state.result && tab.state.inspectionId !== oldReceipt, 'manual parse did not update the snapshot');
     check('the manual parse button updates to the current video',
       tab.state.result.items[0].title === '手动更新后的视频 B' && collector.resultMatchesPage(tab));

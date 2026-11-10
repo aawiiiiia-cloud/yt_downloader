@@ -5,6 +5,7 @@ const homes = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bili
 const names = { youtube: 'YouTube', bilibili: 'B站', xiaohongshu: '小红书', vimeo: 'Vimeo', douyin: '抖音', behance: 'Behance', taobao: '淘宝 / 天猫', zcool: '站酷', instagram: 'Instagram' };
 let state, renderedId, selectedItem = 0, selectedSite = 'youtube', noticeTimer;
 let settingsDirty = false;
+let savingSettings = false;
 const openedLogs = new Set();
 const folderErrors = new Map(), openingFolders = new Set();
 let clearingHistory = false;
@@ -84,6 +85,9 @@ function loadPreview(frame, refresh = false) {
 }
 function updateMediaInfo() {
   const item = state?.result?.items?.[selectedItem];
+  $('resource-actions').hidden = $('resources-panel').hidden || !['images', 'video'].includes(item?.kind);
+  const compact = $('compact-view');
+  if (compact) compact.hidden = item?.kind !== 'images';
   if (!item) return;
   if (item.kind === 'video' && $('video-size')) {
     const value = mediaInfo.videoSize(item, $('format-select')?.value, $('audio-only')?.checked);
@@ -103,9 +107,12 @@ function updateMediaInfo() {
   });
   if (button) {
     const checkingYouTube = state.result.site === 'youtube' && state.youtubeAuth === 'checking';
-    button.disabled = pendingDownloads.has(pendingKey(null));
-    button.textContent = button.disabled ? '正在处理…' : checkingYouTube ? '正在验证登录…' : '下载所选';
-    setLoading(button, button.disabled || checkingYouTube);
+    const pending = pendingDownloads.has(pendingKey(null));
+    const count = document.querySelectorAll('[data-image]:checked').length;
+    button.disabled = pending || (item.kind === 'images' && !count);
+    button.textContent = pending ? '\u6b63\u5728\u5904\u7406\u2026' : checkingYouTube ? '\u6b63\u5728\u9a8c\u8bc1\u767b\u5f55\u2026' :
+      item.kind === 'images' ? `\u4e0b\u8f7d\u6240\u9009 \u00b7 ${count} \u5f20` : '\u4e0b\u8f7d\u89c6\u9891';
+    setLoading(button, pending || checkingYouTube);
   }
 }
 function showPanel(name) {
@@ -118,6 +125,15 @@ function showPanel(name) {
   }
   if (name === 'resources') { restoreDraft(); updateMediaInfo(); restoreResourceScroll(); }
   if (name === 'settings' && !settingsDirty) fillSettings();
+  updateResourceSource(); updateMediaInfo();
+}
+function updateResourceSource() {
+  const visible = !!state?.result && !$('resources-panel').hidden;
+  $('result-source').hidden = !visible;
+  if (!visible) return;
+  $('result-source-text').textContent = `${state.resultMatchesPage ? '\u6765\u6e90\uff1a' : '\u4fdd\u7559\u7684\u89e3\u6790\u7ed3\u679c\uff1a'}${state.resultSource || state.result.site}`;
+  $('update-result').hidden = !!state.resultMatchesPage;
+  $('update-result').disabled = state.parsing || !state.pageCanInspect;
 }
 function syncLayout() {
   const r = $('browser-slot').getBoundingClientRect();
@@ -204,7 +220,7 @@ function renderResources() {
   } else {
     html += `${previewFrame('cover', '视频封面')}<div class="media-summary"><span>时长 ${mediaInfo.duration(item.duration)}</span><span id="video-size">大小未知</span></div><div class="resource-options"><label>下载画质<select id="format-select"><option value="">最佳可用画质（自动合并音频）</option>${[...(item.formats || [])].reverse().filter(f => f.video).map(f => `<option value="${escape(f.id)}">${escape(f.height ? f.height + 'p' : f.note || f.id)}${f.fps ? ' · ' + f.fps + 'fps' : ''} · ${escape(f.ext)} · ${escape(f.id)}</option>`).join('')}</select></label><label class="check"><input id="audio-only" type="checkbox">仅下载音频（MP3）</label><label class="check"><input id="subtitles" type="checkbox">同时下载可用的中英文字幕</label></div>`;
   }
-  $('resources').innerHTML = html + '<button id="download" class="primary download-action">下载所选</button><p class="muted" id="resource-size-note"></p>';
+  $('resources').innerHTML = html + '<p class="muted" id="resource-size-note"></p>';
   restoreDraft(); updateMediaInfo(); restoreResourceScroll();
   previewObserver = new IntersectionObserver(entries => entries.forEach(entry => {
     if (entry.isIntersecting) { previewObserver.unobserve(entry.target); loadPreview(entry.target); }
@@ -216,16 +232,11 @@ function renderResources() {
   });
 }
 function renderTasks() {
-  const labels = { queued: '等待下载', running: '下载中', cancelling: '正在停止', cancelled: '已取消', completed: '已完成', failed: '下载失败' };
   const ids = new Set(state.tasks.map(task => task.id));
   for (const id of folderErrors.keys()) if (!ids.has(id)) folderErrors.delete(id);
   for (const id of openedLogs) if (!ids.has(id)) openedLogs.delete(id);
-  $('clear-history').disabled = clearingHistory || !state.tasks.some(task => ['completed', 'failed', 'cancelled'].includes(task.status));
-  $('tasks').innerHTML = state.tasks.length ? state.tasks.map(task => {
-    const error = task.status === 'failed' ? `<p class="task-error"><strong>失败原因：${escape(task.failure?.label || '原因未确定')}</strong><span>${escape(task.error || '请展开任务日志查看详情。')}</span></p>` : task.error ? `<p class="task-error">${escape(task.error)}</p>` : '';
-    const progress = window.collectorTaskProgress(task);
-    return `<article class="task-card" data-task-id="${escape(task.id)}"><div class="task-heading"><div class="task-title">${escape(task.title)}</div><span class="task-speed" data-task-speed="${escape(task.id)}" title="下载接收速度；等待、校验和转码阶段不显示旧速度"${['running', 'cancelling'].includes(task.status) ? '' : ' hidden'}>${escape(window.collectorTaskSpeed(task))}</span></div><div class="task-meta"><span class="${['running','cancelling'].includes(task.status)?'is-loading':''}" aria-busy="${['running','cancelling'].includes(task.status)}">${labels[task.status] || escape(task.status)}${progress.stage ? ' · ' + escape(progress.stage) : ''}</span><span>${escape(progress.text)}</span></div><progress max="100"${progress.attribute}></progress>${error}<div class="task-actions">${folderErrors.has(task.id) ? `<span class="task-folder-error" role="status">${escape(folderErrors.get(task.id))}</span>` : ''}${['queued', 'running'].includes(task.status) ? `<button data-cancel="${task.id}">取消</button>` : ''}${['failed', 'cancelled'].includes(task.status) && task.canRetry ? `<button data-retry="${task.id}">重试</button>` : ''}${task.status === 'completed' ? `<button data-folder="${escape(task.id)}"${openingFolders.has(task.id) ? ' disabled' : ''}>打开目录 ↗</button>` : ''}</div><details data-log="${task.id}" ${openedLogs.has(task.id) ? 'open' : ''}><summary>任务日志</summary><pre>${escape((task.logs || []).join('\n'))}</pre></details></article>`;
-  }).join('') : '<div class="empty"><strong>下载队列还是空的</strong><p>在资源页选择图片或视频，<br>加入队列后可以在这里查看进度。</p></div>';
+  $('clear-history').disabled = clearingHistory || !state.tasks.some(task => !task.recovering && ['completed', 'failed', 'cancelled'].includes(task.status));
+  window.collectorRenderTasks($('tasks'), state.tasks, { openedLogs, folderErrors, openingFolders });
 }
 function render(next) {
   const previousError = state?.error;
@@ -276,6 +287,13 @@ function render(next) {
     renderedId = id; renderResources();
   }
   updateMediaInfo();
+  updateResourceSource();
+  const warnings = [];
+  if (state.storageError) warnings.push('\u4fdd\u5b58\u5931\u8d25\uff1a' + state.storageError + '\uff0c\u8bf7\u68c0\u67e5\u78c1\u76d8\u7a7a\u95f4\u548c\u6743\u9650');
+  if (state.credentialError) warnings.push('\u4e34\u65f6\u51ed\u636e\u4fdd\u62a4\u6216\u6e05\u7406\u5931\u8d25\uff1a' + state.credentialError);
+  $('system-warning').hidden = !warnings.length;
+  $('system-warning-text').textContent = warnings.join('\uff1b');
+  $('retry-save').hidden = !state.storageError;
   if (state.error) notify(state.error);
   else if (previousError && $('notice').textContent === previousError) notify('');
   $('task-count').textContent = state.tasks.filter(t => ['running', 'queued', 'cancelling'].includes(t.status)).length;
@@ -307,9 +325,22 @@ $('browser-tabs').addEventListener('click', event => {
   else if (button?.dataset.tab) call('activate-tab', { id: button.dataset.tab });
 });
 for (const panel of ['resources', 'tasks', 'settings']) $(panel + '-tab').addEventListener('click', () => showPanel(panel));
-$('settings-panel').addEventListener('input', event => { if (event.target.matches('input:not([readonly]),select')) settingsDirty = true; });
-$('settings-panel').addEventListener('change', event => { if (event.target.matches('input:not([readonly]),select')) settingsDirty = true; });
-$('choose-folder').addEventListener('click', async () => { await call('choose-folder'); $('save-dir').value = state.settings.saveDir; });
+function settingsStatus() {
+  $('settings-state').textContent = savingSettings ? '\u6b63\u5728\u4fdd\u5b58\u2026' : settingsDirty ? '\u6709\u672a\u4fdd\u5b58\u66f4\u6539' : '\u5df2\u4fdd\u5b58';
+  $('settings-state').classList.toggle('dirty', settingsDirty);
+  $('save-settings').disabled = savingSettings; setLoading($('save-settings'), savingSettings);
+}
+function markSettingsDirty(event) {
+  if (event.target.matches('input:not([readonly]),select')) { settingsDirty = true; settingsStatus(); }
+}
+$('settings-panel').addEventListener('input', markSettingsDirty);
+$('settings-panel').addEventListener('change', markSettingsDirty);
+$('choose-folder').addEventListener('click', async () => {
+  const folder = await call('choose-folder');
+  if (folder) { $('save-dir').value = folder; settingsDirty = true; settingsStatus(); }
+});
+$('update-result').addEventListener('click', () => call('inspect'));
+$('retry-save').addEventListener('click', () => call('retry-save'));
 $('open-folder').addEventListener('click', () => call('open-folder'));
 $('clear-history').addEventListener('click', async () => {
   if (clearingHistory) return;
@@ -321,14 +352,21 @@ $('clear-history').addEventListener('click', async () => {
   finally { clearingHistory = false; renderTasks(); }
 });
 $('save-settings').addEventListener('click', async () => {
+  if (savingSettings) return;
+  const draft = () => ({ saveDir: $('save-dir').value, proxy: $('proxy').value, imageFormat: $('image-format').value,
+    autoParse: $('auto-parse').checked, globalConcurrency: $('global-concurrency').valueAsNumber,
+    siteConcurrency: $('site-concurrency').valueAsNumber });
   try {
     for (const id of ['global-concurrency', 'site-concurrency']) {
       if (!$(id).checkValidity()) { $('advanced-options').open = true; $(id).reportValidity(); return; }
     }
-    await window.collector.call('settings', { proxy: $('proxy').value, imageFormat: $('image-format').value, autoParse: $('auto-parse').checked,
-      globalConcurrency: $('global-concurrency').valueAsNumber, siteConcurrency: $('site-concurrency').valueAsNumber });
-    settingsDirty = false; notify('设置已保存。');
+    const submitted = draft();
+    savingSettings = true; settingsDirty = true; settingsStatus();
+    await window.collector.call('settings', submitted);
+    settingsDirty = JSON.stringify(draft()) !== JSON.stringify(submitted);
+    notify('\u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002');
   } catch (error) { notify(error.message); }
+  finally { savingSettings = false; settingsStatus(); }
 });
 $('edge-login').addEventListener('click', () => call('login', { site: selectedSite }));
 $('import-login').addEventListener('click', async () => {
@@ -349,12 +387,12 @@ $('resources').addEventListener('change', event => {
   if (event.target.id === 'audio-only') $('format-select').disabled = event.target.checked;
   updateMediaInfo();
 });
-$('resources').addEventListener('click', async event => {
+async function resourceClick(event) {
   const categoryButton = event.target.closest('[data-image-category]');
   if (categoryButton && !categoryButton.disabled) { saveDraft(); selectedItem = Number(categoryButton.dataset.imageCategory); renderResources(); return; }
   if(event.target.id==='inspect-external')return call('inspect-external',{inspectionId:state.inspectionId});
   if (event.target.dataset.retryPreview) { event.preventDefault(); loadPreview(event.target.closest('[data-preview]'), true); }
-  if (event.target.id === 'select-all') { const inputs = [...document.querySelectorAll('[data-image]')], all = inputs.every(i => i.checked); inputs.forEach(i => { i.checked = !all; }); }
+  if (event.target.id === 'select-all') { const inputs = [...document.querySelectorAll('[data-image]')], all = inputs.every(i => i.checked); inputs.forEach(i => { i.checked = !all; }); updateMediaInfo(); }
   const imageButton = event.target.closest('[data-download-image]');
   if (event.target.id === 'download' || imageButton) {
     event.preventDefault();
@@ -388,6 +426,11 @@ $('resources').addEventListener('click', async event => {
     } catch (error) { notify(error.message, error.code === 'YOUTUBE_AUTH_REQUIRED'); }
     finally { release(); }
   }
+}
+$('resources').addEventListener('click', resourceClick);
+$('resource-actions').addEventListener('click', resourceClick);
+$('compact-images').addEventListener('change', event => {
+  $('resources-panel').classList.toggle('compact-images', event.target.checked);
 });
 $('tasks').addEventListener('click', async event => {
   if (event.target.dataset.cancel) call('cancel-task', { id: event.target.dataset.cancel });

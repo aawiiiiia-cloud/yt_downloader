@@ -28,6 +28,10 @@ const { waitForPreparation } = require('./task-preflight.cjs');
 const { workerProxy } = require('./proxy-route.cjs');
 const { snapshotScript: instagramSnapshotScript, htmlSnapshotScript, completeContext: instagramComplete } = require('./instagram-page.cjs');
 const { InstagramNetwork } = require('./instagram-network.cjs');
+const { writeJson, Persistence } = require('./persistence.cjs');
+const { TempCredentials } = require('./temp-credentials.cjs');
+const { acquireInstance } = require('./single-instance.cjs');
+const { sourceUrl, makeRecovery, validateRecovery, recoveredSelection } = require('./task-recovery.cjs');
 
 const smoke = process.argv.includes('--collector-smoke');
 const liveCheck = process.argv.includes('--collector-live-check');
@@ -44,10 +48,6 @@ if (liveCheck) {
 }
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } }
-function writeJson(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file + '.tmp', JSON.stringify(data, null, 2), { mode: 0o600 }); fs.renameSync(file + '.tmp', file);
-}
 const snapshotScript = String.raw`(() => {
   const id = location.pathname.match(/\/(?:explore|discovery\/item|user\/profile\/[^/]+)\/([\da-f]{16,32})/i)?.[1];
   if (!id) return null;
@@ -84,7 +84,9 @@ class CollectorApp {
       ...concurrencySettings(savedSettings), settingsVersion: 1 };
     // Disable the former default once on upgrade, then remember explicit user choices.
     if (!savedSettings.settingsVersion) this.settings.autoParse = false;
-    this.shared = { health: null, login: {}, loginExpired: {}, loginRunning: null, importingCookies: false, openingWebLogin: null };
+    this.shared = { health: null, login: {}, loginExpired: {}, loginRunning: null, importingCookies: false, openingWebLogin: null,
+      storageError: '', credentialError: '' };
+    this.credentials = new TempCredentials(path.join(profile, 'tasks'), error => { this.shared.credentialError = error; });
     this.loginState = new LoginState(readJson(path.join(profile, 'login-errors.json'), {}));
     this.tabs = new SiteTabs(readJson(path.join(profile, 'tabs.json'), null));
     this.tabs.rows.forEach(tab => this.initializeTab(tab));
@@ -101,12 +103,21 @@ class CollectorApp {
     const history = readJson(path.join(profile, 'history.json'), []);
     this.queue.tasks = (Array.isArray(history) ? history : []).filter(t => t && typeof t === 'object').slice(0, 60).map(t => {
       const interrupted = ['queued', 'running', 'cancelling'].includes(t.status);
-      const task = { ...t, status: interrupted ? 'failed' : t.status };
+      const { spec, process: worker, recovery, recovering, ...saved } = t;
+      const task = { ...saved, recovery: validateRecovery(recovery), status: interrupted ? 'failed' : t.status };
+      task.speed = null; task.speedUpdatedAt = null; task.eta = null;
       if (task.status === 'failed') {
-        task.failure = classifyFailure(interrupted ? '上次任务已中断，请重新解析后下载' : t.failure || t.error, t.logs || []);
+        task.failure = classifyFailure(interrupted ? '上次任务已中断，可点击重试重新解析后下载' : t.failure || t.error, t.logs || []);
         task.error = task.failure.message;
       }
       return task;
+    });
+    this.persistence = new Persistence(profile, () => ({
+      'settings.json': this.settings, 'history.json': this.queue.list(),
+      'login-errors.json': this.loginState.invalid, 'tabs.json': this.tabs.serialize(),
+    }), error => {
+      if (this.shared.storageError === error) return;
+      this.shared.storageError = error; this.sendState();
     });
   }
   get state() { return this.tabs.active.state; }
@@ -125,24 +136,25 @@ class CollectorApp {
     const record = this.cache.get(tab.state.inspectionId);
     return !!record && contentKey(record.url) === contentKey(tab.state.url);
   }
-  publicState() { return { ...this.state, resultMatchesPage: this.resultMatchesPage(), activeTabId: this.tabs.activeId, activeGroup: this.tabs.active.group,
+  publicState() { return { ...this.state, resultMatchesPage: this.resultMatchesPage(),
+    resultSource: sourceUrl(this.cache.get(this.state.inspectionId)?.url) || '', pageCanInspect: !!contentKey(this.state.url),
+    activeTabId: this.tabs.activeId, activeGroup: this.tabs.active.group,
     tabs: this.tabs.rows.map(tab => ({ id: tab.id, group: tab.group, title: tab.title,
       url: tab.url, loading: tab.state?.loading || false, parsing: tab.state?.parsing || false })),
     settings: this.settings, youtubeAuth: this.youtubeAuth.status,
     loginExpired: { ...this.state.loginExpired, youtube: this.state.loginExpired.youtube || this.youtubeAuth.status === 'expired' },
-    tasks: this.queue.list().map(t => ({ ...t, canRetry: !!this.queue.tasks.find(row => row.id === t.id)?.spec })) }; }
-  publish() {
+    tasks: this.queue.list().map(t => {
+      const spec = this.queue.tasks.find(row => row.id === t.id)?.spec;
+      return { ...t, source: t.recovery?.url || sourceUrl(spec?.url) || '',
+        targetDir: t.recovery?.settings?.saveDir || spec?.settings?.saveDir || '',
+        canRetry: !t.recovering && !!(t.recovery || spec) };
+    }) }; }
+  sendState() {
     if (!this.window?.isDestroyed() && this.window?.webContents && !this.window.webContents.isDestroyed())
       this.window.webContents.send('collector:state', this.publicState());
-    clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => this.persist(), 400); this.saveTimer.unref();
   }
-  persist() {
-    writeJson(path.join(profile, 'settings.json'), this.settings);
-    writeJson(path.join(profile, 'history.json'), this.queue.list());
-    writeJson(path.join(profile, 'login-errors.json'), this.loginState.invalid);
-    writeJson(path.join(profile, 'tabs.json'), this.tabs.serialize());
-  }
+  publish() { this.sendState(); this.persistence?.schedule(); }
+  persist() { return this.persistence.flush(); }
   track(handle) {
     this.handles.add(handle);
     handle.promise.then(() => this.handles.delete(handle), () => this.handles.delete(handle));
@@ -480,9 +492,7 @@ class CollectorApp {
     if (signal?.aborted) throw Object.assign(new Error('操作已取消'), { cancelled: true });
     if (verified && (this.youtubeAuth.status !== 'verified' || fingerprint(cookies) !== this.youtubeAuth.key)) throw authRequired();
     snapshot.key = fingerprint(cookies, site);
-    const file = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
-    fs.writeFileSync(file, cookieText(cookies, site), { mode: 0o600 });
-    return file;
+    return this.credentials.write(cookieText(cookies, site));
   }
   async effectiveProxy(url, configured) {
     if (configured) return configured;
@@ -538,7 +548,7 @@ class CollectorApp {
           if (failure.code === 'AUTH_EXPIRED') await this.rejectCredentials(site, snapshot.key);
         }
         throw error;
-      } finally { controller.abort(); if (cookieFile) fs.rmSync(cookieFile, { force: true }); }
+      } finally { controller.abort(); if (cookieFile) this.credentials.remove(cookieFile); }
     })();
     return this.track(handle);
   }
@@ -834,7 +844,7 @@ class CollectorApp {
     if (!url) throw new Error('当前页面未提供视频封面');
     return this.assets.preview(url, site, this.tabs.active.assetsAbort.signal, !!data.refresh, ['taobao', 'zcool'].includes(site) ? item.url : undefined);
   }
-  async download(data) {
+  async download(data, recoveredSettings) {
     const tab = this.tabs.active;
     const snapshot = this.cache.get(data.inspectionId);
     if (!snapshot || data.inspectionId !== this.state.inspectionId) throw new Error('页面已切换，请重新解析后下载');
@@ -856,11 +866,57 @@ class CollectorApp {
       originalSourceHints: snapshot.result.site === 'xiaohongshu' && item.kind === 'images' ?
         this.assets.sourceHints(item.images.filter(image => indices.includes(image.index))
           .flatMap(image => [image.url, ...(image.fallback_urls || [])])) : undefined,
-      settings: { ...this.settings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } };
+      settings: { ...this.settings, ...recoveredSettings, audioOnly: !!data.audioOnly, subtitles: !!data.subtitles } };
     if(external)this.externalTasks.set(spec,{...external.entry,tabId:tab.id,sourceUrl:snapshot.url});
     const baseTitle = item.categoryLabel ? `${item.title} · ${item.categoryLabel}` : item.title;
     const title = item.kind === 'images' && indices.length === 1 ? `${baseTitle} · 图片 ${String(indices[0]).padStart(2, '0')}` : baseTitle;
-    return this.queue.add(spec,title);
+    return this.queue.add(spec,title,makeRecovery(snapshot,item,{...data,indices,formatId},spec.settings));
+  }
+  retryTask(id) {
+    const task = this.queue.tasks.find(row => row.id === id);
+    if (!task || !['failed', 'cancelled'].includes(task.status) || task.recovering)
+      throw new Error('\u8be5\u4efb\u52a1\u5f53\u524d\u4e0d\u80fd\u91cd\u8bd5');
+    const recovery = validateRecovery(task.recovery);
+    if (!recovery) return (async () => {
+      if (siteForUrl(task.spec?.url) === 'youtube') await this.ensureYouTube();
+      return this.queue.retry(id);
+    })();
+    task.recovering = true; this.publish();
+    const controller = new AbortController();
+    let tab;
+    const handle = { taskId: id, cancel: () => { controller.abort(); if (tab && !tab.closed) this.invalidate(tab, { preserveResult: true }); }, promise: null };
+    handle.promise = (async () => {
+      try {
+        if (!fs.statSync(recovery.settings.saveDir).isDirectory())
+          throw new Error('\u539f\u4fdd\u5b58\u76ee\u5f55\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
+        tab = this.tabs.rows.find(row => !row.closed && sourceUrl(row.state?.url || row.url) === recovery.url);
+        tab = tab ? this.activateTab(tab.id) : this.openTab(recovery.url);
+        const deadline = Date.now() + 20000;
+        const assertCurrent = () => {
+          if (controller.signal.aborted || this.closing || tab.closed || this.tabs.active !== tab)
+            throw Object.assign(new Error('\u4efb\u52a1\u6062\u590d\u5df2\u53d6\u6d88'), { cancelled: true });
+          if (sourceUrl(tab.state.url) !== recovery.url)
+            throw new Error('\u539f\u9875\u9762\u5df2\u5207\u6362\uff0c\u8bf7\u91cd\u65b0\u6253\u5f00\u540e\u91cd\u8bd5');
+        };
+        while (tab.state.parsing || sourceUrl(tab.view.webContents.getURL()) !== recovery.url) {
+          assertCurrent();
+          if (Date.now() > deadline) throw new Error('\u539f\u9875\u9762\u52a0\u8f7d\u8d85\u65f6\uff0c\u8bf7\u624b\u52a8\u6253\u5f00\u540e\u91cd\u8bd5');
+          await new Promise(resolve => setTimeout(resolve, 150));
+        }
+        assertCurrent();
+        await this.readPage('true', tab, true, controller.signal, { timeoutMs: Math.max(1, deadline - Date.now()) });
+        assertCurrent();
+        await this.inspect(tab); assertCurrent();
+        if (!this.resultMatchesPage(tab) || !tab.state.result)
+          throw new Error(tab.state.error || '\u8bf7\u91cd\u65b0\u767b\u5f55\u5e76\u6253\u5f00\u539f\u9875\u9762\u540e\u91cd\u8bd5');
+        if (recovery.externalId) {
+          await this.inspectExternal({ inspectionId: tab.state.inspectionId }); assertCurrent();
+        }
+        const selection = recoveredSelection(recovery, tab.state.result);
+        return await this.download({ ...selection, inspectionId: tab.state.inspectionId }, recovery.settings);
+      } finally { task.recovering = false; this.publish(); }
+    })();
+    return this.track(handle).promise;
   }
   async importCookies(file, site) {
     const info = fs.statSync(file);
@@ -961,7 +1017,7 @@ class CollectorApp {
   async login(site) {
     if (!SITES[site]) throw new Error('请先选择支持的站点');
     if (this.loginTask || this.state.loginRunning || this.state.importingCookies || this.webLoginRequest) throw new Error('已有登录操作正在进行');
-    const cookieFile = path.join(profile, 'tasks', randomUUID() + '.cookies.txt');
+    const cookieFile = this.credentials.reserve();
     const tab = this.tabs.active;
     this.state.loginRunning = site; this.publish();
     try {
@@ -973,7 +1029,7 @@ class CollectorApp {
     }
     finally {
       this.loginTask = null; this.state.loginRunning = null;
-      if (fs.existsSync(cookieFile)) fs.unlinkSync(cookieFile); this.publish();
+      this.credentials.remove(cookieFile); this.publish();
     }
   }
   async invoke(method, data = {}) {
@@ -1000,25 +1056,27 @@ class CollectorApp {
     if (method === 'cancel-inspect') { this.invalidate(this.tabs.active,{preserveResult:true}); this.publish(); return; }
     if (method === 'download') return this.download(data);
     if (method === 'preview' || method === 'image-size') return this.asset(data, method === 'preview' ? 'preview' : 'size');
-    if (method === 'cancel-task') return this.queue.cancel(String(data.id));
+    if (method === 'cancel-task') {
+      const recovery = [...this.handles].find(handle => handle.taskId === String(data.id));
+      if (recovery) { recovery.cancel(); return; }
+      return this.queue.cancel(String(data.id));
+    }
     if (method === 'clear-history') {
       const removed = this.queue.clearFinished();
       this.persist();
       return removed;
     }
     if (method === 'retry-task') {
-      const task = this.queue.tasks.find(row => row.id === String(data.id));
-      if (siteForUrl(task?.spec?.url) === 'youtube') await this.ensureYouTube();
-      return this.queue.retry(String(data.id));
+      return this.retryTask(String(data.id));
     }
+    if (method === 'retry-save') return this.persist();
     if (method === 'login') return this.login(data.site);
     if (method === 'web-login') return this.openWebLogin(data.site);
     if (method === 'cancel-login') { this.loginTask?.cancel(); return; }
     if (method === 'import-cookies') return this.chooseCookies(data.site);
     if (method === 'choose-folder') {
       const result = await dialog.showOpenDialog(this.window, { properties: ['openDirectory', 'createDirectory'], defaultPath: this.settings.saveDir });
-      if (!result.canceled) { this.settings.saveDir = result.filePaths[0]; this.persist(); this.publish(); }
-      return;
+      return result.canceled ? null : result.filePaths[0];
     }
     if (method === 'open-folder') {
       const task = data.id ? this.queue.tasks.find(t => t.id === String(data.id)) : null;
@@ -1032,17 +1090,21 @@ class CollectorApp {
         if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('请使用不含账号密码的 HTTP 或 SOCKS5 代理地址');
       }
       if (!['original', 'jpg', 'png', 'webp'].includes(data.imageFormat)) throw new Error('图片格式无效');
+      const saveDir = data.saveDir ?? this.settings.saveDir;
+      if (typeof saveDir !== 'string' || !path.isAbsolute(saveDir) || !fs.statSync(saveDir).isDirectory())
+        throw new Error('\u8bf7\u9009\u62e9\u6709\u6548\u7684\u4fdd\u5b58\u76ee\u5f55');
       const limits = concurrencySettings({
         globalConcurrency: data.globalConcurrency ?? this.settings.globalConcurrency,
         siteConcurrency: data.siteConcurrency ?? this.settings.siteConcurrency,
       }, true);
       const wasAutomatic = this.settings.autoParse;
       const previousSettings = this.settings;
-      this.settings = { ...this.settings, proxy, imageFormat: data.imageFormat, autoParse: !!data.autoParse, ...limits };
+      this.settings = { ...this.settings, saveDir, proxy, imageFormat: data.imageFormat, autoParse: !!data.autoParse, ...limits };
       try { await this.applyProxy(); } catch (error) { this.settings = previousSettings; throw error; }
-      this.queue.setLimits(limits); this.persist(); this.publish();
+      this.queue.setLimits(limits); const saved = this.persist(); this.publish();
       if (!this.settings.autoParse) this.tabs.rows.forEach(tab => clearTimeout(tab.parseTimer));
       else if (!wasAutomatic) this.pageReady(this.tabs.active);
+      if (!saved) throw new Error('\u8bbe\u7f6e\u5df2\u6682\u65f6\u751f\u6548\uff0c\u4f46\u5199\u5165\u78c1\u76d8\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u4fdd\u5b58');
       return;
     }
     throw new Error('不支持此操作');
@@ -1053,19 +1115,25 @@ class CollectorApp {
     this.state.error = '正在停止后台任务并保存记录…'; this.publish();
     const finish = () => {
       if (this.handles.size) { setTimeout(finish, 150); return; }
-      clearTimeout(this.saveTimer); this.persist();
+      this.credentials.close(); this.persistence.close();
       this.destroyViews(); this.allowClose = true; this.window.close();
     }; finish();
   }
 }
 
 let collector;
-app.whenReady().then(async () => {
+if (acquireInstance(app, () => collector?.window)) app.whenReady().then(async () => {
   collector = new CollectorApp();
   ipcMain.handle('collector:invoke', async (event, method, data) => {
-    if (event.sender !== collector.window.webContents || event.senderFrame !== event.sender.mainFrame ||
-        event.senderFrame.url !== pathToFileURL(path.join(__dirname, 'ui', 'index.html')).href) throw new Error('请求来源不受信任');
-    try { return { ok: true, data: await collector.invoke(method, data) }; }
+    try {
+      if (!collector.window || collector.window.isDestroyed() || event.sender.isDestroyed())
+        return { ok: false, error: '\u91c7\u96c6\u5e94\u7528\u6b63\u5728\u5173\u95ed' };
+      if (event.sender !== collector.window.webContents || !event.senderFrame ||
+          event.senderFrame !== event.sender.mainFrame ||
+          event.senderFrame.url !== pathToFileURL(path.join(__dirname, 'ui', 'index.html')).href)
+        throw new Error('\u8bf7\u6c42\u6765\u6e90\u4e0d\u53d7\u4fe1\u4efb');
+      return { ok: true, data: await collector.invoke(method, data) };
+    }
     catch (error) { return { ok: false, error: error.message, code: error.code }; }
   });
   await collector.create();
