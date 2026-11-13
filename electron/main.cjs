@@ -10,7 +10,7 @@ const { pythonTask } = require('./bridge.cjs');
 const { Assets, readBody } = require('./assets.cjs');
 const { YouTubeAuth, loginEvidence, fingerprint, authRequired } = require('./youtube-auth.cjs');
 const { SiteTabs, linkScript, MAX_TABS, nativeInstagramNavigation, instagramSearchScript } = require('./site-tabs.cjs');
-const { taobaoPopupKind } = require('./browser-popups.cjs');
+const { taobaoPopupKind, nativeTaobaoLoginReturn } = require('./browser-popups.cjs');
 const { TaobaoRelayGuard, relayHelpScript, isTaobaoRelayUrl } = require('./taobao-relay.cjs');
 const { DouyinPage, snapshotScript: douyinSnapshotScript } = require('./douyin-page.cjs');
 const { resolveDouyinContext } = require('./douyin-context.cjs');
@@ -233,7 +233,10 @@ class CollectorApp {
         const sameBiliVideo = current?.startsWith('bilibili:') && current.split(':')[1] === key?.split(':')[1];
         const sameXhsSite = group === 'xiaohongshu' && tab.group === group && siteForUrl(tab.state.url) === group;
         const sameInstagramPage = nativeInstagramNavigation(tab.state.url, next);
-        if ((group && group !== tab.group) || (key && key !== current && !sameBiliVideo && !sameXhsSite && !sameInstagramPage)) {
+        // A login return is a continuation, not a new product click. Read the
+        // committed browser URL: tab.state may still describe the pre-login page.
+        const sameTaobaoReturn = tab.group === 'taobao' && nativeTaobaoLoginReturn(web.getURL(), next);
+        if ((group && group !== tab.group) || (key && key !== current && !sameBiliVideo && !sameXhsSite && !sameInstagramPage && !sameTaobaoReturn)) {
           event.preventDefault(); tab.state.loading = false;
           const sourceUrl = web.getURL(), sequence = tab.sequence;
           setImmediate(async () => {
@@ -842,6 +845,8 @@ class CollectorApp {
     }
     const url = image ? image.preview_url || image.fallback_urls?.at(-1) || image.url : item.thumbnail;
     if (!url) throw new Error('当前页面未提供视频封面');
+    if (site === 'taobao' && image)
+      return this.assets.taobaoPreview(url, image.url, this.tabs.active.assetsAbort.signal, !!data.refresh, item.url);
     return this.assets.preview(url, site, this.tabs.active.assetsAbort.signal, !!data.refresh, ['taobao', 'zcool'].includes(site) ? item.url : undefined);
   }
   async download(data, recoveredSettings) {

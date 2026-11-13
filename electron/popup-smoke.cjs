@@ -8,9 +8,14 @@ const { emptyRelayScript } = require('./taobao-relay.cjs');
 // this never contacts Taobao, signs a request or uses a real account.
 async function fixture(request) {
   const url = new URL(request.url);
-  if (!['detail.tmall.com','login.taobao.com'].includes(url.hostname) || !url.searchParams.has('collector_popup')) return null;
+  if (!['detail.tmall.com','login.taobao.com','h5api.m.tmall.com'].includes(url.hostname) || !url.searchParams.has('collector_popup')) return null;
   const mode = url.searchParams.get('collector_popup');
   const headers = {'content-type':'text/html; charset=utf-8'};
+  if (mode === 'restore-login') return Response.redirect(
+    'https://h5api.m.tmall.com/h5/mtop.alibaba.detail.getaddresslist/1.0/_____tmd_____/page/login_jump?collector_popup=return-source', 302);
+  if (mode === 'return-source') return new Response('<!doctype html><title>Local login return</title><body></body>', {headers});
+  if (mode === 'return-landing') return new Response(`<!doctype html><title>Local product</title><h1>Local product</h1>
+    <script>window.returnRequest=${JSON.stringify({method: request.method, body: request.method === 'POST' ? await request.text() : ''})}</script>`, {headers});
   if (mode === 'opener') return new Response('<!doctype html><title>本地弹窗测试</title><h1>本地弹窗测试</h1><script>window.replies=[];addEventListener("message",e=>{if(e.origin===location.origin||e.origin==="https://login.taobao.com")replies.push(e.data);});</script>',{headers});
   if (mode === 'redirect') return Response.redirect('https://detail.tmall.com/wow/home/_____tmd_____/page/login_jump?collector_popup=relay',302);
   if (mode === 'redirect-empty') return Response.redirect('https://detail.tmall.com/wow/home/_____tmd_____/page/login_jump?collector_popup=empty',302);
@@ -25,7 +30,45 @@ async function fixture(request) {
   return new Response(`<!doctype html><title>本地登录 / 验证测试</title><h1>本地登录 / 验证测试</h1><button onclick="finish()">完成</button><script>${script}${mode==='wait'?'':'finish();'}</script>`,{headers});
 }
 
+async function runReturns(collector, check, until) {
+  const previous = collector.tabs.active;
+  for (const [index, method] of ['replace', 'href', 'anchor', 'post', 'background'].entries()) {
+    const productId = String(424250 + index);
+    const tab = collector.tabs.add('taobao', `https://detail.tmall.com/item.htm?id=${productId}&collector_popup=restore-login`);
+    const target = `https://detail.tmall.com/item.htm?id=${productId}&collector_popup=return-landing`;
+    try {
+      // A saved tab is loaded lazily when the user switches back to Taobao.
+      collector.activateTab(tab.id);
+      const web = tab.view.webContents, count = collector.tabs.rows.length;
+      await until(() => !web.isLoadingMainFrame() && web.getURL().includes('collector_popup=return-source'), 'restored product did not redirect to login');
+      const destination = JSON.stringify(target);
+      if (method === 'background') collector.activateTab(previous.id);
+      let script = `location.replace(${destination})`;
+      if (method === 'href') script = `location.href=${destination}`;
+      if (method === 'anchor') script = `const a=document.createElement('a');a.href=${destination};document.body.append(a);a.click()`;
+      if (method === 'post') script = `const f=document.createElement('form');f.method='POST';f.action=${destination};
+        const i=document.createElement('input');i.name='return_fixture';i.value='local-only';f.append(i);document.body.append(f);f.submit()`;
+      await web.executeJavaScript(`setTimeout(() => { ${script} }, 30); void 0`);
+      await until(() => collector.tabs.rows.some(row => row.view && !row.closed &&
+        !row.view.webContents.isLoadingMainFrame() && row.view.webContents.getURL() === target), 'login did not return to the product');
+      const name = `Taobao ${method} login return stays in its original view without a blank duplicate`;
+      assert.deepEqual({active: collector.tabs.activeId, url: web.getURL(), tabs: collector.tabs.rows.length},
+        {active: method === 'background' ? previous.id : tab.id, url: target, tabs: count}, name);
+      check(name, true);
+      if (method === 'post') {
+        assert.deepEqual(await web.executeJavaScript('window.returnRequest'), {method: 'POST', body: 'return_fixture=local-only'});
+        check('same-tab login return preserves the original POST body', true);
+      }
+    } finally {
+      for (const row of [...collector.tabs.rows])
+        if (row === tab || row.url?.includes('id=' + productId)) collector.closeTab(row.id);
+      if (!previous.closed) collector.activateTab(previous.id);
+    }
+  }
+}
+
 async function run(collector, check, until, wait, warnings = []) {
+  await runReturns(collector, check, until);
   const previous = collector.tabs.active;
   const source = collector.openTab('https://detail.tmall.com/collector-popup?collector_popup=opener',{group:'taobao'});
   const web = source.view.webContents, created = new Set([source]);
@@ -159,4 +202,4 @@ async function run(collector, check, until, wait, warnings = []) {
     if(!previous.closed)collector.activateTab(previous.id);
   }
 }
-module.exports={fixture,run};
+module.exports={fixture,run,runReturns};

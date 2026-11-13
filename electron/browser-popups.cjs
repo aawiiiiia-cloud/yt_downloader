@@ -10,6 +10,15 @@ function isTaobaoLoginUrl(value) {
   } catch { return false; }
 }
 
+function nativeTaobaoLoginReturn(source, target) {
+  try {
+    const from = new URL(navigationUrl(source)), to = new URL(navigationUrl(target));
+    return isTaobaoLoginUrl(from.href) && siteForUrl(to.href) === 'taobao' &&
+      !isTaobaoLoginUrl(to.href) && ['', '80', '443'].includes(from.port) &&
+      ['', '80', '443'].includes(to.port);
+  } catch { return false; }
+}
+
 // A blank child may be populated or navigated by its opener after window.open().
 // Keep its native relationship, rather than issuing a second loadURL request.
 function taobaoPopupKind(source, target) {
@@ -22,4 +31,4 @@ function taobaoPopupKind(source, target) {
   return null;
 }
 
-module.exports = { isTaobaoLoginUrl, taobaoPopupKind };
+module.exports = { isTaobaoLoginUrl, nativeTaobaoLoginReturn, taobaoPopupKind };

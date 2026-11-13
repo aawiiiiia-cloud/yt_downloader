@@ -211,3 +211,18 @@ test('restart discards old Taobao login relay tabs without discarding product ta
   assert.doesNotMatch(JSON.stringify(metadata),/expired-secret|login_jump/);
   assert.equal(new SiteTabs(metadata).active.id,product.id);
 });
+
+test('Taobao login-return anchors keep native targets without changing ordinary product clicks', () => {
+  const relay = 'https://h5api.m.tmall.com/h5/mtop.alibaba.detail.getaddresslist/1.0/_____tmd_____/page/login_jump';
+  const product = 'https://detail.tmall.com/item.htm?id=123';
+  for (const target of ['', '_self', '_blank', '_top']) {
+    const click = detailClick(relay, product, {}, { target });
+    assert.equal(click.event.prevented, false); assert.equal(click.event.stopped, false);
+    assert.deepEqual(click.opened, []); assert.equal(click.anchor.target, target);
+  }
+  for (const source of ['https://www.taobao.com/', 'https://detail.tmall.com/item.htm?id=456']) {
+    assert.deepEqual(detailClick(source, product).opened, [product]);
+  }
+  assert.deepEqual(detailClick(relay, 'https://www.youtube.com/watch?v=fixture').opened,
+    ['https://www.youtube.com/watch?v=fixture']);
+});

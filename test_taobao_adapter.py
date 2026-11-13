@@ -93,6 +93,33 @@ class TaobaoTests(unittest.TestCase):
         image=service(data).inspect()['items'][0]['images'][0]
         self.assertEqual(image['preview_url'],preview);self.assertEqual(image['url'],original)
 
+    def test_compressed_dom_previews_replace_json_originals_without_changing_downloads(self):
+        for suffix in ('_q50.jpg_.webp', '_q90.jpg', '_.webp'):
+            with self.subTest(suffix=suffix):
+                original = 'https://img.alicdn.com/a.png'
+                preview = original + suffix
+                data = context()
+                data['groups']['main'] = [{'url': original}, {'url': original, 'previewUrl': preview}]
+                image = service(data).inspect()['items'][0]['images'][0]
+                self.assertEqual(image['url'], original)
+                self.assertEqual(image['preview_url'], preview)
+                self.assertIn(preview, image['fallback_urls'])
+                self.assertIsNone(image['width'])
+
+    def test_resized_previews_outrank_compression_and_compressed_previews_stay_bound_to_the_original(self):
+        original = 'https://img.alicdn.com/a.png'
+        resized = original + '_800x800q90.jpg'
+        data = context()
+        data['groups']['main'] = [{'url': original}, {'url': original, 'previewUrl': resized},
+                                 {'url': original, 'previewUrl': original + '_q50.jpg_.webp'}]
+        self.assertEqual(service(data).inspect()['items'][0]['images'][0]['preview_url'], resized)
+        for preview in ('https://img.alicdn.com/b.png_q50.jpg_.webp',
+                        original + '_q50.jpg_.webp?sig=other', original + '_q101.jpg_.webp',
+                        original + '_q1000.jpg_.webp', original + '_80x80q90.jpg_.webp'):
+            with self.subTest(preview=preview):
+                data['groups']['main'] = [{'url': original}, {'url': original, 'previewUrl': preview}]
+                self.assertEqual(service(data).inspect()['items'][0]['images'][0]['preview_url'], original)
+
     def test_foreign_mismatched_and_tiny_previews_cannot_replace_a_clearer_image(self):
         for preview in ('https://evil.invalid/a.jpg_800x800.jpg','https://img.alicdn.com/other.jpg_800x800.jpg',
                         'https://img.alicdn.com/a.jpg_80x80.jpg','https://img.alicdn.com/a.jpg_800x800.jpg?sig=different'):

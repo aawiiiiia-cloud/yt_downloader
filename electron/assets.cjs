@@ -11,6 +11,22 @@ const DOMAINS = {
   instagram: ['cdninstagram.com', 'fbcdn.net'],
 };
 const REFERERS = { youtube: 'https://www.youtube.com/', bilibili: 'https://www.bilibili.com/', xiaohongshu: 'https://www.xiaohongshu.com/', vimeo: 'https://vimeo.com/', douyin: 'https://www.douyin.com/', behance: 'https://www.behance.net/', taobao: 'https://item.taobao.com/', zcool: 'https://www.zcool.com.cn/', instagram: 'https://www.instagram.com/' };
+const PREVIEW_LIMIT = 6 * 1024 * 1024;
+function previewSizeError() {
+  const error = new Error('\u9884\u89c8\u5185\u5bb9\u8fc7\u5927');
+  error.code = 'PREVIEW_TOO_LARGE';
+  return error;
+}
+function taobaoResizePreview(value) {
+  try {
+    const url = new URL(assetUrl(value, 'taobao'));
+    // Verified product CDN transform. Never alter signed queries or download URLs.
+    if (url.hostname !== 'img.alicdn.com' || url.search || !/\.(?:jpe?g|png|gif|webp|avif)$/i.test(url.pathname)) return null;
+    if (/\.(?:jpe?g|png|gif|webp|avif)_(?:\d+x\d+[^/]*|q\d+[^/]*|\.webp)$/i.test(url.pathname)) return null;
+    url.pathname += '_800x800q75.jpg';
+    return url.href;
+  } catch { return null; }
+}
 function assetUrl(value, site) {
   const url = new URL(String(value).startsWith('//') ? 'https:' + value : value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || ![null, '', '80', '443'].includes(url.port) ||
@@ -25,7 +41,7 @@ async function readBody(response, maximum, onChunk) {
     while (true) {
       const chunk = await reader.read(); if (chunk.done) break;
       bytes += chunk.value.length;
-      if (bytes > maximum) throw new Error('预览内容过大');
+      if (bytes > maximum) throw previewSizeError();
       buffers.push(Buffer.from(chunk.value));
       onChunk?.(buffers.at(-1));
     }
@@ -156,6 +172,17 @@ class Assets {
     }
     throw new Error('素材地址跳转过多');
   }
+  async taobaoPreview(value, original, signal, refresh = false, referrer) {
+    try { return await this.preview(value, 'taobao', signal, refresh, referrer); }
+    catch (error) {
+      if (error.code !== 'PREVIEW_TOO_LARGE' || signal?.aborted) throw error;
+      const resized = taobaoResizePreview(original);
+      if (!resized || resized === assetUrl(value, 'taobao')) throw error;
+      // Each URL has its own cache/metadata. Resized pixels must never stand in
+      // for the source dimensions, including when the first request was original.
+      return this.preview(resized, 'taobao', signal, refresh, referrer);
+    }
+  }
   preview(value, site, signal, refresh = false, referrer) {
     const url = assetUrl(value, site), key = 'preview:' + url + (referrer ? '|' + referrer : '');
     if (!refresh && this.cache.has(key)) return Promise.resolve(this.cache.get(key).value);
@@ -169,8 +196,13 @@ class Assets {
       if (!response.ok) { await response.body?.cancel(); throw new Error(`预览加载失败（${response.status}），可点击重试`); }
       const encoding = response.headers.get('content-encoding');
       const size = response.status === 200 && (!encoding || encoding === 'identity') ? Number(response.headers.get('content-length')) : 0;
+      if (size > PREVIEW_LIMIT) {
+        const dimensions = await readDimensions(response);
+        info.resolve({ size, ...dimensions });
+        throw previewSizeError();
+      }
       const chunks = []; let prefixLength = 0, dimensions = null;
-      const bytes = await readBody(response, 6 * 1024 * 1024, chunk => {
+      const bytes = await readBody(response, PREVIEW_LIMIT, chunk => {
         if (dimensions || prefixLength >= 256 * 1024) return;
         const prefix = chunk.subarray(0, 256 * 1024 - prefixLength); chunks.push(prefix); prefixLength += prefix.length;
         dimensions = imageDimensions(Buffer.concat(chunks, prefixLength));
@@ -239,4 +271,4 @@ class Assets {
     }).finally(() => clearTimeout(timer));
   }
 }
-module.exports = { Assets, assetUrl, imageMime, readBody, referrerOrigin, imageDimensions, readDimensions };
+module.exports = { Assets, assetUrl, imageMime, readBody, referrerOrigin, imageDimensions, readDimensions, taobaoResizePreview };

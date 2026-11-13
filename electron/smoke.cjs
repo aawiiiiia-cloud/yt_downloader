@@ -18,11 +18,14 @@ async function captureWindow(window) {
 async function run(collector, profile, snapshotScript) {
   const results = [], warnings = [];
   const reliabilityOnly = process.argv.includes('--collector-reliability-only');
-  const report = path.join(profile, '..', reliabilityOnly ? 'reliability-result.json' : 'smoke-result.json');
+  const taobaoReturnOnly = process.argv.includes('--collector-taobao-return-only');
+  const taobaoPreviewOnly = process.argv.includes('--collector-taobao-preview-only');
+  const reportName = reliabilityOnly ? 'reliability' : taobaoReturnOnly ? 'taobao-return' : taobaoPreviewOnly ? 'taobao-preview' : 'smoke';
+  const report = path.join(profile, '..', `${reportName}-result.json`);
   const started = Date.now();
   const check = (name, condition) => {
     assert.ok(condition, name); results.push(name);
-    fs.writeFileSync(path.join(profile, '..', reliabilityOnly ? 'reliability-progress.json' : 'smoke-progress.json'),
+    fs.writeFileSync(path.join(profile, '..', `${reportName}-progress.json`),
       JSON.stringify({ checks: results.length, lastCheck: name, elapsedMs: Date.now() - started, profile }, null, 2));
   };
   try {
@@ -64,6 +67,11 @@ async function run(collector, profile, snapshotScript) {
       if (loginFixture) return loginFixture;
       const popupFixture = await require('./popup-smoke.cjs').fixture(request);
       if (popupFixture) return popupFixture;
+      const previewFixture = require('./taobao-preview-smoke.cjs').fixture(request, imageBytes);
+      if (previewFixture) {
+        if (resource.hostname === 'img.alicdn.com') assetRequests.push({ url: request.url, method: request.method, referer: request.headers.get('referer') });
+        return previewFixture;
+      }
       if (resource.hostname.endsWith('.cdninstagram.com') || resource.hostname === 'video.zcool.cn' || resource.hostname === 'img.zcool.cn' || resource.hostname === 'img.alicdn.com' || resource.hostname === 'mir-s3-cdn-cf.behance.net' || resource.hostname.endsWith('.hdslb.com') || resource.hostname.endsWith('.xhscdn.com') || resource.hostname.endsWith('.ytimg.com') || resource.hostname.endsWith('.vimeocdn.com') || resource.hostname.endsWith('.douyinpic.com')) {
         assetRequests.push({ url:request.url, method:request.method, referer:request.headers.get('referer') });
         if (resource.hostname.endsWith('.hdslb.com') && !coverFailed) { coverFailed = true; return new Response('unavailable', {status:503}); }
@@ -80,8 +88,10 @@ async function run(collector, profile, snapshotScript) {
       const html = new URL(request.url).searchParams.has('slow') ? fixture.replace('</body>', '<img src="/collector-slow-resource"></body>') : fixture;
       return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
     });
-    if (reliabilityOnly) {
-      await require('./reliability-smoke.cjs').run(collector, check, until, wait, profile);
+    if (reliabilityOnly || taobaoReturnOnly || taobaoPreviewOnly) {
+      if (taobaoReturnOnly) await require('./popup-smoke.cjs').run(collector, check, until, wait, warnings);
+      else if (taobaoPreviewOnly) await require('./taobao-preview-smoke.cjs').run(collector, check, until, wait, assetRequests);
+      else await require('./reliability-smoke.cjs').run(collector, check, until, wait, profile);
       check('focused checks leave no temporary cookie files', fs.readdirSync(collector.credentials.directory).length === 0);
       collector.queue.close(); collector.youtubeProvider.close(); collector.credentials.close(); collector.persistence.close();
       fs.writeFileSync(report, JSON.stringify({ ok: true, results, warnings, profile }, null, 2));
@@ -213,6 +223,7 @@ async function run(collector, profile, snapshotScript) {
     await require('./instagram-smoke.cjs').run(collector, check, until, wait, profile);
     await require('./behance-smoke.cjs').run(collector, check, until, wait);
     await require('./taobao-smoke.cjs').run(collector, check, until, wait, assetRequests);
+    await require('./taobao-preview-smoke.cjs').run(collector, check, until, wait, assetRequests);
     await require('./taobao-scroll-smoke.cjs').run(collector, check, until, wait, warnings);
     await require('./zcool-smoke.cjs').run(collector, check, until, wait, assetRequests);
     await require('./popup-smoke.cjs').run(collector, check, until, wait, warnings);

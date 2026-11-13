@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { Assets, assetUrl, referrerOrigin, imageDimensions, readDimensions } = require('../assets.cjs');
+const { Assets, assetUrl, referrerOrigin, imageDimensions, readDimensions, taobaoResizePreview } = require('../assets.cjs');
 const originalHintUrl='https://sns-na-i10.xhscdn.com/spectrum/resource';
 test('recent original hints are exact, bounded, and cannot promote previews or unrelated URLs',()=>{
   const assets=new Assets(()=>{throw new Error('unexpected fetch');});
@@ -18,6 +18,89 @@ test('recent original hints are exact, bounded, and cannot promote previews or u
 });
 const { duration, size, videoSize } = require('../ui/media-info.js');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAE0lEQVR4nGO8/Po+AwwwwVnoHABhQQKjPQkWWQAAAABJRU5ErkJggg==', 'base64');
+test('Taobao resize fallback is limited to verified unsigned CDN originals', () => {
+  assert.equal(taobaoResizePreview('http://img.alicdn.com/a.png'), 'https://img.alicdn.com/a.png_800x800q75.jpg');
+  for (const url of ['https://img.alicdn.com/a.png?sig=keep', 'https://img.alicdn.com/a.png_q50.jpg_.webp',
+    'https://img.alicdn.com/a.mp4', 'https://other.alicdn.com/a.png', 'https://img.alicdn.com.evil.invalid/a.png',
+    'https://user:pass@img.alicdn.com/a.png', 'file:///C:/a.png', 'https://127.0.0.1/a.png'])
+    assert.equal(taobaoResizePreview(url), null, url);
+});
+
+test('an oversized Taobao original uses a separate small preview cache without replacing original metadata', async () => {
+  const original = 'https://img.alicdn.com/large.png', calls = [];
+  let originalReads = 0, cancelled = false;
+  const header = Buffer.from(png); header.writeUInt32BE(2400, 16); header.writeUInt32BE(3600, 20);
+  const assets = new Assets(async (url, options) => {
+    calls.push({ url, options });
+    if (url !== original) return new Response(png, { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } });
+    return new Response(new ReadableStream({ pull(controller) { originalReads++; controller.enqueue(header); },
+      cancel() { cancelled = true; } }), { headers: { 'content-type': 'image/png', 'content-length': String(8 * 1024 * 1024) } });
+  });
+  const page = new AbortController(), referrer = 'https://item.taobao.com/item.htm?id=123';
+  for (const refresh of [false, true]) {
+    const [preview, metadata] = await Promise.all([
+      assets.taobaoPreview(original, original, page.signal, refresh, referrer),
+      assets.sourceSize([original], 'taobao', page.signal, referrer, true, refresh),
+    ]);
+    assert.match(preview.dataUrl, /^data:image\/png/);
+    assert.deepEqual(metadata, { size: 8388608, width: 2400, height: 3600, displayFallback: false });
+    assert.ok(!assets.cache.has('preview:' + original + '|' + referrer));
+    assert.equal(calls.at(-1).url, original + '_800x800q75.jpg');
+    assert.equal(calls.at(-1).options.cache, refresh ? 'reload' : 'default');
+  }
+  assert.equal(cancelled, true);
+  assert.ok(originalReads <= 4, 'only the image header is read, not the oversized body');
+  assert.equal(assets.previewRequests.size, 0);
+  assert.equal(assets.active, 0);
+});
+
+test('unknown-length previews still enforce the byte limit and cancel before using a Taobao fallback', async () => {
+  let cancelled = false;
+  const calls = [], original = 'https://img.alicdn.com/large.png';
+  const assets = new Assets(async url => {
+    calls.push(url);
+    if (url !== original) return new Response(png);
+    return new Response(new ReadableStream({ pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024)); },
+      cancel() { cancelled = true; } }));
+  });
+  assert.match((await assets.taobaoPreview(original, original)).dataUrl, /^data:image\/png/);
+  assert.equal(cancelled, true);
+  assert.deepEqual(calls, [original, original + '_800x800q75.jpg']);
+});
+
+test('small Taobao previews and network failures do not trigger invented CDN requests', async () => {
+  const original = 'https://img.alicdn.com/a.png', display = original + '_q50.jpg_.webp', calls = [];
+  const assets = new Assets(async url => { calls.push(url); return new Response(png); });
+  await assets.taobaoPreview(display, original);
+  assert.deepEqual(calls, [display]);
+  const failed = new Assets(async url => { calls.push(url); return new Response(null, { status: 403 }); });
+  await assert.rejects(() => failed.taobaoPreview(display, original));
+  assert.deepEqual(calls, [display, display]);
+});
+
+test('oversized fallback, signed originals, other sites, and cancelled pages remain bounded', async () => {
+  const original = 'https://img.alicdn.com/a.png';
+  const calls = [], assets = new Assets(async url => {
+    calls.push(url); return new Response(png, { headers: { 'content-length': String(8 * 1024 * 1024) } });
+  });
+  await assert.rejects(() => assets.taobaoPreview(original, original), { code: 'PREVIEW_TOO_LARGE' });
+  assert.equal(calls.length, 2, 'no recursive fallback');
+  calls.length = 0;
+  await assert.rejects(() => assets.taobaoPreview(original + '?sig=keep', original + '?sig=keep'), { code: 'PREVIEW_TOO_LARGE' });
+  assert.equal(calls.length, 1);
+  calls.length = 0;
+  await assert.rejects(() => assets.preview(original, 'taobao'), { code: 'PREVIEW_TOO_LARGE' });
+  assert.equal(calls.length, 1, 'ordinary previews have no fallback');
+  const page = new AbortController(), abortCalls = [];
+  const aborted = new Assets(async url => { abortCalls.push(url); page.abort(); const error = new Error('large'); error.code = 'PREVIEW_TOO_LARGE'; throw error; });
+  await assert.rejects(() => aborted.taobaoPreview(original, original, page.signal));
+  assert.equal(abortCalls.length, 1);
+});
+
+test('compressed content-length is not treated as the decompressed preview byte size', async () => {
+  const assets = new Assets(async () => new Response(png, { headers: { 'content-length': String(8 * 1024 * 1024), 'content-encoding': 'gzip' } }));
+  assert.match((await assets.preview('https://img.alicdn.com/a.png', 'taobao')).dataUrl, /^data:image\/png/);
+});
 test('durations preserve seconds and support hours; unknown sizes are not zero', () => {
   assert.equal(duration(3527), '58:47'); assert.equal(duration(7127), '1:58:47');
   assert.equal(duration(0), '00:00'); assert.equal(duration(null), '时长未知');

@@ -1,7 +1,7 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
 const { SITES, navigationUrl, siteForUrl, contentKey } = require('./model.cjs');
-const { isTaobaoLoginUrl } = require('./browser-popups.cjs');
+const { isTaobaoLoginUrl, nativeTaobaoLoginReturn } = require('./browser-popups.cjs');
 const MAX_TABS = 36;
 
 // Only navigation metadata is saved. Views, parsed resources and task handles live in memory.
@@ -97,6 +97,9 @@ const linkScript = `(() => {
   const belongs = (host, domain) => host === domain || host.endsWith('.' + domain);
   const SITES = ${JSON.stringify(SITES)};
   const contentKey = ${contentKey.toString()};
+  const navigationUrl = ${navigationUrl.toString()};
+  const isTaobaoLoginUrl = ${isTaobaoLoginUrl.toString()};
+  const nativeTaobaoLoginReturn = ${nativeTaobaoLoginReturn.toString()};
   const nativeInstagramNavigation = ${nativeInstagramNavigation.toString()};
   const instagramSearchOpen = ${instagramSearchOpen.toString()};
   // Instagram hides its search input behind the modal. Retain only the originating
@@ -123,6 +126,9 @@ const linkScript = `(() => {
     if (!anchor || anchor.hasAttribute('download')) return;
     if (!contentKey(anchor.href)) { searchOrigin = null; return; }
     if (contentKey(anchor.href) === contentKey(location.href)) return;
+    // Leave login-return links (including their native target and form logic)
+    // to the website; normal Taobao product links still open a separate tab.
+    if (nativeTaobaoLoginReturn(location.href, anchor.href)) return;
     // Xiaohongshu owns the click: its SPA opens a note overlay over the feed.
     if (siteForUrl(location.href) === 'xiaohongshu' && siteForUrl(anchor.href) === 'xiaohongshu') return;
     // Search and related posts belong to Instagram's own modal/page router.

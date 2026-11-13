@@ -49,12 +49,21 @@ def original_url(value):
 
 
 def preview_rank(value):
-    """Prefer an existing, useful CDN display variant without inventing a URL."""
+    """Prefer bounded display variants, then known CDN compression variants."""
     match = re.search(r'\.(?:jpe?g|png|gif|webp|avif)_(\d{1,6})x(\d{1,6})[^/]*$', urlparse(value).path, re.I)
     edge = max(map(int, match.groups())) if match else 0
     # Tiny SKU icons must not replace a clearer preview. An 800-pixel display
     # variant is adequate for the resizable sidebar without fetching the original.
-    return (1, -abs(edge - 800)) if edge >= 400 else (0, 0)
+    if match:
+        return (2, -abs(edge - 800)) if edge >= 400 else (0, 0)
+    # Current product pages also use e.g. .png_q50.jpg_.webp. Its pixels
+    # may stay unchanged, but it is still a useful preview instead of the PNG.
+    path = urlparse(value).path
+    quality = re.search(r'\.(?:jpe?g|png|gif|webp|avif)_q(\d+)(?:\.jpg|\.jpeg|\.webp)(?:_\.webp)?$', path, re.I)
+    if quality:
+        return (1, 0) if len(quality[1]) <= 3 and 0 < int(quality[1]) <= 100 else (0, 0)
+    compressed = bool(re.search(r'\.(?:jpe?g|png|gif|webp|avif)_\.webp$', path, re.I))
+    return (1, 0) if compressed else (0, 0)
 
 
 def collections(url, context):

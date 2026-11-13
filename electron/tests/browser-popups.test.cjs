@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isTaobaoLoginUrl, taobaoPopupKind } = require('../browser-popups.cjs');
+const { isTaobaoLoginUrl, nativeTaobaoLoginReturn, taobaoPopupKind } = require('../browser-popups.cjs');
 
 test('Taobao login relays and verification routes are temporary, product pages are not', () => {
   for (const url of ['https://detail.tmall.com/wow/z/app/tbpc/home/_____tmd_____/page/login_jump?rand=temporary',
@@ -30,4 +30,27 @@ test('native popup handling is limited to Taobao sources and validated destinati
     assert.equal(taobaoPopupKind(source, destination), null);
   for (const otherSource of ['https://www.youtube.com/', 'https://taobao.com.evil.invalid/', 'about:blank'])
     assert.equal(taobaoPopupKind(otherSource, 'https://login.taobao.com/member/login.jhtml'), null);
+});
+
+test('login returns remain native only between validated Taobao pages', () => {
+  const product = 'https://detail.tmall.com/item.htm?id=123';
+  for (const source of [
+    'https://h5api.m.tmall.com/h5/mtop.alibaba.detail.getaddresslist/1.0/_____tmd_____/page/login_jump',
+    'https://login.taobao.com/member/login.jhtml',
+    'https://detail.tmall.com/_____tmd_____/page/login_jump',
+  ]) {
+    assert.equal(nativeTaobaoLoginReturn(source, product), true);
+    assert.equal(nativeTaobaoLoginReturn(source, 'https://item.taobao.com/item.htm?id=456'), true);
+    assert.equal(nativeTaobaoLoginReturn(source, 'https://www.taobao.com/'), true);
+    for (const target of [
+      'https://www.youtube.com/watch?v=123', 'https://detail.tmall.com.evil.invalid/item.htm?id=123',
+      'https://name:secret@detail.tmall.com/item.htm?id=123', 'https://detail.tmall.com:8123/item.htm?id=123',
+      'file:///C:/product', 'javascript:alert(1)', 'https://login.taobao.com/member/login.jhtml',
+    ]) assert.equal(nativeTaobaoLoginReturn(source, target), false, target);
+  }
+  for (const source of [
+    product, 'https://www.taobao.com/', 'https://login.taobao.com.evil.invalid/member/login.jhtml',
+    'https://name:secret@login.taobao.com/member/login.jhtml', 'https://login.taobao.com:8123/member/login.jhtml',
+    'https://www.youtube.com/login_jump', 'about:blank',
+  ]) assert.equal(nativeTaobaoLoginReturn(source, product), false, source);
 });
